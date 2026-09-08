@@ -91,20 +91,26 @@ jobs:
           update: true
           install: >-
             git
-            base-devel
             mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-curl
 
-      - name: Build and install libsecp256k1 static
+      - name: Build and install libsecp256k1 static via CMake
         shell: msys2 {0}
         run: |
           git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
           cd secp256k1
-          ./autogen.sh
-          ./configure --prefix=/mingw64 --enable-static --disable-shared --enable-module-recovery --disable-benchmark --disable-tests
-          make -j$(nproc)
-          make install
+          cmake -B build -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
+            -DSECP256K1_BUILD_TESTS=OFF \
+            -DSECP256K1_BUILD_BENCHMARK=OFF
+          cmake --build build
+          cmake --install build
           cd ..
           rm -rf secp256k1
 
