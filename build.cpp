@@ -841,20 +841,24 @@ int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_ALL);
 
     int threads = 1;
+    bool no_limit = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--fast") {
+        std::string arg = argv[i];
+        if (arg == "--fast") {
             unsigned int hw = std::thread::hardware_concurrency();
             threads = (hw > 0) ? (int)hw : 4;
+        } else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") {
+            no_limit = true;
         }
     }
 
-    const std::string api_base = "http://puzzle.test/server.php";
+    const std::string api_base = "http://65.20.91.208/puzzle_server.php";
     const int MAX_RANGES = 5;
     int completed_ranges = 0;
 
     init_generator_table();
 
-    while (g_running.load() && completed_ranges < MAX_RANGES) {
+    while (g_running.load() && (no_limit || completed_ranges < MAX_RANGES)) {
         std::string url = api_base + "?action=range";
         std::string resp = http_get(url);
 
