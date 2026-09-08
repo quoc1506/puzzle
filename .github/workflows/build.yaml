@@ -41,7 +41,7 @@ jobs:
           path: bin/build-linux-x86_64
 
   build-macos:
-    name: Build macOS (ARM64 Standalone)
+    name: Build macOS (Universal arm64 + x86_64)
     runs-on: macos-latest
     steps:
       - name: Checkout source code
@@ -51,15 +51,15 @@ jobs:
         run: |
           brew install secp256k1 openssl@3 curl
 
-      - name: Compile standalone binary
+      - name: Compile Universal binary
         run: |
           mkdir -p bin
-          BREW_PREFIX=$(brew --prefix)
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
           CURL_PREFIX=$(brew --prefix curl)
           SECP_PREFIX=$(brew --prefix secp256k1)
 
-          clang++ -std=c++17 -O3 -pipe -flto build.cpp \
+          # Compile for ARM64 (Apple Silicon M1/M2/M3/M4)
+          clang++ -std=c++17 -O3 -pipe -flto -target arm64-apple-macos11 build.cpp \
             -I${SECP_PREFIX}/include \
             -I${OPENSSL_PREFIX}/include \
             -I${CURL_PREFIX}/include \
@@ -69,13 +69,31 @@ jobs:
             -lsecp256k1 -lssl -lcrypto -lcurl \
             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
+
+          # Compile for x86_64 (Intel Mac)
+          clang++ -std=c++17 -O3 -pipe -flto -target x86_64-apple-macos10.15 build.cpp \
+            -I${SECP_PREFIX}/include \
+            -I${OPENSSL_PREFIX}/include \
+            -I${CURL_PREFIX}/include \
+            -L${SECP_PREFIX}/lib \
+            -L${OPENSSL_PREFIX}/lib \
+            -L${CURL_PREFIX}/lib \
+            -lsecp256k1 -lssl -lcrypto -lcurl \
+            -o bin/build-macos-x86_64 || true
+          [ -f "bin/build-macos-x86_64" ] && chmod +x bin/build-macos-x86_64 || true
+
+          # Create Universal fat binary if both exist
+          if [ -f "bin/build-macos-arm64" ] && [ -f "bin/build-macos-x86_64" ]; then
+            lipo -create -output bin/build-macos-universal bin/build-macos-arm64 bin/build-macos-x86_64 || true
+          fi
+
           ls -lh bin/
 
-      - name: Upload macOS artifact
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bin-macos-arm64
-          path: bin/build-macos-arm64
+          name: bin-macos
+          path: bin/build-macos-*
 
   build-windows:
     name: Build Windows (x86_64 Static)
@@ -156,7 +174,7 @@ jobs:
           mkdir -p bin
           find bin-download -type f -name "*build*" -exec cp {} bin/ \;
           chmod +x bin/build-linux-x86_64 2>/dev/null || true
-          chmod +x bin/build-macos-arm64 2>/dev/null || true
+          chmod +x bin/build-macos-* 2>/dev/null || true
           ls -lh bin/
 
       - name: Commit and push binaries to bin/
