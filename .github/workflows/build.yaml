@@ -1,0 +1,168 @@
+name: Multiplatform Binary Build
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'build.cpp'
+      - '.github/workflows/build.yaml'
+      - 'build.yaml'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux (x86_64 Static)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Compile fully static portable binary
+        run: |
+          mkdir -p bin
+          # Link all dependencies statically so target machines do not require any installed libs
+          g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp \
+            -static -static-libgcc -static-libstdc++ \
+            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread -ldl \
+            -o bin/build-linux-x86_64 || \
+          g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp \
+            -static-libgcc -static-libstdc++ \
+            -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl \
+            -o bin/build-linux-x86_64
+          chmod +x bin/build-linux-x86_64
+          ls -lh bin/
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-x86_64
+          path: bin/build-linux-x86_64
+
+  build-macos:
+    name: Build macOS (ARM64 Standalone)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew install secp256k1 openssl@3 curl
+
+      - name: Compile standalone binary
+        run: |
+          mkdir -p bin
+          BREW_PREFIX=$(brew --prefix)
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          CURL_PREFIX=$(brew --prefix curl)
+          SECP_PREFIX=$(brew --prefix secp256k1)
+
+          # Statically link archive libs (.a) for portable zero-dependency execution
+          clang++ -std=c++17 -O3 -pipe -flto build.cpp \
+            -I${SECP_PREFIX}/include \
+            -I${OPENSSL_PREFIX}/include \
+            -I${CURL_PREFIX}/include \
+            ${SECP_PREFIX}/lib/libsecp256k1.a \
+            ${CURL_PREFIX}/lib/libcurl.a \
+            ${OPENSSL_PREFIX}/lib/libssl.a \
+            ${OPENSSL_PREFIX}/lib/libcrypto.a \
+            -lz -lpthread \
+            -o bin/build-macos-arm64 || \
+          clang++ -std=c++17 -O3 -pipe -flto build.cpp \
+            -I${SECP_PREFIX}/include \
+            -I${OPENSSL_PREFIX}/include \
+            -I${CURL_PREFIX}/include \
+            -L${SECP_PREFIX}/lib \
+            -L${OPENSSL_PREFIX}/lib \
+            -L${CURL_PREFIX}/lib \
+            -lsecp256k1 -lssl -lcrypto -lcurl \
+            -o bin/build-macos-arm64
+          chmod +x bin/build-macos-arm64
+          ls -lh bin/
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-macos-arm64
+          path: bin/build-macos-arm64
+
+  build-windows:
+    name: Build Windows (x86_64 100% Static)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 environment
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-secp256k1
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-curl
+
+      - name: Compile 100% standalone static exe
+        run: |
+          mkdir -p bin
+          # Static flags embed all runtime DLLs into the .exe
+          g++ -std=c++17 -O3 -pipe -flto build.cpp \
+            -static -static-libgcc -static-libstdc++ \
+            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lws2_32 -lcrypt32 -lwldap32 \
+            -o bin/build-windows-x86_64.exe
+          ls -lh bin/
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows-x86_64
+          path: bin/build-windows-x86_64.exe
+
+  publish-bin-folder:
+    name: Consolidate Binaries into bin/
+    needs: [build-linux, build-macos, build-windows]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bin-download/
+
+      - name: Organize bin directory
+        run: |
+          mkdir -p bin
+          find bin-download -type f -name "*build*" -exec cp {} bin/ \;
+          chmod +x bin/build-linux-x86_64 2>/dev/null || true
+          chmod +x bin/build-macos-arm64 2>/dev/null || true
+          ls -lh bin/
+
+      - name: Commit and push binaries to bin/
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add bin/
+          if git diff --staged --quiet; then
+            echo "No changes to binaries."
+          else
+            git commit -m "Auto-build multiplatform binaries in bin/ [skip ci]"
+            git push
+          fi

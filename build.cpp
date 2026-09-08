@@ -1,0 +1,927 @@
+#include <iostream>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <cstring>
+#include <csignal>
+#include <cstdint>
+#include <ctime>
+#include <cstdlib>
+
+#include <curl/curl.h>
+#include <secp256k1.h>
+#include <openssl/sha.h>
+#include <openssl/ripemd.h>
+#include <openssl/bn.h>
+
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+static std::atomic<bool> g_running(true);
+
+void sigint_handler(int signum) {
+    (void)signum;
+    g_running = false;
+}
+
+typedef __uint128_t u128;
+
+struct u256 {
+    __uint128_t low;
+    __uint128_t high;
+
+    u256() : low(0), high(0) {}
+    u256(int v) : low((uint64_t)v), high(0) {}
+    u256(uint32_t v) : low(v), high(0) {}
+    u256(uint64_t v) : low(v), high(0) {}
+    u256(__uint128_t l) : low(l), high(0) {}
+    u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
+
+    inline bool is_zero() const {
+        return (low | high) == 0;
+    }
+
+    inline void to_bytes_be(uint8_t out[32]) const {
+        for (int i = 0; i < 16; ++i) {
+            out[31 - i] = (uint8_t)(low >> (i * 8));
+            out[15 - i] = (uint8_t)(high >> (i * 8));
+        }
+    }
+};
+
+inline bool operator==(const u256& a, const u256& b) {
+    return a.low == b.low && a.high == b.high;
+}
+inline bool operator!=(const u256& a, const u256& b) {
+    return !(a == b);
+}
+inline bool operator<(const u256& a, const u256& b) {
+    if (a.high != b.high) return a.high < b.high;
+    return a.low < b.low;
+}
+inline bool operator<=(const u256& a, const u256& b) {
+    return (a < b) || (a == b);
+}
+inline bool operator>(const u256& a, const u256& b) {
+    return b < a;
+}
+inline bool operator>=(const u256& a, const u256& b) {
+    return !(a < b);
+}
+
+inline u256 operator+(const u256& a, const u256& b) {
+    u256 r;
+    r.low = a.low + b.low;
+    r.high = a.high + b.high + (r.low < a.low ? 1 : 0);
+    return r;
+}
+inline u256 operator+(const u256& a, uint64_t b) {
+    u256 r;
+    r.low = a.low + b;
+    r.high = a.high + (r.low < a.low ? 1 : 0);
+    return r;
+}
+inline u256& operator+=(u256& a, const u256& b) {
+    __uint128_t old_low = a.low;
+    a.low += b.low;
+    a.high += b.high + (a.low < old_low ? 1 : 0);
+    return a;
+}
+inline u256& operator+=(u256& a, uint64_t b) {
+    __uint128_t old_low = a.low;
+    a.low += b;
+    a.high += (a.low < old_low ? 1 : 0);
+    return a;
+}
+
+inline u256 operator-(const u256& a, const u256& b) {
+    u256 r;
+    r.low = a.low - b.low;
+    r.high = a.high - b.high - (a.low < b.low ? 1 : 0);
+    return r;
+}
+inline u256 operator-(const u256& a, uint64_t b) {
+    u256 r;
+    r.low = a.low - b;
+    r.high = a.high - (a.low < b ? 1 : 0);
+    return r;
+}
+inline u256& operator-=(u256& a, const u256& b) {
+    bool borrow = a.low < b.low;
+    a.low -= b.low;
+    a.high -= b.high + (borrow ? 1 : 0);
+    return a;
+}
+inline u256& operator-=(u256& a, uint64_t b) {
+    bool borrow = a.low < b;
+    a.low -= b;
+    a.high -= (borrow ? 1 : 0);
+    return a;
+}
+
+u256 parse_u256(const std::string& str) {
+    u256 res;
+    if (str.empty()) return res;
+    if (str.rfind("0x", 0) == 0 || str.rfind("0X", 0) == 0) {
+        for (size_t i = 2; i < str.size(); ++i) {
+            char c = str[i];
+            int val = 0;
+            if (c >= '0' && c <= '9') val = c - '0';
+            else if (c >= 'a' && c <= 'f') val = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') val = c - 'A' + 10;
+            else continue;
+            uint64_t carry = (uint64_t)(res.low >> 124);
+            res.low = (res.low << 4) | val;
+            res.high = (res.high << 4) | carry;
+        }
+        return res;
+    }
+    for (char c : str) {
+        if (c >= '0' && c <= '9') {
+            int val = c - '0';
+            uint64_t l0 = (uint64_t)res.low;
+            uint64_t l1 = (uint64_t)(res.low >> 64);
+            uint64_t h0 = (uint64_t)res.high;
+            uint64_t h1 = (uint64_t)(res.high >> 64);
+
+            __uint128_t c0 = (__uint128_t)l0 * 10 + val;
+            l0 = (uint64_t)c0;
+            __uint128_t c1 = (__uint128_t)l1 * 10 + (c0 >> 64);
+            l1 = (uint64_t)c1;
+            __uint128_t c2 = (__uint128_t)h0 * 10 + (c1 >> 64);
+            h0 = (uint64_t)c2;
+            __uint128_t c3 = (__uint128_t)h1 * 10 + (c2 >> 64);
+            h1 = (uint64_t)c3;
+
+            res.low = ((__uint128_t)l1 << 64) | l0;
+            res.high = ((__uint128_t)h1 << 64) | h0;
+        }
+    }
+    return res;
+}
+
+std::string u256_to_dec(u256 v) {
+    if (v.is_zero()) return "0";
+    std::string s;
+    while (!v.is_zero()) {
+        uint64_t l0 = (uint64_t)v.low;
+        uint64_t l1 = (uint64_t)(v.low >> 64);
+        uint64_t h0 = (uint64_t)v.high;
+        uint64_t h1 = (uint64_t)(v.high >> 64);
+
+        uint64_t r = 0;
+        __uint128_t cur = ((__uint128_t)r << 64) | h1;
+        h1 = (uint64_t)(cur / 10);
+        r = (uint64_t)(cur % 10);
+
+        cur = ((__uint128_t)r << 64) | h0;
+        h0 = (uint64_t)(cur / 10);
+        r = (uint64_t)(cur % 10);
+
+        cur = ((__uint128_t)r << 64) | l1;
+        l1 = (uint64_t)(cur / 10);
+        r = (uint64_t)(cur % 10);
+
+        cur = ((__uint128_t)r << 64) | l0;
+        l0 = (uint64_t)(cur / 10);
+        r = (uint64_t)(cur % 10);
+
+        s.push_back('0' + (int)r);
+
+        v.low = ((__uint128_t)l1 << 64) | l0;
+        v.high = ((__uint128_t)h1 << 64) | h0;
+    }
+    std::reverse(s.begin(), s.end());
+    return s;
+}
+
+inline std::ostream& operator<<(std::ostream& os, const u256& v) {
+    return os << u256_to_dec(v);
+}
+
+std::string u256_to_hex64(const u256& v) {
+    char buf[65];
+    snprintf(buf, sizeof(buf), "%016llx%016llx%016llx%016llx",
+             (unsigned long long)(v.high >> 64),
+             (unsigned long long)(v.high & 0xFFFFFFFFFFFFFFFFULL),
+             (unsigned long long)(v.low >> 64),
+             (unsigned long long)(v.low & 0xFFFFFFFFFFFFFFFFULL));
+    return std::string(buf);
+}
+
+struct Fe {
+    uint64_t d[4];
+};
+
+static const uint64_t SECP_K = 0x1000003D1ULL;
+
+static inline bool fe_is_zero(const Fe& a) {
+    return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
+}
+
+static inline bool fe_eq(const Fe& a, const Fe& b) {
+    return a.d[0] == b.d[0] && a.d[1] == b.d[1] && a.d[2] == b.d[2] && a.d[3] == b.d[3];
+}
+
+static inline Fe fe_add(const Fe& a, const Fe& b) {
+    Fe r;
+    u128 c = (u128)a.d[0] + b.d[0];
+    r.d[0] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[1] + b.d[1];
+    r.d[1] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[2] + b.d[2];
+    r.d[2] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[3] + b.d[3];
+    r.d[3] = (uint64_t)c;
+    uint64_t carry = (uint64_t)(c >> 64);
+
+    if (carry) {
+        u128 c2 = (u128)r.d[0] + SECP_K;
+        r.d[0] = (uint64_t)c2; c2 >>= 64;
+        c2 += r.d[1]; r.d[1] = (uint64_t)c2; c2 >>= 64;
+        c2 += r.d[2]; r.d[2] = (uint64_t)c2; c2 >>= 64;
+        r.d[3] += (uint64_t)c2;
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+}
+
+static inline Fe fe_sub(const Fe& a, const Fe& b) {
+    Fe r;
+    u128 borrow = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 c = (u128)a.d[i] - b.d[i] - borrow;
+        r.d[i] = (uint64_t)c;
+        borrow = (c >> 64) & 1;
+    }
+
+    if (borrow) {
+        u128 c2 = (u128)r.d[0] - SECP_K;
+        r.d[0] = (uint64_t)c2;
+        borrow = (c2 >> 64) & 1;
+        for (int i = 1; i < 4; ++i) {
+            c2 = (u128)r.d[i] - borrow;
+            r.d[i] = (uint64_t)c2;
+            borrow = (c2 >> 64) & 1;
+        }
+    }
+    return r;
+}
+
+static inline Fe fe_mul(const Fe& a, const Fe& b) {
+    uint64_t t[8] = {0};
+    for (int i = 0; i < 4; ++i) {
+        u128 carry = 0;
+        for (int j = 0; j < 4; ++j) {
+            u128 prod = (u128)a.d[i] * b.d[j] + t[i + j] + carry;
+            t[i + j] = (uint64_t)prod;
+            carry = prod >> 64;
+        }
+        t[i + 4] += (uint64_t)carry;
+    }
+
+    u128 carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
+        t[i] = (uint64_t)prod;
+        carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (uint64_t)carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
+}
+
+static inline Fe fe_sqr(const Fe& a) {
+    return fe_mul(a, a);
+}
+
+static inline Fe fe_from_bytes(const uint8_t b[32]) {
+    Fe r;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t val = 0;
+        for (int j = 0; j < 8; ++j) {
+            val = (val << 8) | b[(3 - i) * 8 + j];
+        }
+        r.d[i] = val;
+    }
+    return r;
+}
+
+static inline void fe_to_bytes(const Fe& a, uint8_t b[32]) {
+    for (int i = 0; i < 4; ++i) {
+        uint64_t val = a.d[i];
+        for (int j = 7; j >= 0; --j) {
+            b[(3 - i) * 8 + j] = (uint8_t)(val & 0xFF);
+            val >>= 8;
+        }
+    }
+}
+
+struct AffinePoint {
+    Fe x;
+    Fe y;
+};
+
+static const int BATCH_SIZE = 512;
+
+static AffinePoint G_TABLE[BATCH_SIZE];
+
+void init_generator_table() {
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    for (int i = 1; i <= BATCH_SIZE; ++i) {
+        uint8_t priv[32] = {0};
+        priv[31] = (uint8_t)(i & 0xFF);
+        priv[30] = (uint8_t)((i >> 8) & 0xFF);
+
+        secp256k1_pubkey pub;
+        if (!secp256k1_ec_pubkey_create(ctx, &pub, priv)) {
+            continue;
+        }
+
+        uint8_t out65[65];
+        size_t len65 = 65;
+        secp256k1_ec_pubkey_serialize(ctx, out65, &len65, &pub, SECP256K1_EC_UNCOMPRESSED);
+
+        G_TABLE[i - 1].x = fe_from_bytes(out65 + 1);
+        G_TABLE[i - 1].y = fe_from_bytes(out65 + 33);
+    }
+    secp256k1_context_destroy(ctx);
+}
+
+static inline uint32_t ror32(uint32_t x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static inline uint32_t rol32(uint32_t x, int n) {
+    return (x << n) | (x >> (32 - n));
+}
+
+static const uint32_t K_SHA256[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+static inline void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]) {
+    uint32_t w[64];
+    uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
+    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
+    w[1] = (uint32_t)(d3 >> 8);
+    w[2] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
+    w[3] = (uint32_t)(d2 >> 8);
+    w[4] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
+    w[5] = (uint32_t)(d1 >> 8);
+    w[6] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
+    w[7] = (uint32_t)(d0 >> 8);
+    w[8] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
+    w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
+    w[15] = 264;
+
+    w[16] = w[0] + (ror32(w[1], 7) ^ ror32(w[1], 18) ^ (w[1] >> 3));
+    w[17] = w[1] + (ror32(w[2], 7) ^ ror32(w[2], 18) ^ (w[2] >> 3)) + 0x00A50000U;
+    w[18] = w[2] + (ror32(w[3], 7) ^ ror32(w[3], 18) ^ (w[3] >> 3)) + (ror32(w[16], 17) ^ ror32(w[16], 19) ^ (w[16] >> 10));
+    w[19] = w[3] + (ror32(w[4], 7) ^ ror32(w[4], 18) ^ (w[4] >> 3)) + (ror32(w[17], 17) ^ ror32(w[17], 19) ^ (w[17] >> 10));
+    w[20] = w[4] + (ror32(w[5], 7) ^ ror32(w[5], 18) ^ (w[5] >> 3)) + (ror32(w[18], 17) ^ ror32(w[18], 19) ^ (w[18] >> 10));
+    w[21] = w[5] + (ror32(w[6], 7) ^ ror32(w[6], 18) ^ (w[6] >> 3)) + (ror32(w[19], 17) ^ ror32(w[19], 19) ^ (w[19] >> 10));
+    w[22] = w[6] + (ror32(w[7], 7) ^ ror32(w[7], 18) ^ (w[7] >> 3)) + 264 + (ror32(w[20], 17) ^ ror32(w[20], 19) ^ (w[20] >> 10));
+    w[23] = w[7] + (ror32(w[8], 7) ^ ror32(w[8], 18) ^ (w[8] >> 3)) + w[16] + (ror32(w[21], 17) ^ ror32(w[21], 19) ^ (w[21] >> 10));
+
+    for (int i = 24; i < 64; ++i) {
+        uint32_t s0 = ror32(w[i-15], 7) ^ ror32(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ror32(w[i-2], 17) ^ ror32(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+
+    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
+    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + K_SHA256[i] + w[i];
+        uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+        h = g; g = f; f = e;
+        e = d + temp1;
+        d = c; c = b; b = a;
+        a = temp1 + temp2;
+    }
+
+    out_w[0] = 0x6a09e667 + a;
+    out_w[1] = 0xbb67ae85 + b;
+    out_w[2] = 0x3c6ef372 + c;
+    out_w[3] = 0xa54ff53a + d;
+    out_w[4] = 0x510e527f + e;
+    out_w[5] = 0x9b05688c + f;
+    out_w[6] = 0x1f83d9ab + g;
+    out_w[7] = 0x5be0cd19 + h;
+}
+
+static const uint8_t r_left[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+};
+static const uint8_t s_left[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+};
+static const uint8_t r_right[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+};
+static const uint8_t s_right[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+};
+
+static inline void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]) {
+    uint32_t X[16];
+    for (int i = 0; i < 8; ++i) {
+        X[i] = __builtin_bswap32(sha_be[i]);
+    }
+    X[8] = 0x00000080U;
+    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
+    X[14] = 256;
+    X[15] = 0;
+
+    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
+    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
+
+    for (int j = 0; j < 16; ++j) {
+        uint32_t f = B ^ C ^ D;
+        uint32_t fp = Bp ^ (Cp | ~Dp);
+        uint32_t T = rol32(A + f + X[r_left[j]], s_left[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x50A28BE6U, s_right[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    for (int j = 16; j < 32; ++j) {
+        uint32_t f = (B & C) | (~B & D);
+        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
+        uint32_t T = rol32(A + f + X[r_left[j]] + 0x5A827999U, s_left[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x5C4DD124U, s_right[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    for (int j = 32; j < 48; ++j) {
+        uint32_t f = (B | ~C) ^ D;
+        uint32_t fp = (Bp | ~Cp) ^ Dp;
+        uint32_t T = rol32(A + f + X[r_left[j]] + 0x6ED9EBA1U, s_left[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x6D703EF3U, s_right[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    for (int j = 48; j < 64; ++j) {
+        uint32_t f = (B & D) | (C & ~D);
+        uint32_t fp = (Bp & Cp) | (~Bp & Dp);
+        uint32_t T = rol32(A + f + X[r_left[j]] + 0x8F1BBCDCU, s_left[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x7A6D76E9U, s_right[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    for (int j = 64; j < 80; ++j) {
+        uint32_t f = B ^ (C | ~D);
+        uint32_t fp = Bp ^ Cp ^ Dp;
+        uint32_t T = rol32(A + f + X[r_left[j]] + 0xA953FD4EU, s_left[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+        uint32_t Tp = rol32(Ap + fp + X[r_right[j]], s_right[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    out_h[0] = 0xEFCDAB89 + C + Dp;
+    out_h[1] = 0x98BADCFE + D + Ep;
+    out_h[2] = 0x10325476 + E + Ap;
+    out_h[3] = 0xC3D2E1F0 + A + Bp;
+    out_h[4] = 0x67452301 + B + Cp;
+}
+
+static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
+    std::vector<uint8_t> bytes;
+    for (char c : addr) {
+        const char* p = strchr(B58_CHARS, c);
+        if (!p) return false;
+        int val = p - B58_CHARS;
+        int carry = val;
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            int cur = bytes[i] * 58 + carry;
+            bytes[i] = cur & 0xFF;
+            carry = cur >> 8;
+        }
+        while (carry > 0) {
+            bytes.push_back(carry & 0xFF);
+            carry >>= 8;
+        }
+    }
+    for (char c : addr) {
+        if (c == '1') bytes.push_back(0);
+        else break;
+    }
+    std::reverse(bytes.begin(), bytes.end());
+    if (bytes.size() != 25) return false;
+
+    uint8_t sha1[32], sha2[32];
+    SHA256(bytes.data(), 21, sha1);
+    SHA256(sha1, 32, sha2);
+    if (memcmp(sha2, bytes.data() + 21, 4) != 0) return false;
+
+    memcpy(hash160_out, bytes.data() + 1, 20);
+    return true;
+}
+
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
+
+std::string http_get(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return "";
+    std::string readBuffer;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "worker/1.0");
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    return (res == CURLE_OK) ? readBuffer : "";
+}
+
+bool http_post(const std::string& url, const std::string& json_data, std::string* response_out = nullptr) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    std::string responseBuffer;
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "worker/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    if (res == CURLE_OK && response_out) *response_out = responseBuffer;
+    return (res == CURLE_OK);
+}
+
+std::string json_get_string(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return "";
+    pos += pattern.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (pos >= json.length()) return "";
+
+    if (json[pos] == '"') {
+        pos++;
+        size_t end = json.find('"', pos);
+        if (end == std::string::npos) return "";
+        return json.substr(pos, end - pos);
+    } else {
+        size_t end = pos;
+        while (end < json.length() && json[end] != ',' && json[end] != '}' && json[end] != '\n') end++;
+        return json.substr(pos, end - pos);
+    }
+}
+
+struct RangeInfo {
+    int puzzle;
+    std::string user;
+    int64_t block;
+    int range_idx;
+    u256 start;
+    u256 end;
+    uint64_t range_size;
+    std::string target_address;
+    u256 lower;
+    u256 total;
+};
+
+bool parse_range_json(const std::string& json, RangeInfo& rng) {
+    if (json.empty() || json.find("\"start\"") == std::string::npos) return false;
+    std::string s_p = json_get_string(json, "puzzle");
+    rng.puzzle = s_p.empty() ? 71 : std::stoi(s_p);
+    rng.user = json_get_string(json, "user");
+    std::string s_b = json_get_string(json, "block");
+    rng.block = s_b.empty() ? 0 : std::stoll(s_b);
+    std::string s_r = json_get_string(json, "range_idx");
+    rng.range_idx = s_r.empty() ? 0 : std::stoi(s_r);
+    rng.start = parse_u256(json_get_string(json, "start"));
+    rng.end = parse_u256(json_get_string(json, "end"));
+    std::string s_sz = json_get_string(json, "range_size");
+    rng.range_size = s_sz.empty() ? 0 : std::stoull(s_sz);
+    rng.target_address = json_get_string(json, "target_address");
+    rng.lower = parse_u256(json_get_string(json, "lower"));
+    rng.total = parse_u256(json_get_string(json, "total"));
+    if (rng.end <= rng.start && rng.range_size > 0) {
+        rng.end = rng.start + rng.range_size;
+    }
+    return (!rng.target_address.empty() && rng.end > rng.start);
+}
+
+void scan_worker_montgomery(
+    u256 range_start,
+    std::atomic<uint64_t>& work_offset,
+    uint64_t total_keys,
+    uint64_t slice_size,
+    const uint8_t target_hash160[20],
+    const uint64_t target_h64_first,
+    std::atomic<bool>& found_flag,
+    u256& found_key,
+    std::mutex& found_mtx,
+    std::atomic<uint64_t>& checked_counter
+) {
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (!ctx) return;
+
+    BN_CTX* bn_ctx = BN_CTX_new();
+    BIGNUM* p_bn = BN_new();
+    uint8_t p_bytes[32];
+    Fe p_fe = {{0xFFFFFFFEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL}};
+    fe_to_bytes(p_fe, p_bytes);
+    BN_bin2bn(p_bytes, 32, p_bn);
+
+    BIGNUM* bn_val = BN_new();
+    BIGNUM* bn_inv = BN_new();
+
+    Fe dx[BATCH_SIZE];
+    Fe dy[BATCH_SIZE];
+    Fe cum[BATCH_SIZE + 1];
+    Fe inv_dx[BATCH_SIZE];
+
+    uint32_t target_w[5];
+    for (int i = 0; i < 5; ++i) {
+        target_w[i] = (uint32_t)target_hash160[4*i] |
+                      ((uint32_t)target_hash160[4*i + 1] << 8) |
+                      ((uint32_t)target_hash160[4*i + 2] << 16) |
+                      ((uint32_t)target_hash160[4*i + 3] << 24);
+    }
+
+    uint64_t local_counter = 0;
+    bool has_cur_base = false;
+    AffinePoint cur_base;
+    u256 cur_k = 0;
+
+    while (!found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
+        uint64_t off = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
+        if (off >= total_keys) break;
+        uint64_t count_in_slice = std::min(slice_size, total_keys - off);
+        u256 slice_start = range_start + off;
+        u256 slice_end = slice_start + count_in_slice;
+
+        u256 base_k = (!slice_start.is_zero()) ? (slice_start - 1) : u256(0);
+        if (!has_cur_base || cur_k != base_k) {
+            uint8_t priv_start[32] = {0};
+            base_k.to_bytes_be(priv_start);
+            secp256k1_pubkey start_pub;
+            if (!secp256k1_ec_pubkey_create(ctx, &start_pub, priv_start)) {
+                continue;
+            }
+            uint8_t out65[65];
+            size_t len65 = 65;
+            secp256k1_ec_pubkey_serialize(ctx, out65, &len65, &start_pub, SECP256K1_EC_UNCOMPRESSED);
+            cur_base.x = fe_from_bytes(out65 + 1);
+            cur_base.y = fe_from_bytes(out65 + 33);
+            has_cur_base = true;
+            cur_k = base_k;
+        }
+
+        while (cur_k < slice_end - 1 && !found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
+            u256 rem = (slice_end - 1 - cur_k);
+            uint64_t remaining = (rem.high == 0) ? (uint64_t)rem.low : 0xFFFFFFFFFFFFFFFFULL;
+            int current_batch = (int)std::min((uint64_t)BATCH_SIZE, remaining);
+
+            cum[0] = {{1, 0, 0, 0}};
+            for (int i = 0; i < current_batch; ++i) {
+                dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
+                dy[i] = fe_sub(G_TABLE[i].y, cur_base.y);
+                cum[i + 1] = fe_mul(cum[i], dx[i]);
+            }
+
+            uint8_t cum_bytes[32];
+            fe_to_bytes(cum[current_batch], cum_bytes);
+            BN_bin2bn(cum_bytes, 32, bn_val);
+            BN_mod_inverse(bn_inv, bn_val, p_bn, bn_ctx);
+
+            uint8_t inv_bytes[32] = {0};
+            BN_bn2binpad(bn_inv, inv_bytes, 32);
+            Fe u = fe_from_bytes(inv_bytes);
+
+            for (int i = current_batch - 1; i >= 0; --i) {
+                inv_dx[i] = fe_mul(u, cum[i]);
+                u = fe_mul(u, dx[i]);
+            }
+
+            AffinePoint next_base;
+            for (int i = 0; i < current_batch; ++i) {
+                Fe slope = fe_mul(dy[i], inv_dx[i]);
+                Fe slope_sqr = fe_sqr(slope);
+                Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
+                Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
+
+                if (i == current_batch - 1) {
+                    next_base.x = xi;
+                    next_base.y = yi;
+                }
+
+                uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
+                uint32_t sha_w[8];
+                fast_sha256_fe(prefix, xi, sha_w);
+
+                uint32_t h[5];
+                fast_ripemd160_32(sha_w, h);
+
+                uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
+                if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
+                    if (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]) {
+                        std::lock_guard<std::mutex> lk(found_mtx);
+                        found_key = cur_k + (uint64_t)(i + 1);
+                        found_flag.store(true, std::memory_order_release);
+                        break;
+                    }
+                }
+            }
+
+            if (found_flag.load(std::memory_order_relaxed)) break;
+
+            cur_base = next_base;
+            cur_k += (uint64_t)current_batch;
+            local_counter += current_batch;
+        }
+    }
+
+    checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+
+    BN_free(p_bn); BN_free(bn_val); BN_free(bn_inv); BN_CTX_free(bn_ctx);
+    secp256k1_context_destroy(ctx);
+}
+
+int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+    signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigint_handler);
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    const int threads = 1;
+    const std::string api_base = "http://puzzle.test/server.php";
+    const int MAX_RANGES = 5;
+    int completed_ranges = 0;
+
+    init_generator_table();
+
+    while (g_running.load() && completed_ranges < MAX_RANGES) {
+        std::string url = api_base + "?action=range";
+        std::string resp = http_get(url);
+
+        RangeInfo rng;
+        if (!parse_range_json(resp, rng)) {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            continue;
+        }
+
+        int current_puzzle = (rng.puzzle > 0) ? rng.puzzle : 71;
+        std::string current_user = rng.user.empty() ? ("user-" + std::to_string(rng.block) + "-" + std::to_string(rng.range_idx)) : rng.user;
+
+        uint8_t target_h160[20];
+        if (!b58check_decode_hash160(rng.target_address, target_h160)) {
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            continue;
+        }
+        uint64_t target_h64 = *(const uint64_t*)target_h160;
+
+        u256 total_keys = (rng.range_size > 0) ? u256(rng.range_size) : (rng.end - rng.start);
+        uint64_t total_keys_count = (total_keys.high == 0) ? (uint64_t)total_keys.low : (uint64_t)rng.range_size;
+        std::atomic<uint64_t> work_offset(0);
+        uint64_t slice_size = 524288;
+
+        std::atomic<bool> found_flag(false);
+        u256 found_key = 0;
+        std::mutex found_mtx;
+        std::atomic<uint64_t> checked_counter(0);
+
+        std::vector<std::thread> pool;
+        auto t_start = std::chrono::high_resolution_clock::now();
+
+        for (int i = 0; i < threads; ++i) {
+            pool.emplace_back(scan_worker_montgomery, rng.start, std::ref(work_offset), total_keys_count, slice_size, target_h160, target_h64,
+                              std::ref(found_flag), std::ref(found_key),
+                              std::ref(found_mtx), std::ref(checked_counter));
+        }
+
+        for (auto& th : pool) if (th.joinable()) th.join();
+
+        auto t_end = std::chrono::high_resolution_clock::now();
+        double elapsed = std::chrono::duration<double>(t_end - t_start).count();
+        if (elapsed <= 0.0) elapsed = 0.001;
+
+        bool hit = found_flag.load();
+        uint64_t checked = checked_counter.load();
+        if (!hit && g_running.load() && checked < total_keys_count) {
+            checked = total_keys_count;
+        }
+        double speed = (double)checked / elapsed;
+
+        if (!hit && !g_running.load()) {
+            break;
+        }
+
+        std::stringstream json;
+        json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
+             << ",\"block\":" << rng.block
+             << ",\"range_idx\":" << rng.range_idx
+             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
+             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
+             << ",\"user\":\"" << current_user << "\""
+             << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
+             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"count\":" << checked
+             << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
+
+        std::string post_url = api_base + "?action=result&user=" + current_user;
+        std::string ack;
+        http_post(post_url, json.str(), &ack);
+
+        completed_ranges++;
+
+        if (hit) {
+            break;
+        }
+    }
+
+    curl_global_cleanup();
+    return 0;
+}

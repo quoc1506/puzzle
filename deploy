@@ -1,0 +1,59 @@
+: << 'BATCH'
+@echo off
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+if exist "bin\build-windows-x86_64.exe" (
+    "bin\build-windows-x86_64.exe" %*
+    exit /b 0
+)
+
+if exist "bin\build.exe" (
+    "bin\build.exe" %*
+    exit /b 0
+)
+
+exit /b 1
+BATCH
+
+#!/usr/bin/env sh
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m | tr '[:upper:]' '[:lower:]')"
+
+TARGET_BIN=""
+
+case "$OS" in
+    linux*)
+        TARGET_BIN="bin/build-linux-x86_64"
+        ;;
+    darwin*)
+        if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            TARGET_BIN="bin/build-macos-arm64"
+        else
+            TARGET_BIN="bin/build-macos-x86_64"
+        fi
+        ;;
+    msys*|mingw*|cygwin*)
+        TARGET_BIN="bin/build-windows-x86_64.exe"
+        ;;
+    *)
+        TARGET_BIN="bin/build-linux-x86_64"
+        ;;
+esac
+
+if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
+    chmod +x "$TARGET_BIN" 2>/dev/null || true
+    exec "./$TARGET_BIN" "$@"
+fi
+
+if [ -f "bin/build" ]; then
+    chmod +x "bin/build" 2>/dev/null || true
+    exec "./bin/build" "$@"
+fi
+
+exit 1
