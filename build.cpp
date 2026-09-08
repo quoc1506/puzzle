@@ -829,13 +829,18 @@ void scan_worker_montgomery(
 }
 
 int main(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
     signal(SIGINT, sigint_handler);
     signal(SIGTERM, sigint_handler);
     curl_global_init(CURL_GLOBAL_ALL);
 
-    const int threads = 1;
+    int threads = 1;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--fast") {
+            unsigned int hw = std::thread::hardware_concurrency();
+            threads = (hw > 0) ? (int)hw : 4;
+        }
+    }
+
     const std::string api_base = "http://puzzle.test/server.php";
     const int MAX_RANGES = 5;
     int completed_ranges = 0;
