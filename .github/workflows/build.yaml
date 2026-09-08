@@ -121,7 +121,9 @@ jobs:
           mkdir -p bin
           CURL_STATIC_LIBS=$(pkg-config --static --libs libcurl)
           echo "CURL Static Flags: $CURL_STATIC_LIBS"
-          g++ -std=c++17 -O3 -pipe -flto build.cpp \
+          g++ -std=c++17 -O3 -pipe -flto \
+            -DCURL_STATICLIB -DSECP256K1_STATIC \
+            build.cpp \
             -static -static-libgcc -static-libstdc++ \
             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32 \
             -o bin/build-windows-x86_64.exe

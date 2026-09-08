@@ -14,6 +14,13 @@
 #include <ctime>
 #include <cstdlib>
 
+#ifndef CURL_STATICLIB
+#define CURL_STATICLIB
+#endif
+#ifndef SECP256K1_STATIC
+#define SECP256K1_STATIC
+#endif
+
 #include <curl/curl.h>
 #include <secp256k1.h>
 #include <openssl/sha.h>
