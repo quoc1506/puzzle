@@ -76,7 +76,7 @@ jobs:
           # 1. Download & build static OpenSSL for x86_64
           curl -sSL https://www.openssl.org/source/openssl-3.0.15.tar.gz | tar -xz
           cd openssl-3.0.15
-          ./Configure darwin64-x86_64-cc no-shared no-tests --prefix=$(pwd)/dist
+          ./Configure darwin64-x86_64-cc no-shared no-tests -mmacosx-version-min=10.15 --prefix=$(pwd)/dist
           make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
           make install_sw >/dev/null 2>&1
           OPENSSL_X86=$(pwd)/dist
@@ -88,6 +88,7 @@ jobs:
           cmake -B build -G "Unix Makefiles" \
             -DCMAKE_SYSTEM_NAME=Darwin \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
             -DBUILD_SHARED_LIBS=OFF \
@@ -107,7 +108,7 @@ jobs:
             --disable-shared --enable-static \
             --with-openssl=${OPENSSL_X86} \
             --disable-ldap --disable-ldaps \
-            CFLAGS="-target x86_64-apple-macos10.15"
+            CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
           make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
           make install >/dev/null 2>&1
           CURL_X86=$(pwd)/dist
@@ -115,8 +116,14 @@ jobs:
 
           cd ..
 
-          # 4. Compile x86_64 binary
-          clang++ -std=c++17 -O3 -pipe -flto -target x86_64-apple-macos10.15 \
+          # Find libssl / libcrypto directory (can be lib or lib64)
+          SSL_LIB_DIR="${OPENSSL_X86}/lib"
+          if [ -d "${OPENSSL_X86}/lib64" ]; then
+            SSL_LIB_DIR="${OPENSSL_X86}/lib64"
+          fi
+
+          # 4. Compile x86_64 binary with Apple System Frameworks
+          clang++ -std=c++17 -O3 -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15 \
             -DCURL_STATICLIB -DSECP256K1_STATIC \
             build.cpp \
             -I${SECP_X86}/include \
@@ -124,20 +131,9 @@ jobs:
             -I${CURL_X86}/include \
             ${SECP_X86}/lib/libsecp256k1.a \
             ${CURL_X86}/lib/libcurl.a \
-            ${OPENSSL_X86}/lib64/libssl.a \
-            ${OPENSSL_X86}/lib64/libcrypto.a \
-            -lz -lpthread \
-            -o bin/build-macos-x86_64 || \
-          clang++ -std=c++17 -O3 -pipe -flto -target x86_64-apple-macos10.15 \
-            -DCURL_STATICLIB -DSECP256K1_STATIC \
-            build.cpp \
-            -I${SECP_X86}/include \
-            -I${OPENSSL_X86}/include \
-            -I${CURL_X86}/include \
-            ${SECP_X86}/lib/libsecp256k1.a \
-            ${CURL_X86}/lib/libcurl.a \
-            ${OPENSSL_X86}/lib/libssl.a \
-            ${OPENSSL_X86}/lib/libcrypto.a \
+            ${SSL_LIB_DIR}/libssl.a \
+            ${SSL_LIB_DIR}/libcrypto.a \
+            -framework CoreFoundation -framework SystemConfiguration \
             -lz -lpthread \
             -o bin/build-macos-x86_64
 
