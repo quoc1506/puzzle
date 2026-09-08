@@ -271,11 +271,11 @@ function time_ago(int $ts): string {
 
 function format_eta(float $seconds): string {
     if ($seconds <= 0) return '0s';
-    $days = floor($seconds / 86400);
+    $days = floor($seconds / 86400.0);
     $years = floor($days / 365.25);
-    $rem_days = (int)($days % 365);
-    $hours = floor(($seconds % 86400) / 3600);
-    $minutes = floor(($seconds % 3600) / 60);
+    $rem_days = (int)fmod($days, 365.0);
+    $hours = (int)floor(fmod($seconds, 86400.0) / 3600.0);
+    $minutes = (int)floor(fmod($seconds, 3600.0) / 60.0);
 
     if ($years >= 100) {
         return number_format($years) . ' years';
