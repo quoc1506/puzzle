@@ -96,6 +96,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-curl
+            mingw-w64-x86_64-pkg-config
 
       - name: Build and install libsecp256k1 static via CMake
         shell: msys2 {0}
@@ -118,9 +119,11 @@ jobs:
         shell: msys2 {0}
         run: |
           mkdir -p bin
+          CURL_STATIC_LIBS=$(pkg-config --static --libs libcurl)
+          echo "CURL Static Flags: $CURL_STATIC_LIBS"
           g++ -std=c++17 -O3 -pipe -flto build.cpp \
             -static -static-libgcc -static-libstdc++ \
-            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lws2_32 -lcrypt32 -lwldap32 \
+            -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32 \
             -o bin/build-windows-x86_64.exe
           ls -lh bin/
 
