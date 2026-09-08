@@ -742,8 +742,7 @@ switch ($action) {
     case 'range':
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') error_resp('Method not allowed', 405);
         $raw_puzzle = $_GET['puzzle'] ?? null;
-        // YÊU CẦU 4: nếu ko truyền puzzle thì hard code trả về puzzle hiện tại đang cần xử lý là 71
-        $puzzle_id = ($raw_puzzle === null || $raw_puzzle === '' || !is_numeric($raw_puzzle)) ? 71 : resolve_puzzle_id($raw_puzzle);
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
         $config = PUZZLES[$puzzle_id];
 
         if ($puzzle_id === 70 || (isset($_GET['test']) && $_GET['test'] == 1)) {
