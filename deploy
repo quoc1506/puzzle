@@ -42,13 +42,16 @@ case "$OS" in
                 TARGET_BIN="bin/build-macos-x86_64"
             fi
         else
-            # Intel Mac (x86_64)
+            # Intel Mac (x86_64) - Do NOT fallback to arm64 to avoid Bad CPU type crash
             if [ -f "bin/build-macos-x86_64" ]; then
                 TARGET_BIN="bin/build-macos-x86_64"
             elif [ -f "bin/build-macos-universal" ]; then
                 TARGET_BIN="bin/build-macos-universal"
             else
-                TARGET_BIN="bin/build-macos-arm64"
+                echo "[ERROR] You are running on an Intel Mac ($ARCH), but 'bin/build-macos-x86_64' was not found!"
+                echo "Only 'bin/build-macos-arm64' (Apple Silicon) exists in your bin/ folder."
+                echo "Please compile or download 'bin/build-macos-x86_64'."
+                exit 1
             fi
         fi
         ;;
