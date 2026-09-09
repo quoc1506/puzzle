@@ -1017,17 +1017,17 @@ int main(int argc, char* argv[]) {
         }
 
         std::stringstream json;
-        json << "{"action":"result","puzzle":" << current_puzzle
-             << ","block":" << rng.block
-             << ","range_idx":" << rng.range_idx
-             << ","status":"" << (hit ? "found" : "done") << """
-             << ","private_key":"" << (hit ? u256_to_hex64(found_key) : "") << """
-             << ","user":"" << current_user << """
-             << ","speed":" << std::fixed << std::setprecision(1) << speed
-             << ","keys":"" << u256_to_dec(total_keys) << """
-             << ","range_size":"" << u256_to_dec(total_keys) << """
-             << ","count":" << checked
-             << ","elapsed":" << std::fixed << std::setprecision(2) << elapsed << "}";
+        json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
+             << ",\"block\":" << rng.block
+             << ",\"range_idx\":" << rng.range_idx
+             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
+             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
+             << ",\"user\":\"" << current_user << "\""
+             << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
+             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"count\":" << checked
+             << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
 
         std::string post_url = api_base + "?action=result&user=" + current_user;
         std::string ack;
