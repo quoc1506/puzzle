@@ -354,76 +354,7 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 static inline Fe fe_sqr(const Fe& a) {
-    uint64_t t[8] = {0};
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-
-    // 6 cross products:
-    u128 m01 = a0 * a1;
-    u128 m02 = a0 * a2;
-    u128 m03 = a0 * a3;
-    u128 m12 = a1 * a2;
-    u128 m13 = a1 * a3;
-    u128 m23 = a2 * a3;
-
-    u128 r1 = m01;
-    u128 r2 = m02;
-    u128 r3 = m03 + m12;
-    u128 r4 = m13;
-    u128 r5 = m23;
-
-    // Double cross products and shift:
-    u128 carry = 0;
-    t[1] = (uint64_t)(r1 << 1); carry = (r1 >> 63);
-    u128 w2 = (r2 << 1) + carry; t[2] = (uint64_t)w2; carry = w2 >> 64;
-    u128 w3 = (r3 << 1) + carry; t[3] = (uint64_t)w3; carry = w3 >> 64;
-    u128 w4 = (r4 << 1) + carry; t[4] = (uint64_t)w4; carry = w4 >> 64;
-    u128 w5 = (r5 << 1) + carry; t[5] = (uint64_t)w5; carry = w5 >> 64;
-    t[6] = (uint64_t)carry;
-
-    // Add square terms: a0^2, a1^2, a2^2, a3^2
-    u128 c = (u128)t[0] + a0 * a0;
-    t[0] = (uint64_t)c; c >>= 64;
-    c += t[1]; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
-    c += t[3]; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
-    c += t[5]; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
-    t[7] = (uint64_t)c;
-
-    // secp256k1 field reduction mod p:
-    u128 r_carry = 0;
-    for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + r_carry;
-        t[i] = (uint64_t)prod;
-        r_carry = prod >> 64;
-    }
-    u128 c2 = (u128)t[0] + (uint64_t)r_carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
-    if (extra) {
-        u128 c3 = (u128)t[0] + extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
-    }
-
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
-    }
-    Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
-    return r;
+    return fe_mul(a, a);
 }
 
 static inline Fe fe_from_bytes(const uint8_t b[32]) {
@@ -453,32 +384,7 @@ struct AffinePoint {
     Fe y;
 };
 
-static const int BATCH_SIZE = 1024;
-
-// Modular inversion in secp256k1 field via Fermat's Little Theorem: a^(p - 2) mod p
-// p - 2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
-static inline Fe fe_inv(const Fe& a) {
-    const uint64_t exp[4] = {
-        0xFFFFFFFEFFFFFC2DULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL
-    };
-    Fe res = {{1, 0, 0, 0}};
-    Fe base = a;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t w = exp[i];
-        for (int b = 0; b < 64; ++b) {
-            if (i == 3 && w == 0) break;
-            if (w & 1) {
-                res = fe_mul(res, base);
-            }
-            base = fe_sqr(base);
-            w >>= 1;
-        }
-    }
-    return res;
-}
+static const int BATCH_SIZE = 512;
 
 static AffinePoint G_TABLE[BATCH_SIZE];
 
@@ -822,6 +728,16 @@ void scan_worker_montgomery(
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) return;
 
+    BN_CTX* bn_ctx = BN_CTX_new();
+    BIGNUM* p_bn = BN_new();
+    uint8_t p_bytes[32];
+    Fe p_fe = {{0xFFFFFFFEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL}};
+    fe_to_bytes(p_fe, p_bytes);
+    BN_bin2bn(p_bytes, 32, p_bn);
+
+    BIGNUM* bn_val = BN_new();
+    BIGNUM* bn_inv = BN_new();
+
     Fe dx[BATCH_SIZE];
     Fe cum[BATCH_SIZE + 1];
     Fe inv_dx[BATCH_SIZE];
@@ -874,7 +790,14 @@ void scan_worker_montgomery(
                 cum[i + 1] = fe_mul(cum[i], dx[i]);
             }
 
-            Fe u = fe_inv(cum[current_batch]);
+            uint8_t cum_bytes[32];
+            fe_to_bytes(cum[current_batch], cum_bytes);
+            BN_bin2bn(cum_bytes, 32, bn_val);
+            BN_mod_inverse(bn_inv, bn_val, p_bn, bn_ctx);
+
+            uint8_t inv_bytes[32] = {0};
+            BN_bn2binpad(bn_inv, inv_bytes, 32);
+            Fe u = fe_from_bytes(inv_bytes);
 
             for (int i = current_batch - 1; i >= 0; --i) {
                 inv_dx[i] = fe_mul(u, cum[i]);
@@ -920,6 +843,7 @@ void scan_worker_montgomery(
 
     checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
 
+    BN_free(p_bn); BN_free(bn_val); BN_free(bn_inv); BN_CTX_free(bn_ctx);
     secp256k1_context_destroy(ctx);
 }
 
