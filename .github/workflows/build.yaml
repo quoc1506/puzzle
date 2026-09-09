@@ -31,12 +31,12 @@ jobs:
           echo "Found static secp256k1: $SECP_A"
 
           if [ -n "$SECP_A" ]; then
-            g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp "$SECP_A" \
+            g++ -std=c++17 -march=x86-64-v3 -O3 -fomit-frame-pointer -funroll-loops -pipe -flto -pthread build.cpp "$SECP_A" \
               -static-libgcc -static-libstdc++ \
               -lssl -lcrypto -lcurl -lpthread -ldl \
               -o bin/build-linux-x86_64
           else
-            g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp \
+            g++ -std=c++17 -march=x86-64-v3 -O3 -fomit-frame-pointer -funroll-loops -pipe -flto -pthread build.cpp \
               -static-libgcc -static-libstdc++ \
               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
               -lssl -lcrypto -lcurl -lpthread -ldl \

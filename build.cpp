@@ -272,37 +272,52 @@ static inline Fe fe_add(const Fe& a, const Fe& b) {
 
 static inline Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
-    u128 borrow = 0;
-    for (int i = 0; i < 4; ++i) {
-        u128 c = (u128)a.d[i] - b.d[i] - borrow;
-        r.d[i] = (uint64_t)c;
-        borrow = (c >> 64) & 1;
-    }
+    u128 c = (u128)a.d[0] - b.d[0];
+    r.d[0] = (uint64_t)c;
+    c = (u128)a.d[1] - b.d[1] - ((c >> 64) & 1);
+    r.d[1] = (uint64_t)c;
+    c = (u128)a.d[2] - b.d[2] - ((c >> 64) & 1);
+    r.d[2] = (uint64_t)c;
+    c = (u128)a.d[3] - b.d[3] - ((c >> 64) & 1);
+    r.d[3] = (uint64_t)c;
 
-    if (borrow) {
-        u128 c2 = (u128)r.d[0] - SECP_K;
-        r.d[0] = (uint64_t)c2;
-        borrow = (c2 >> 64) & 1;
-        for (int i = 1; i < 4; ++i) {
-            c2 = (u128)r.d[i] - borrow;
-            r.d[i] = (uint64_t)c2;
-            borrow = (c2 >> 64) & 1;
-        }
+    if ((c >> 64) & 1) {
+        c = (u128)r.d[0] - SECP_K;
+        r.d[0] = (uint64_t)c;
+        c = (u128)r.d[1] - ((c >> 64) & 1);
+        r.d[1] = (uint64_t)c;
+        c = (u128)r.d[2] - ((c >> 64) & 1);
+        r.d[2] = (uint64_t)c;
+        r.d[3] -= (uint64_t)((c >> 64) & 1);
     }
     return r;
 }
 
 static inline Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
-    for (int i = 0; i < 4; ++i) {
-        u128 carry = 0;
-        for (int j = 0; j < 4; ++j) {
-            u128 prod = (u128)a.d[i] * b.d[j] + t[i + j] + carry;
-            t[i + j] = (uint64_t)prod;
-            carry = prod >> 64;
-        }
-        t[i + 4] += (uint64_t)carry;
-    }
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
+
+    u128 c;
+    c = a0 * b0; t[0] = (uint64_t)c; c >>= 64;
+    c += a0 * b1; t[1] = (uint64_t)c; c >>= 64;
+    c += a0 * b2; t[2] = (uint64_t)c; c >>= 64;
+    c += a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+
+    c = (u128)t[1] + a1 * b0; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + a1 * b1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + a1 * b2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+
+    c = (u128)t[2] + a2 * b0; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + a2 * b1; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a2 * b2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+
+    c = (u128)t[3] + a3 * b0; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a3 * b1; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + a3 * b2; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
 
     u128 carry = 0;
     for (int i = 0; i < 4; ++i) {
@@ -339,7 +354,76 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 static inline Fe fe_sqr(const Fe& a) {
-    return fe_mul(a, a);
+    uint64_t t[8] = {0};
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    // 6 cross products:
+    u128 m01 = a0 * a1;
+    u128 m02 = a0 * a2;
+    u128 m03 = a0 * a3;
+    u128 m12 = a1 * a2;
+    u128 m13 = a1 * a3;
+    u128 m23 = a2 * a3;
+
+    u128 r1 = m01;
+    u128 r2 = m02;
+    u128 r3 = m03 + m12;
+    u128 r4 = m13;
+    u128 r5 = m23;
+
+    // Double cross products and shift:
+    u128 carry = 0;
+    t[1] = (uint64_t)(r1 << 1); carry = (r1 >> 63);
+    u128 w2 = (r2 << 1) + carry; t[2] = (uint64_t)w2; carry = w2 >> 64;
+    u128 w3 = (r3 << 1) + carry; t[3] = (uint64_t)w3; carry = w3 >> 64;
+    u128 w4 = (r4 << 1) + carry; t[4] = (uint64_t)w4; carry = w4 >> 64;
+    u128 w5 = (r5 << 1) + carry; t[5] = (uint64_t)w5; carry = w5 >> 64;
+    t[6] = (uint64_t)carry;
+
+    // Add square terms: a0^2, a1^2, a2^2, a3^2
+    u128 c = (u128)t[0] + a0 * a0;
+    t[0] = (uint64_t)c; c >>= 64;
+    c += t[1]; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
+    c += t[3]; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
+    c += t[5]; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
+    t[7] = (uint64_t)c;
+
+    // secp256k1 field reduction mod p:
+    u128 r_carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + r_carry;
+        t[i] = (uint64_t)prod;
+        r_carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (uint64_t)r_carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
 }
 
 static inline Fe fe_from_bytes(const uint8_t b[32]) {
@@ -369,7 +453,32 @@ struct AffinePoint {
     Fe y;
 };
 
-static const int BATCH_SIZE = 512;
+static const int BATCH_SIZE = 1024;
+
+// Modular inversion in secp256k1 field via Fermat's Little Theorem: a^(p - 2) mod p
+// p - 2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
+static inline Fe fe_inv(const Fe& a) {
+    const uint64_t exp[4] = {
+        0xFFFFFFFEFFFFFC2DULL,
+        0xFFFFFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFFFULL
+    };
+    Fe res = {{1, 0, 0, 0}};
+    Fe base = a;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t w = exp[i];
+        for (int b = 0; b < 64; ++b) {
+            if (i == 3 && w == 0) break;
+            if (w & 1) {
+                res = fe_mul(res, base);
+            }
+            base = fe_sqr(base);
+            w >>= 1;
+        }
+    }
+    return res;
+}
 
 static AffinePoint G_TABLE[BATCH_SIZE];
 
@@ -449,10 +558,10 @@ static inline void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]
 
     for (int i = 0; i < 64; ++i) {
         uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);
-        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t ch = g ^ (e & (f ^ g));
         uint32_t temp1 = h + S1 + ch + K_SHA256[i] + w[i];
         uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t maj = (a & b) | (c & (a ^ b));
         uint32_t temp2 = S0 + maj;
         h = g; g = f; f = e;
         e = d + temp1;
@@ -522,8 +631,8 @@ static inline void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]
     }
 
     for (int j = 16; j < 32; ++j) {
-        uint32_t f = (B & C) | (~B & D);
-        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
+        uint32_t f = D ^ (B & (C ^ D));
+        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
         uint32_t T = rol32(A + f + X[r_left[j]] + 0x5A827999U, s_left[j]) + E;
         A = E; E = D; D = rol32(C, 10); C = B; B = T;
         uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x5C4DD124U, s_right[j]) + Ep;
@@ -540,8 +649,8 @@ static inline void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]
     }
 
     for (int j = 48; j < 64; ++j) {
-        uint32_t f = (B & D) | (C & ~D);
-        uint32_t fp = (Bp & Cp) | (~Bp & Dp);
+        uint32_t f = C ^ (D & (B ^ C));
+        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
         uint32_t T = rol32(A + f + X[r_left[j]] + 0x8F1BBCDCU, s_left[j]) + E;
         A = E; E = D; D = rol32(C, 10); C = B; B = T;
         uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x7A6D76E9U, s_right[j]) + Ep;
@@ -713,18 +822,7 @@ void scan_worker_montgomery(
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) return;
 
-    BN_CTX* bn_ctx = BN_CTX_new();
-    BIGNUM* p_bn = BN_new();
-    uint8_t p_bytes[32];
-    Fe p_fe = {{0xFFFFFFFEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL}};
-    fe_to_bytes(p_fe, p_bytes);
-    BN_bin2bn(p_bytes, 32, p_bn);
-
-    BIGNUM* bn_val = BN_new();
-    BIGNUM* bn_inv = BN_new();
-
     Fe dx[BATCH_SIZE];
-    Fe dy[BATCH_SIZE];
     Fe cum[BATCH_SIZE + 1];
     Fe inv_dx[BATCH_SIZE];
 
@@ -773,18 +871,10 @@ void scan_worker_montgomery(
             cum[0] = {{1, 0, 0, 0}};
             for (int i = 0; i < current_batch; ++i) {
                 dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
-                dy[i] = fe_sub(G_TABLE[i].y, cur_base.y);
                 cum[i + 1] = fe_mul(cum[i], dx[i]);
             }
 
-            uint8_t cum_bytes[32];
-            fe_to_bytes(cum[current_batch], cum_bytes);
-            BN_bin2bn(cum_bytes, 32, bn_val);
-            BN_mod_inverse(bn_inv, bn_val, p_bn, bn_ctx);
-
-            uint8_t inv_bytes[32] = {0};
-            BN_bn2binpad(bn_inv, inv_bytes, 32);
-            Fe u = fe_from_bytes(inv_bytes);
+            Fe u = fe_inv(cum[current_batch]);
 
             for (int i = current_batch - 1; i >= 0; --i) {
                 inv_dx[i] = fe_mul(u, cum[i]);
@@ -793,15 +883,14 @@ void scan_worker_montgomery(
 
             AffinePoint next_base;
             for (int i = 0; i < current_batch; ++i) {
-                Fe slope = fe_mul(dy[i], inv_dx[i]);
+                Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
+                Fe slope = fe_mul(dy_i, inv_dx[i]);
                 Fe slope_sqr = fe_sqr(slope);
                 Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
                 Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
 
-                if (i == current_batch - 1) {
-                    next_base.x = xi;
-                    next_base.y = yi;
-                }
+                next_base.x = xi;
+                next_base.y = yi;
 
                 uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t sha_w[8];
@@ -831,7 +920,6 @@ void scan_worker_montgomery(
 
     checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
 
-    BN_free(p_bn); BN_free(bn_val); BN_free(bn_inv); BN_CTX_free(bn_ctx);
     secp256k1_context_destroy(ctx);
 }
 
@@ -840,26 +928,41 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, sigint_handler);
     curl_global_init(CURL_GLOBAL_ALL);
 
-    int threads = 1;
+    unsigned int hw = std::thread::hardware_concurrency();
+    int threads = (hw > 0) ? (int)hw : 2;
     bool no_limit = false;
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
+    std::string custom_user = "";
+    int req_puzzle = 71;
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--fast") {
-            unsigned int hw = std::thread::hardware_concurrency();
+        if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
+            threads = std::max(1, std::atoi(argv[++i]));
+        } else if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
+            api_base = argv[++i];
+        } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
+            custom_user = argv[++i];
+        } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
+            req_puzzle = std::atoi(argv[++i]);
+        } else if (arg == "--fast") {
             threads = (hw > 0) ? (int)hw : 4;
         } else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") {
             no_limit = true;
         }
     }
 
-    const std::string api_base = "http://65.20.91.208/puzzle_server.php";
     const int MAX_RANGES = 5;
     int completed_ranges = 0;
 
     init_generator_table();
 
     while (g_running.load() && (no_limit || completed_ranges < MAX_RANGES)) {
-        std::string url = api_base + "?action=range";
+        std::string url = api_base + "?action=range&puzzle=" + std::to_string(req_puzzle);
+        if (!custom_user.empty()) {
+            url += "&user=" + custom_user;
+        }
+
         std::string resp = http_get(url);
 
         RangeInfo rng;
@@ -868,8 +971,10 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        int current_puzzle = (rng.puzzle > 0) ? rng.puzzle : 71;
-        std::string current_user = rng.user.empty() ? ("user-" + std::to_string(rng.block) + "-" + std::to_string(rng.range_idx)) : rng.user;
+        int current_puzzle = (rng.puzzle > 0) ? rng.puzzle : req_puzzle;
+        std::string current_user = !custom_user.empty() 
+            ? custom_user 
+            : (rng.user.empty() ? ("user-" + std::to_string(rng.block) + "-" + std::to_string(rng.range_idx)) : rng.user);
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(rng.target_address, target_h160)) {
