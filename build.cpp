@@ -224,10 +224,6 @@ std::string u256_to_hex64(const u256& v) {
     return std::string(buf);
 }
 
-#if defined(__x86_64__) || defined(_M_X64)
-#include <immintrin.h>
-#endif
-
 struct Fe {
     uint64_t d[4];
 };
@@ -248,29 +244,6 @@ static inline bool fe_eq(const Fe& a, const Fe& b) {
 
 static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
-#if defined(__x86_64__) || defined(_M_X64)
-    unsigned char carry = _addcarry_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
-    carry = _addcarry_u64(carry, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
-    carry = _addcarry_u64(carry, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
-    carry = _addcarry_u64(carry, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (carry) {
-        carry = _addcarry_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        carry = _addcarry_u64(carry, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        carry = _addcarry_u64(carry, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _addcarry_u64(carry, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
-    }
-#else
     u128 c = (u128)a.d[0] + b.d[0];
     r.d[0] = (uint64_t)c; c >>= 64;
     c += (u128)a.d[1] + b.d[1];
@@ -298,25 +271,11 @@ static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b)
             r.d[3] = 0;
         }
     }
-#endif
     return r;
 }
 
 static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
-#if defined(__x86_64__) || defined(_M_X64)
-    unsigned char borrow = _subborrow_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
-    borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
-    borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
-    borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (borrow) {
-        borrow = _subborrow_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    }
-#else
     u128 c = (u128)a.d[0] - b.d[0];
     r.d[0] = (uint64_t)c;
     c = (u128)a.d[1] - b.d[1] - ((c >> 64) & 1);
@@ -335,7 +294,6 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
         r.d[2] = (uint64_t)c;
         r.d[3] -= (uint64_t)((c >> 64) & 1);
     }
-#endif
     return r;
 }
 
@@ -653,80 +611,6 @@ static const uint8_t s_right[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-static inline __attribute__((always_inline)) bool fast_ripemd160_match(const uint32_t sha_be[8], const uint32_t target_w[5]) {
-    uint32_t X[16];
-    for (int i = 0; i < 8; ++i) {
-        X[i] = __builtin_bswap32(sha_be[i]);
-    }
-    X[8] = 0x00000080U;
-    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
-    X[14] = 256;
-    X[15] = 0;
-
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
-
-    for (int j = 0; j < 16; ++j) {
-        uint32_t f = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32(A + f + X[r_left[j]], s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x50A28BE6U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    for (int j = 16; j < 32; ++j) {
-        uint32_t f = D ^ (B & (C ^ D));
-        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x5A827999U, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x5C4DD124U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    for (int j = 32; j < 48; ++j) {
-        uint32_t f = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x6ED9EBA1U, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x6D703EF3U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    for (int j = 48; j < 64; ++j) {
-        uint32_t f = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x8F1BBCDCU, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x7A6D76E9U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    for (int j = 64; j < 80; ++j) {
-        uint32_t f = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0xA953FD4EU, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]], s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    uint32_t h0 = 0xEFCDAB89 + C + Dp;
-    if (h0 != target_w[0]) return false;
-
-    uint32_t h1 = 0x98BADCFE + D + Ep;
-    if (h1 != target_w[1]) return false;
-
-    uint32_t h2 = 0x10325476 + E + Ap;
-    if (h2 != target_w[2]) return false;
-
-    uint32_t h3 = 0xC3D2E1F0 + A + Bp;
-    if (h3 != target_w[3]) return false;
-
-    uint32_t h4 = 0x67452301 + B + Cp;
-    return h4 == target_w[4];
-}
-
 static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]) {
     uint32_t X[16];
     for (int i = 0; i < 8; ++i) {
@@ -938,7 +822,6 @@ void scan_worker_montgomery(
     std::mutex& found_mtx,
     std::atomic<uint64_t>& checked_counter
 ) {
-    (void)target_h64_first;
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) return;
 
@@ -1018,11 +901,17 @@ void scan_worker_montgomery(
                 uint32_t sha_w[8];
                 fast_sha256_fe(prefix, xi, sha_w);
 
-                if (__builtin_expect(fast_ripemd160_match(sha_w, target_w), 0)) {
-                    std::lock_guard<std::mutex> lk(found_mtx);
-                    found_key = cur_k + (uint64_t)(i + 1);
-                    found_flag.store(true, std::memory_order_release);
-                    break;
+                uint32_t h[5];
+                fast_ripemd160_32(sha_w, h);
+
+                uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
+                if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
+                    if (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]) {
+                        std::lock_guard<std::mutex> lk(found_mtx);
+                        found_key = cur_k + (uint64_t)(i + 1);
+                        found_flag.store(true, std::memory_order_release);
+                        break;
+                    }
                 }
             }
 
