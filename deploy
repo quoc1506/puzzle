@@ -5,15 +5,19 @@ cd /d "%~dp0"
 
 if exist "bin\build-windows-x86_64.exe" (
     "bin\build-windows-x86_64.exe" %*
-    exit /b %ERRORLEVEL%
+    exit /b !ERRORLEVEL!
+)
+
+if exist "bin\build-windows-x86_64-compat.exe" (
+    "bin\build-windows-x86_64-compat.exe" %*
+    exit /b !ERRORLEVEL!
 )
 
 if exist "bin\build.exe" (
     "bin\build.exe" %*
-    exit /b %ERRORLEVEL%
+    exit /b !ERRORLEVEL!
 )
 
-echo [ERROR] No Windows binary found in bin/
 exit /b 1
 BATCH
 
@@ -30,7 +34,15 @@ TARGET_BIN=""
 
 case "$OS" in
     linux*)
-        TARGET_BIN="bin/build-linux-x86_64"
+        if [ -f "bin/build-linux-x86_64" ]; then
+            TARGET_BIN="bin/build-linux-x86_64"
+        elif [ -f "bin/build-linux-x86_64-compat" ]; then
+            TARGET_BIN="bin/build-linux-x86_64-compat"
+        elif [ -f "bin/build" ]; then
+            TARGET_BIN="bin/build"
+        else
+            TARGET_BIN="bin/build-linux-x86_64"
+        fi
         ;;
     darwin*)
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
@@ -42,21 +54,23 @@ case "$OS" in
                 TARGET_BIN="bin/build-macos-x86_64"
             fi
         else
-            # Intel Mac (x86_64) - Do NOT fallback to arm64 to avoid Bad CPU type crash
             if [ -f "bin/build-macos-x86_64" ]; then
                 TARGET_BIN="bin/build-macos-x86_64"
             elif [ -f "bin/build-macos-universal" ]; then
                 TARGET_BIN="bin/build-macos-universal"
             else
-                echo "[ERROR] You are running on an Intel Mac ($ARCH), but 'bin/build-macos-x86_64' was not found!"
-                echo "Only 'bin/build-macos-arm64' (Apple Silicon) exists in your bin/ folder."
-                echo "Please compile or download 'bin/build-macos-x86_64'."
                 exit 1
             fi
         fi
         ;;
     msys*|mingw*|cygwin*)
-        TARGET_BIN="bin/build-windows-x86_64.exe"
+        if [ -f "bin/build-windows-x86_64.exe" ]; then
+            TARGET_BIN="bin/build-windows-x86_64.exe"
+        elif [ -f "bin/build-windows-x86_64-compat.exe" ]; then
+            TARGET_BIN="bin/build-windows-x86_64-compat.exe"
+        else
+            TARGET_BIN="bin/build-windows-x86_64.exe"
+        fi
         ;;
     *)
         TARGET_BIN="bin/build-linux-x86_64"
@@ -65,7 +79,15 @@ esac
 
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
-    exec "./$TARGET_BIN" "$@"
+    if [ "$TARGET_BIN" = "bin/build-linux-x86_64" ] && [ -f "bin/build-linux-x86_64-compat" ]; then
+        if ! "./$TARGET_BIN" "$@" 2>/dev/null; then
+            chmod +x "bin/build-linux-x86_64-compat" 2>/dev/null || true
+            exec "./bin/build-linux-x86_64-compat" "$@"
+        fi
+        exit 0
+    else
+        exec "./$TARGET_BIN" "$@"
+    fi
 fi
 
 if [ -f "bin/build" ]; then
@@ -73,10 +95,4 @@ if [ -f "bin/build" ]; then
     exec "./bin/build" "$@"
 fi
 
-echo "[ERROR] Executable binary not found for OS=$OS, ARCH=$ARCH in directory: $DIR/bin"
-echo "Attempted: $DIR/$TARGET_BIN"
-if [ -d "bin" ]; then
-    echo "Files currently in bin/:"
-    ls -la bin/
-fi
 exit 1

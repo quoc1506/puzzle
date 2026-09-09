@@ -228,6 +228,10 @@ struct Fe {
     uint64_t d[4];
 };
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC optimize("O3,unroll-loops,omit-frame-pointer")
+#endif
+
 static const uint64_t SECP_K = 0x1000003D1ULL;
 
 static inline bool fe_is_zero(const Fe& a) {
@@ -238,7 +242,7 @@ static inline bool fe_eq(const Fe& a, const Fe& b) {
     return a.d[0] == b.d[0] && a.d[1] == b.d[1] && a.d[2] == b.d[2] && a.d[3] == b.d[3];
 }
 
-static inline Fe fe_add(const Fe& a, const Fe& b) {
+static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
     r.d[0] = (uint64_t)c; c >>= 64;
@@ -270,7 +274,7 @@ static inline Fe fe_add(const Fe& a, const Fe& b) {
     return r;
 }
 
-static inline Fe fe_sub(const Fe& a, const Fe& b) {
+static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] - b.d[0];
     r.d[0] = (uint64_t)c;
@@ -293,7 +297,7 @@ static inline Fe fe_sub(const Fe& a, const Fe& b) {
     return r;
 }
 
-static inline Fe fe_mul(const Fe& a, const Fe& b) {
+static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -353,8 +357,68 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
     return r;
 }
 
-static inline Fe fe_sqr(const Fe& a) {
-    return fe_mul(a, a);
+static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
+    uint64_t t[8] = {0};
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    u128 c = a0 * a1; t[1] = (uint64_t)c; c >>= 64;
+    c += a0 * a2; t[2] = (uint64_t)c; c >>= 64;
+    c += a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+
+    c = (u128)t[3] + a1 * a2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+
+    c = (u128)t[5] + a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+
+    uint64_t carry = 0;
+    for (int i = 1; i < 7; ++i) {
+        uint64_t v = (t[i] << 1) | carry;
+        carry = t[i] >> 63;
+        t[i] = v;
+    }
+    t[7] = carry;
+
+    c = (u128)t[0] + a0 * a0; t[0] = (uint64_t)c; c >>= 64;
+    c += (u128)t[1]; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3]; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5]; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
+    t[7] += (uint64_t)c;
+
+    u128 red_carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + red_carry;
+        t[i] = (uint64_t)prod;
+        red_carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (u128)red_carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
 }
 
 static inline Fe fe_inv(const Fe& a) {
@@ -407,7 +471,7 @@ struct AffinePoint {
     Fe y;
 };
 
-static const int BATCH_SIZE = 512;
+static const int BATCH_SIZE = 1024;
 
 static AffinePoint G_TABLE[BATCH_SIZE];
 
@@ -452,7 +516,7 @@ static const uint32_t K_SHA256[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-static inline void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]) {
+static inline __attribute__((always_inline)) void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]) {
     uint32_t w[64];
     uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
@@ -547,7 +611,7 @@ static const uint8_t s_right[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-static inline void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]) {
+static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]) {
     uint32_t X[16];
     for (int i = 0; i < 8; ++i) {
         X[i] = __builtin_bswap32(sha_be[i]);
