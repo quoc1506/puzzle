@@ -357,8 +357,6 @@ static inline Fe fe_sqr(const Fe& a) {
     return fe_mul(a, a);
 }
 
-// Modular inversion in secp256k1 field via Fermat's Little Theorem: a^(p - 2) mod p
-// p - 2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
 static inline Fe fe_inv(const Fe& a) {
     const uint64_t exp[4] = {
         0xFFFFFFFEFFFFFC2DULL,
@@ -860,7 +858,7 @@ int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_ALL);
 
     unsigned int hw = std::thread::hardware_concurrency();
-    int threads = (hw > 0) ? (int)hw : 2;
+    int threads = 1;
     bool no_limit = false;
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string custom_user = "";
@@ -876,6 +874,8 @@ int main(int argc, char* argv[]) {
             custom_user = argv[++i];
         } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
             req_puzzle = std::atoi(argv[++i]);
+        } else if (arg == "-d" || arg == "--double") {
+            threads = 2;
         } else if (arg == "--fast") {
             threads = (hw > 0) ? (int)hw : 4;
         } else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") {
