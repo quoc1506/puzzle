@@ -31,21 +31,32 @@ jobs:
           echo "Found static secp256k1: $SECP_A"
 
           if [ -n "$SECP_A" ]; then
-            g++ -std=c++17 -O3 -fomit-frame-pointer -funroll-loops -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
               -static-libgcc -static-libstdc++ \
               -lssl -lcrypto -lcurl -lpthread -ldl \
               -o bin/build-linux-x86_64
+
+            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-x86_64-fast
           else
-            g++ -std=c++17 -O3 -fomit-frame-pointer -funroll-loops -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
               -static-libgcc -static-libstdc++ \
               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
               -lssl -lcrypto -lcurl -lpthread -ldl \
               -o bin/build-linux-x86_64
+
+            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-x86_64-fast
           fi
 
-          strip bin/build-linux-x86_64
-          chmod +x bin/build-linux-x86_64
-          echo "=== Dynamic library dependencies (verify NO libsecp256k1.so) ==="
+          strip bin/build-linux-x86_64*
+          chmod +x bin/build-linux-x86_64*
+          echo "=== Dynamic library dependencies ==="
           ldd bin/build-linux-x86_64 || true
           ls -lh bin/
 
@@ -53,7 +64,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bin-linux-x86_64
-          path: bin/build-linux-x86_64
+          path: bin/build-linux-x86_64*
 
   build-macos:
     name: Build macOS (ARM64 & x86_64 Cross-Compile)
@@ -241,7 +252,7 @@ jobs:
         run: |
           mkdir -p bin
           find bin-download -type f -name "*build*" -exec cp {} bin/ \;
-          chmod +x bin/build-linux-x86_64 2>/dev/null || true
+          chmod +x bin/build-linux-* 2>/dev/null || true
           chmod +x bin/build-macos-* 2>/dev/null || true
           ls -lh bin/
 

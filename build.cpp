@@ -354,7 +354,70 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 static inline Fe fe_sqr(const Fe& a) {
-    return fe_mul(a, a);
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    u128 c01 = a0 * a1;
+    u128 c02 = a0 * a2;
+    u128 c03 = a0 * a3;
+    u128 c12 = a1 * a2;
+    u128 c13 = a1 * a3;
+    u128 c23 = a2 * a3;
+
+    u128 s0 = a0 * a0;
+    u128 s1 = a1 * a1;
+    u128 s2 = a2 * a2;
+    u128 s3 = a3 * a3;
+
+    uint64_t t[8];
+    u128 c;
+
+    t[0] = (uint64_t)s0;
+    c = (s0 >> 64) + (c01 << 1);
+    t[1] = (uint64_t)c;
+    c = (c >> 64) + (c01 >> 63) + s1 + (c02 << 1);
+    t[2] = (uint64_t)c;
+    c = (c >> 64) + (c02 >> 63) + ((c03 + c12) << 1);
+    t[3] = (uint64_t)c;
+    c = (c >> 64) + ((c03 + c12) >> 63) + s2 + (c13 << 1);
+    t[4] = (uint64_t)c;
+    c = (c >> 64) + (c13 >> 63) + (c23 << 1);
+    t[5] = (uint64_t)c;
+    c = (c >> 64) + (c23 >> 63) + s3;
+    t[6] = (uint64_t)c;
+    t[7] = (uint64_t)(c >> 64);
+
+    u128 carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
+        t[i] = (uint64_t)prod;
+        carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (uint64_t)carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
 }
 
 static inline Fe fe_inv(const Fe& a) {
@@ -407,7 +470,7 @@ struct AffinePoint {
     Fe y;
 };
 
-static const int BATCH_SIZE = 1024;
+static const int BATCH_SIZE = 512;
 
 static AffinePoint G_TABLE[BATCH_SIZE];
 
@@ -485,18 +548,19 @@ static inline void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-    for (int i = 0; i < 64; ++i) {
-        uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);
-        uint32_t ch = g ^ (e & (f ^ g));
-        uint32_t temp1 = h + S1 + ch + K_SHA256[i] + w[i];
-        uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);
-        uint32_t maj = (a & b) | (c & (a ^ b));
-        uint32_t temp2 = S0 + maj;
-        h = g; g = f; f = e;
-        e = d + temp1;
-        d = c; c = b; b = a;
-        a = temp1 + temp2;
+#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);     uint32_t ch = g ^ (e & (f ^ g));     uint32_t temp1 = h + S1 + ch + (kw);     uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);     uint32_t maj = (a & b) | (c & (a ^ b));     uint32_t temp2 = S0 + maj;     d += temp1;     h = temp1 + temp2; } while (0)
+
+    for (int i = 0; i < 64; i += 8) {
+        SHA256_STEP(a, b, c, d, e, f, g, h, K_SHA256[i] + w[i]);
+        SHA256_STEP(h, a, b, c, d, e, f, g, K_SHA256[i+1] + w[i+1]);
+        SHA256_STEP(g, h, a, b, c, d, e, f, K_SHA256[i+2] + w[i+2]);
+        SHA256_STEP(f, g, h, a, b, c, d, e, K_SHA256[i+3] + w[i+3]);
+        SHA256_STEP(e, f, g, h, a, b, c, d, K_SHA256[i+4] + w[i+4]);
+        SHA256_STEP(d, e, f, g, h, a, b, c, K_SHA256[i+5] + w[i+5]);
+        SHA256_STEP(c, d, e, f, g, h, a, b, K_SHA256[i+6] + w[i+6]);
+        SHA256_STEP(b, c, d, e, f, g, h, a, K_SHA256[i+7] + w[i+7]);
     }
+#undef SHA256_STEP
 
     out_w[0] = 0x6a09e667 + a;
     out_w[1] = 0xbb67ae85 + b;
@@ -818,8 +882,10 @@ void scan_worker_montgomery(
                 Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
                 Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
 
-                next_base.x = xi;
-                next_base.y = yi;
+                if (i == current_batch - 1) {
+                    next_base.x = xi;
+                    next_base.y = yi;
+                }
 
                 uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t sha_w[8];
@@ -951,17 +1017,17 @@ int main(int argc, char* argv[]) {
         }
 
         std::stringstream json;
-        json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
-             << ",\"block\":" << rng.block
-             << ",\"range_idx\":" << rng.range_idx
-             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
-             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
-             << ",\"user\":\"" << current_user << "\""
-             << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
-             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"count\":" << checked
-             << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
+        json << "{"action":"result","puzzle":" << current_puzzle
+             << ","block":" << rng.block
+             << ","range_idx":" << rng.range_idx
+             << ","status":"" << (hit ? "found" : "done") << """
+             << ","private_key":"" << (hit ? u256_to_hex64(found_key) : "") << """
+             << ","user":"" << current_user << """
+             << ","speed":" << std::fixed << std::setprecision(1) << speed
+             << ","keys":"" << u256_to_dec(total_keys) << """
+             << ","range_size":"" << u256_to_dec(total_keys) << """
+             << ","count":" << checked
+             << ","elapsed":" << std::fixed << std::setprecision(2) << elapsed << "}";
 
         std::string post_url = api_base + "?action=result&user=" + current_user;
         std::string ack;
