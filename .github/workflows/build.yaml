@@ -178,7 +178,7 @@ jobs:
       - name: Organize bin directory
         run: |
           mkdir -p bin
-          find bin-download -type f -name "*build*" -exec cp {} bin/ ;
+          find bin-download -type f -name "*build*" -exec cp {} bin/ ';'
           chmod +x bin/build-linux-* 2>/dev/null || true
           chmod +x bin/build-macos-* 2>/dev/null || true
 
