@@ -138,6 +138,8 @@ function init_schema(PDO $pdo): void {
             current_range INTEGER DEFAULT 0,
             last_seen INTEGER NOT NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_user_stats_last_seen ON user_stats(last_seen);
     ");
 
     try {
@@ -199,10 +201,18 @@ function mark_block_done_interval(PDO $pdo, int $puzzle_id, int $block_id): void
     }
 }
 
+function cleanup_stale_workers(PDO $pdo, int $max_age_seconds = 86400): void {
+    try {
+        $stale_ts = time() - $max_age_seconds;
+        $pdo->prepare("DELETE FROM user_stats WHERE last_seen < ?")->execute([$stale_ts]);
+    } catch (Exception $e) {}
+}
+
 function compact_completed_block(PDO $pdo, int $puzzle_id, int $block_id): void {
     mark_block_done_interval($pdo, $puzzle_id, $block_id);
     $pdo->prepare("DELETE FROM ranges WHERE puzzle_id = ? AND block_id = ?")->execute([$puzzle_id, $block_id]);
     $pdo->prepare("DELETE FROM blocks WHERE puzzle_id = ? AND block_id = ?")->execute([$puzzle_id, $block_id]);
+    cleanup_stale_workers($pdo, 86400);
     $pdo->exec("PRAGMA incremental_vacuum;");
 }
 
@@ -652,6 +662,7 @@ switch ($action) {
             foreach ($full_blocks as $fb) {
                 compact_completed_block($pdo, $puzzle_id, (int)$fb['block_id']);
             }
+            cleanup_stale_workers($pdo, 86400);
         } catch (Exception $e) {}
 
         $now = time();
@@ -769,6 +780,9 @@ switch ($action) {
         }
 
         $pdo = get_puzzle_db($puzzle_id);
+        if (random_int(1, 50) === 1) {
+            cleanup_stale_workers($pdo, 86400);
+        }
         ensure_range_buffer($pdo, $puzzle_id, $config);
 
         $now = time();
