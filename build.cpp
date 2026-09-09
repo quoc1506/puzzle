@@ -325,14 +325,14 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
         t[i] = (uint64_t)prod;
         carry = prod >> 64;
     }
-    u128 c2 = (u128)t[0] + (uint64_t)carry * SECP_K;
+    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
     t[0] = (uint64_t)c2; c2 >>= 64;
     c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
     c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
     c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
     if (extra) {
-        u128 c3 = (u128)t[0] + extra * SECP_K;
+        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
         t[0] = (uint64_t)c3; c3 >>= 64;
         c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
         c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
@@ -392,14 +392,14 @@ static inline Fe fe_sqr(const Fe& a) {
         t[i] = (uint64_t)prod;
         carry = prod >> 64;
     }
-    u128 c2 = (u128)t[0] + (uint64_t)carry * SECP_K;
+    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
     t[0] = (uint64_t)c2; c2 >>= 64;
     c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
     c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
     c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
     if (extra) {
-        u128 c3 = (u128)t[0] + extra * SECP_K;
+        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
         t[0] = (uint64_t)c3; c3 >>= 64;
         c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
         c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
