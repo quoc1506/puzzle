@@ -516,7 +516,7 @@ static const uint32_t K_SHA256[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-static inline __attribute__((always_inline)) void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]) {
+static inline __attribute__((always_inline)) void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
     uint32_t w[64];
     uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
@@ -540,6 +540,7 @@ static inline __attribute__((always_inline)) void fast_sha256_fe(uint8_t prefix,
     w[22] = w[6] + (ror32(w[7], 7) ^ ror32(w[7], 18) ^ (w[7] >> 3)) + 264 + (ror32(w[20], 17) ^ ror32(w[20], 19) ^ (w[20] >> 10));
     w[23] = w[7] + (ror32(w[8], 7) ^ ror32(w[8], 18) ^ (w[8] >> 3)) + w[16] + (ror32(w[21], 17) ^ ror32(w[21], 19) ^ (w[21] >> 10));
 
+    #pragma GCC unroll 40
     for (int i = 24; i < 64; ++i) {
         uint32_t s0 = ror32(w[i-15], 7) ^ ror32(w[i-15], 18) ^ (w[i-15] >> 3);
         uint32_t s1 = ror32(w[i-2], 17) ^ ror32(w[i-2], 19) ^ (w[i-2] >> 10);
@@ -549,17 +550,9 @@ static inline __attribute__((always_inline)) void fast_sha256_fe(uint8_t prefix,
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
-    uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25); \
-    uint32_t ch = g ^ (e & (f ^ g)); \
-    uint32_t temp1 = h + S1 + ch + (kw); \
-    uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22); \
-    uint32_t maj = (a & b) | (c & (a ^ b)); \
-    uint32_t temp2 = S0 + maj; \
-    d += temp1; \
-    h = temp1 + temp2; \
-} while (0)
+#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);     uint32_t ch = g ^ (e & (f ^ g));     uint32_t temp1 = h + S1 + ch + (kw);     uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);     uint32_t maj = (a & b) | (c & (a ^ b));     uint32_t temp2 = S0 + maj;     d += temp1;     h = temp1 + temp2; } while (0)
 
+    #pragma GCC unroll 8
     for (int i = 0; i < 64; i += 8) {
         SHA256_STEP(a, b, c, d, e, f, g, h, K_SHA256[i] + w[i]);
         SHA256_STEP(h, a, b, c, d, e, f, g, K_SHA256[i+1] + w[i+1]);
@@ -572,14 +565,18 @@ static inline __attribute__((always_inline)) void fast_sha256_fe(uint8_t prefix,
     }
 #undef SHA256_STEP
 
-    out_w[0] = 0x6a09e667 + a;
-    out_w[1] = 0xbb67ae85 + b;
-    out_w[2] = 0x3c6ef372 + c;
-    out_w[3] = 0xa54ff53a + d;
-    out_w[4] = 0x510e527f + e;
-    out_w[5] = 0x9b05688c + f;
-    out_w[6] = 0x1f83d9ab + g;
-    out_w[7] = 0x5be0cd19 + h;
+    X[0] = __builtin_bswap32(0x6a09e667 + a);
+    X[1] = __builtin_bswap32(0xbb67ae85 + b);
+    X[2] = __builtin_bswap32(0x3c6ef372 + c);
+    X[3] = __builtin_bswap32(0xa54ff53a + d);
+    X[4] = __builtin_bswap32(0x510e527f + e);
+    X[5] = __builtin_bswap32(0x9b05688c + f);
+    X[6] = __builtin_bswap32(0x1f83d9ab + g);
+    X[7] = __builtin_bswap32(0x5be0cd19 + h);
+    X[8] = 0x00000080U;
+    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
+    X[14] = 256;
+    X[15] = 0;
 }
 
 static const uint8_t r_left[80] = {
@@ -611,19 +608,11 @@ static const uint8_t s_right[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32_t sha_be[8], uint32_t out_h[5]) {
-    uint32_t X[16];
-    for (int i = 0; i < 8; ++i) {
-        X[i] = __builtin_bswap32(sha_be[i]);
-    }
-    X[8] = 0x00000080U;
-    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
-    X[14] = 256;
-    X[15] = 0;
-
+static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
     uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
+    #pragma GCC unroll 16
     for (int j = 0; j < 16; ++j) {
         uint32_t f = B ^ C ^ D;
         uint32_t fp = Bp ^ (Cp | ~Dp);
@@ -633,6 +622,7 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
         Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
+    #pragma GCC unroll 16
     for (int j = 16; j < 32; ++j) {
         uint32_t f = D ^ (B & (C ^ D));
         uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
@@ -642,6 +632,7 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
         Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
+    #pragma GCC unroll 16
     for (int j = 32; j < 48; ++j) {
         uint32_t f = (B | ~C) ^ D;
         uint32_t fp = (Bp | ~Cp) ^ Dp;
@@ -651,6 +642,7 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
         Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
+    #pragma GCC unroll 16
     for (int j = 48; j < 64; ++j) {
         uint32_t f = C ^ (D & (B ^ C));
         uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
@@ -660,6 +652,7 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
         Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
+    #pragma GCC unroll 16
     for (int j = 64; j < 80; ++j) {
         uint32_t f = B ^ (C | ~D);
         uint32_t fp = Bp ^ Cp ^ Dp;
@@ -898,11 +891,11 @@ void scan_worker_montgomery(
                 }
 
                 uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t sha_w[8];
-                fast_sha256_fe(prefix, xi, sha_w);
+                uint32_t X[16];
+                fast_sha256_into_ripemd_X(prefix, xi, X);
 
                 uint32_t h[5];
-                fast_ripemd160_32(sha_w, h);
+                fast_ripemd160_32(X, h);
 
                 uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
                 if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
