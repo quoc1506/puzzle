@@ -34,10 +34,19 @@ TARGET_BIN=""
 
 case "$OS" in
     linux*)
-        if [ -f "bin/build-linux-x86_64" ]; then
+        HAS_AVX2=0
+        if [ -f /proc/cpuinfo ]; then
+            if grep -q -m1 'avx2' /proc/cpuinfo 2>/dev/null && grep -q -m1 'bmi2' /proc/cpuinfo 2>/dev/null; then
+                HAS_AVX2=1
+            fi
+        fi
+
+        if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
             TARGET_BIN="bin/build-linux-x86_64"
         elif [ -f "bin/build-linux-x86_64-compat" ]; then
             TARGET_BIN="bin/build-linux-x86_64-compat"
+        elif [ -f "bin/build-linux-x86_64" ]; then
+            TARGET_BIN="bin/build-linux-x86_64"
         elif [ -f "bin/build" ]; then
             TARGET_BIN="bin/build"
         else
@@ -79,15 +88,7 @@ esac
 
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
-    if [ "$TARGET_BIN" = "bin/build-linux-x86_64" ] && [ -f "bin/build-linux-x86_64-compat" ]; then
-        if ! "./$TARGET_BIN" "$@" 2>/dev/null; then
-            chmod +x "bin/build-linux-x86_64-compat" 2>/dev/null || true
-            exec "./bin/build-linux-x86_64-compat" "$@"
-        fi
-        exit 0
-    else
-        exec "./$TARGET_BIN" "$@"
-    fi
+    exec "./$TARGET_BIN" "$@"
 fi
 
 if [ -f "bin/build" ]; then
