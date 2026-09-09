@@ -31,27 +31,13 @@ jobs:
           echo "Found static secp256k1: $SECP_A"
 
           if [ -n "$SECP_A" ]; then
-            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
-              -static-libgcc -static-libstdc++ \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
-              -o bin/build-linux-x86_64
+            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A"               -static-libgcc -static-libstdc++               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64
 
-            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
-              -static-libgcc -static-libstdc++ \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
-              -o bin/build-linux-x86_64-fast
+            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A"               -static-libgcc -static-libstdc++               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64-fast
           else
-            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
-              -static-libgcc -static-libstdc++ \
-              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
-              -o bin/build-linux-x86_64
+            g++ -std=c++17 -O3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp               -static-libgcc -static-libstdc++               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64
 
-            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
-              -static-libgcc -static-libstdc++ \
-              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
-              -o bin/build-linux-x86_64-fast
+            g++ -std=c++17 -O3 -march=x86-64-v3 -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp               -static-libgcc -static-libstdc++               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64-fast
           fi
 
           strip bin/build-linux-x86_64*
@@ -84,15 +70,7 @@ jobs:
           CURL_PREFIX=$(brew --prefix curl)
           SECP_PREFIX=$(brew --prefix secp256k1)
 
-          clang++ -std=c++17 -O3 -pipe -flto build.cpp \
-            -I${SECP_PREFIX}/include \
-            -I${OPENSSL_PREFIX}/include \
-            -I${CURL_PREFIX}/include \
-            -L${SECP_PREFIX}/lib \
-            -L${OPENSSL_PREFIX}/lib \
-            -L${CURL_PREFIX}/lib \
-            -lsecp256k1 -lssl -lcrypto -lcurl \
-            -o bin/build-macos-arm64
+          clang++ -std=c++17 -O3 -pipe -flto build.cpp             -I${SECP_PREFIX}/include             -I${OPENSSL_PREFIX}/include             -I${CURL_PREFIX}/include             -L${SECP_PREFIX}/lib             -L${OPENSSL_PREFIX}/lib             -L${CURL_PREFIX}/lib             -lsecp256k1 -lssl -lcrypto -lcurl             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
 
       - name: Build Intel (x86_64) static libraries & compile
@@ -111,16 +89,7 @@ jobs:
           # 2. Download & build static libsecp256k1 for x86_64
           git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
           cd secp256k1
-          cmake -B build -G "Unix Makefiles" \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
-            -DSECP256K1_BUILD_TESTS=OFF \
-            -DSECP256K1_BUILD_BENCHMARK=OFF
+          cmake -B build -G "Unix Makefiles"             -DCMAKE_SYSTEM_NAME=Darwin             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=$(pwd)/dist             -DBUILD_SHARED_LIBS=OFF             -DSECP256K1_ENABLE_MODULE_RECOVERY=ON             -DSECP256K1_BUILD_TESTS=OFF             -DSECP256K1_BUILD_BENCHMARK=OFF
           cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
           cmake --install build >/dev/null 2>&1
           SECP_X86=$(pwd)/dist
@@ -129,12 +98,7 @@ jobs:
           # 3. Download & build static libcurl for x86_64
           curl -sSL https://curl.se/download/curl-8.9.1.tar.gz | tar -xz
           cd curl-8.9.1
-          ./configure --host=x86_64-apple-darwin \
-            --prefix=$(pwd)/dist \
-            --disable-shared --enable-static \
-            --with-openssl=${OPENSSL_X86} \
-            --disable-ldap --disable-ldaps \
-            CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
+          ./configure --host=x86_64-apple-darwin             --prefix=$(pwd)/dist             --disable-shared --enable-static             --with-openssl=${OPENSSL_X86}             --disable-ldap --disable-ldaps             CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
           make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
           make install >/dev/null 2>&1
           CURL_X86=$(pwd)/dist
