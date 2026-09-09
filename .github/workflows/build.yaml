@@ -24,14 +24,29 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
 
-      - name: Compile portable binary
+      - name: Compile portable binary (statically link libsecp256k1)
         run: |
           mkdir -p bin
-          g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp \
-            -static-libgcc -static-libstdc++ \
-            -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl \
-            -o bin/build-linux-x86_64
+          SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+          echo "Found static secp256k1: $SECP_A"
+
+          if [ -n "$SECP_A" ]; then
+            g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-x86_64
+          else
+            g++ -std=c++17 -O3 -pipe -flto -pthread build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-x86_64
+          fi
+
+          strip bin/build-linux-x86_64
           chmod +x bin/build-linux-x86_64
+          echo "=== Dynamic library dependencies (verify NO libsecp256k1.so) ==="
+          ldd bin/build-linux-x86_64 || true
           ls -lh bin/
 
       - name: Upload Linux artifact
