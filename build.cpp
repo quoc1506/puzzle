@@ -357,6 +357,31 @@ static inline Fe fe_sqr(const Fe& a) {
     return fe_mul(a, a);
 }
 
+// Modular inversion in secp256k1 field via Fermat's Little Theorem: a^(p - 2) mod p
+// p - 2 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D
+static inline Fe fe_inv(const Fe& a) {
+    const uint64_t exp[4] = {
+        0xFFFFFFFEFFFFFC2DULL,
+        0xFFFFFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFFFULL,
+        0xFFFFFFFFFFFFFFFFULL
+    };
+    Fe res = {{1, 0, 0, 0}};
+    Fe base = a;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t w = exp[i];
+        for (int b = 0; b < 64; ++b) {
+            if (i == 3 && w == 0) break;
+            if (w & 1) {
+                res = fe_mul(res, base);
+            }
+            base = fe_mul(base, base);
+            w >>= 1;
+        }
+    }
+    return res;
+}
+
 static inline Fe fe_from_bytes(const uint8_t b[32]) {
     Fe r;
     for (int i = 0; i < 4; ++i) {
@@ -384,7 +409,7 @@ struct AffinePoint {
     Fe y;
 };
 
-static const int BATCH_SIZE = 512;
+static const int BATCH_SIZE = 1024;
 
 static AffinePoint G_TABLE[BATCH_SIZE];
 
@@ -728,16 +753,6 @@ void scan_worker_montgomery(
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) return;
 
-    BN_CTX* bn_ctx = BN_CTX_new();
-    BIGNUM* p_bn = BN_new();
-    uint8_t p_bytes[32];
-    Fe p_fe = {{0xFFFFFFFEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL}};
-    fe_to_bytes(p_fe, p_bytes);
-    BN_bin2bn(p_bytes, 32, p_bn);
-
-    BIGNUM* bn_val = BN_new();
-    BIGNUM* bn_inv = BN_new();
-
     Fe dx[BATCH_SIZE];
     Fe cum[BATCH_SIZE + 1];
     Fe inv_dx[BATCH_SIZE];
@@ -790,14 +805,7 @@ void scan_worker_montgomery(
                 cum[i + 1] = fe_mul(cum[i], dx[i]);
             }
 
-            uint8_t cum_bytes[32];
-            fe_to_bytes(cum[current_batch], cum_bytes);
-            BN_bin2bn(cum_bytes, 32, bn_val);
-            BN_mod_inverse(bn_inv, bn_val, p_bn, bn_ctx);
-
-            uint8_t inv_bytes[32] = {0};
-            BN_bn2binpad(bn_inv, inv_bytes, 32);
-            Fe u = fe_from_bytes(inv_bytes);
+            Fe u = fe_inv(cum[current_batch]);
 
             for (int i = current_batch - 1; i >= 0; --i) {
                 inv_dx[i] = fe_mul(u, cum[i]);
@@ -843,7 +851,6 @@ void scan_worker_montgomery(
 
     checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
 
-    BN_free(p_bn); BN_free(bn_val); BN_free(bn_inv); BN_CTX_free(bn_ctx);
     secp256k1_context_destroy(ctx);
 }
 
