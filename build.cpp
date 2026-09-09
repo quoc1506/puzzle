@@ -354,70 +354,7 @@ static inline Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 static inline Fe fe_sqr(const Fe& a) {
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-
-    u128 c01 = a0 * a1;
-    u128 c02 = a0 * a2;
-    u128 c03 = a0 * a3;
-    u128 c12 = a1 * a2;
-    u128 c13 = a1 * a3;
-    u128 c23 = a2 * a3;
-
-    u128 s0 = a0 * a0;
-    u128 s1 = a1 * a1;
-    u128 s2 = a2 * a2;
-    u128 s3 = a3 * a3;
-
-    uint64_t t[8];
-    u128 c;
-
-    t[0] = (uint64_t)s0;
-    c = (s0 >> 64) + (c01 << 1);
-    t[1] = (uint64_t)c;
-    c = (c >> 64) + (c01 >> 63) + s1 + (c02 << 1);
-    t[2] = (uint64_t)c;
-    c = (c >> 64) + (c02 >> 63) + ((c03 + c12) << 1);
-    t[3] = (uint64_t)c;
-    c = (c >> 64) + ((c03 + c12) >> 63) + s2 + (c13 << 1);
-    t[4] = (uint64_t)c;
-    c = (c >> 64) + (c13 >> 63) + (c23 << 1);
-    t[5] = (uint64_t)c;
-    c = (c >> 64) + (c23 >> 63) + s3;
-    t[6] = (uint64_t)c;
-    t[7] = (uint64_t)(c >> 64);
-
-    u128 carry = 0;
-    for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
-        t[i] = (uint64_t)prod;
-        carry = prod >> 64;
-    }
-    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
-    if (extra) {
-        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
-    }
-
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
-    }
-    Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
-    return r;
+    return fe_mul(a, a);
 }
 
 static inline Fe fe_inv(const Fe& a) {
@@ -548,7 +485,16 @@ static inline void fast_sha256_fe(uint8_t prefix, const Fe& x, uint32_t out_w[8]
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);     uint32_t ch = g ^ (e & (f ^ g));     uint32_t temp1 = h + S1 + ch + (kw);     uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);     uint32_t maj = (a & b) | (c & (a ^ b));     uint32_t temp2 = S0 + maj;     d += temp1;     h = temp1 + temp2; } while (0)
+#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
+    uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25); \
+    uint32_t ch = g ^ (e & (f ^ g)); \
+    uint32_t temp1 = h + S1 + ch + (kw); \
+    uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22); \
+    uint32_t maj = (a & b) | (c & (a ^ b)); \
+    uint32_t temp2 = S0 + maj; \
+    d += temp1; \
+    h = temp1 + temp2; \
+} while (0)
 
     for (int i = 0; i < 64; i += 8) {
         SHA256_STEP(a, b, c, d, e, f, g, h, K_SHA256[i] + w[i]);
