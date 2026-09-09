@@ -26,6 +26,9 @@
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
 #include <openssl/bn.h>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -669,6 +672,140 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
     out_h[4] = 0x67452301 + B + Cp;
 }
 
+#if defined(__AVX2__)
+#define AVX2_ROR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
+#define AVX2_ROL(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
+
+static inline __attribute__((always_inline)) void avx2_sha256_8way(
+    const __m256i W_in[16],
+    __m256i X_out[16]
+) {
+    __m256i W[64];
+    for (int i = 0; i < 16; ++i) W[i] = W_in[i];
+
+    #pragma GCC unroll 48
+    for (int i = 16; i < 64; ++i) {
+        __m256i s0 = _mm256_xor_si256(AVX2_ROR(W[i-15], 7), _mm256_xor_si256(AVX2_ROR(W[i-15], 18), _mm256_srli_epi32(W[i-15], 3)));
+        __m256i s1 = _mm256_xor_si256(AVX2_ROR(W[i-2], 17), _mm256_xor_si256(AVX2_ROR(W[i-2], 19), _mm256_srli_epi32(W[i-2], 10)));
+        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i-16], s0), _mm256_add_epi32(W[i-7], s1));
+    }
+
+    __m256i a = _mm256_set1_epi32(0x6a09e667);
+    __m256i b = _mm256_set1_epi32(0xbb67ae85);
+    __m256i c = _mm256_set1_epi32(0x3c6ef372);
+    __m256i d = _mm256_set1_epi32(0xa54ff53a);
+    __m256i e = _mm256_set1_epi32(0x510e527f);
+    __m256i f = _mm256_set1_epi32(0x9b05688c);
+    __m256i g = _mm256_set1_epi32(0x1f83d9ab);
+    __m256i h = _mm256_set1_epi32(0x5be0cd19);
+
+#define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     __m256i S1 = _mm256_xor_si256(AVX2_ROR(e, 6), _mm256_xor_si256(AVX2_ROR(e, 11), AVX2_ROR(e, 25)));     __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g)));     __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));     __m256i S0 = _mm256_xor_si256(AVX2_ROR(a, 2), _mm256_xor_si256(AVX2_ROR(a, 13), AVX2_ROR(a, 22)));     __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b)));     __m256i temp2 = _mm256_add_epi32(S0, maj);     d = _mm256_add_epi32(d, temp1);     h = _mm256_add_epi32(temp1, temp2); } while (0)
+
+    #pragma GCC unroll 8
+    for (int i = 0; i < 64; i += 8) {
+        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i]), W[i]));
+        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+1]), W[i+1]));
+        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+2]), W[i+2]));
+        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+3]), W[i+3]));
+        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+4]), W[i+4]));
+        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+5]), W[i+5]));
+        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+6]), W[i+6]));
+        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+7]), W[i+7]));
+    }
+#undef AVX2_SHA256_STEP
+
+    const __m256i bswap_mask = _mm256_set_epi8(
+        12, 13, 14, 15,  8,  9, 10, 11,  4,  5,  6,  7,  0,  1,  2,  3,
+        12, 13, 14, 15,  8,  9, 10, 11,  4,  5,  6,  7,  0,  1,  2,  3
+    );
+
+    X_out[0] = _mm256_shuffle_epi8(_mm256_add_epi32(a, _mm256_set1_epi32(0x6a09e667)), bswap_mask);
+    X_out[1] = _mm256_shuffle_epi8(_mm256_add_epi32(b, _mm256_set1_epi32(0xbb67ae85)), bswap_mask);
+    X_out[2] = _mm256_shuffle_epi8(_mm256_add_epi32(c, _mm256_set1_epi32(0x3c6ef372)), bswap_mask);
+    X_out[3] = _mm256_shuffle_epi8(_mm256_add_epi32(d, _mm256_set1_epi32(0xa54ff53a)), bswap_mask);
+    X_out[4] = _mm256_shuffle_epi8(_mm256_add_epi32(e, _mm256_set1_epi32(0x510e527f)), bswap_mask);
+    X_out[5] = _mm256_shuffle_epi8(_mm256_add_epi32(f, _mm256_set1_epi32(0x9b05688c)), bswap_mask);
+    X_out[6] = _mm256_shuffle_epi8(_mm256_add_epi32(g, _mm256_set1_epi32(0x1f83d9ab)), bswap_mask);
+    X_out[7] = _mm256_shuffle_epi8(_mm256_add_epi32(h, _mm256_set1_epi32(0x5be0cd19)), bswap_mask);
+    X_out[8] = _mm256_set1_epi32(0x00000080U);
+    X_out[9] = _mm256_setzero_si256();
+    X_out[10] = _mm256_setzero_si256();
+    X_out[11] = _mm256_setzero_si256();
+    X_out[12] = _mm256_setzero_si256();
+    X_out[13] = _mm256_setzero_si256();
+    X_out[14] = _mm256_set1_epi32(256);
+    X_out[15] = _mm256_setzero_si256();
+}
+
+static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
+    const __m256i X[16],
+    __m256i out_h[5]
+) {
+    __m256i A = _mm256_set1_epi32(0x67452301);
+    __m256i B = _mm256_set1_epi32(0xEFCDAB89);
+    __m256i C = _mm256_set1_epi32(0x98BADCFE);
+    __m256i D = _mm256_set1_epi32(0x10325476);
+    __m256i E = _mm256_set1_epi32(0xC3D2E1F0);
+    __m256i Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
+
+    #pragma GCC unroll 16
+    for (int j = 0; j < 16; ++j) {
+        __m256i f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
+        __m256i fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, _mm256_xor_si256(Dp, _mm256_set1_epi32(-1))));
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), X[r_left[j]]), s_left[j]), E);
+        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x50A28BE6U))), s_right[j]), Ep);
+        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma GCC unroll 16
+    for (int j = 16; j < 32; ++j) {
+        __m256i f = _mm256_xor_si256(D, _mm256_and_si256(B, _mm256_xor_si256(C, D)));
+        __m256i fp = _mm256_xor_si256(Cp, _mm256_and_si256(Dp, _mm256_xor_si256(Bp, Cp)));
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x5A827999U))), s_left[j]), E);
+        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x5C4DD124U))), s_right[j]), Ep);
+        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma GCC unroll 16
+    for (int j = 32; j < 48; ++j) {
+        __m256i f = _mm256_xor_si256(_mm256_or_si256(B, _mm256_xor_si256(C, _mm256_set1_epi32(-1))), D);
+        __m256i fp = _mm256_xor_si256(_mm256_or_si256(Bp, _mm256_xor_si256(Cp, _mm256_set1_epi32(-1))), Dp);
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x6ED9EBA1U))), s_left[j]), E);
+        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x6D703EF3U))), s_right[j]), Ep);
+        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma GCC unroll 16
+    for (int j = 48; j < 64; ++j) {
+        __m256i f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
+        __m256i fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x8F1BBCDCU))), s_left[j]), E);
+        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x7A6D76E9U))), s_right[j]), Ep);
+        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma GCC unroll 16
+    for (int j = 64; j < 80; ++j) {
+        __m256i f = _mm256_xor_si256(B, _mm256_or_si256(C, _mm256_xor_si256(D, _mm256_set1_epi32(-1))));
+        __m256i fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0xA953FD4EU))), s_left[j]), E);
+        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), X[r_right[j]]), s_right[j]), Ep);
+        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    out_h[0] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0xEFCDAB89), C), Dp);
+    out_h[1] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x98BADCFE), D), Ep);
+    out_h[2] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x10325476), E), Ap);
+    out_h[3] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0xC3D2E1F0), A), Bp);
+    out_h[4] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x67452301), B), Cp);
+}
+#endif
+
 static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
@@ -878,6 +1015,103 @@ void scan_worker_montgomery(
             }
 
             AffinePoint next_base;
+#if defined(__AVX2__)
+            int i = 0;
+            for (; i + 8 <= current_batch; i += 8) {
+                Fe xi[8], yi[8];
+                for (int k = 0; k < 8; ++k) {
+                    Fe dy_k = fe_sub(G_TABLE[i + k].y, cur_base.y);
+                    Fe slope = fe_mul(dy_k, inv_dx[i + k]);
+                    Fe slope_sqr = fe_sqr(slope);
+                    xi[k] = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i + k].x);
+                    yi[k] = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi[k])), cur_base.y);
+                }
+
+                if (i + 8 == current_batch) {
+                    next_base.x = xi[7];
+                    next_base.y = yi[7];
+                }
+
+                alignas(32) uint32_t w_lanes[16][8];
+                for (int k = 0; k < 8; ++k) {
+                    uint8_t prefix = (yi[k].d[0] & 1) ? 0x03 : 0x02;
+                    uint64_t d3 = xi[k].d[3], d2 = xi[k].d[2], d1 = xi[k].d[1], d0 = xi[k].d[0];
+                    w_lanes[0][k] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
+                    w_lanes[1][k] = (uint32_t)(d3 >> 8);
+                    w_lanes[2][k] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
+                    w_lanes[3][k] = (uint32_t)(d2 >> 8);
+                    w_lanes[4][k] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
+                    w_lanes[5][k] = (uint32_t)(d1 >> 8);
+                    w_lanes[6][k] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
+                    w_lanes[7][k] = (uint32_t)(d0 >> 8);
+                    w_lanes[8][k] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
+                    w_lanes[9][k] = 0; w_lanes[10][k] = 0; w_lanes[11][k] = 0;
+                    w_lanes[12][k] = 0; w_lanes[13][k] = 0; w_lanes[14][k] = 0;
+                    w_lanes[15][k] = 264;
+                }
+
+                __m256i W[16];
+                for (int m = 0; m < 16; ++m) {
+                    W[m] = _mm256_load_si256((const __m256i*)w_lanes[m]);
+                }
+
+                __m256i X[16];
+                avx2_sha256_8way(W, X);
+
+                __m256i H[5];
+                avx2_ripemd160_8way(X, H);
+
+                __m256i match0 = _mm256_cmpeq_epi32(H[0], _mm256_set1_epi32(target_w[0]));
+                __m256i match1 = _mm256_cmpeq_epi32(H[1], _mm256_set1_epi32(target_w[1]));
+                int mask = _mm256_movemask_epi8(_mm256_and_si256(match0, match1));
+                if (__builtin_expect(mask != 0, 0)) {
+                    alignas(32) uint32_t h_lanes[5][8];
+                    for (int m = 0; m < 5; ++m) {
+                        _mm256_store_si256((__m256i*)h_lanes[m], H[m]);
+                    }
+                    for (int k = 0; k < 8; ++k) {
+                        if (h_lanes[0][k] == target_w[0] && h_lanes[1][k] == target_w[1] &&
+                            h_lanes[2][k] == target_w[2] && h_lanes[3][k] == target_w[3] &&
+                            h_lanes[4][k] == target_w[4]) {
+                            std::lock_guard<std::mutex> lk(found_mtx);
+                            found_key = cur_k + (uint64_t)(i + k + 1);
+                            found_flag.store(true, std::memory_order_release);
+                            break;
+                        }
+                    }
+                    if (found_flag.load(std::memory_order_relaxed)) break;
+                }
+            }
+            for (; i < current_batch; ++i) {
+                Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
+                Fe slope = fe_mul(dy_i, inv_dx[i]);
+                Fe slope_sqr = fe_sqr(slope);
+                Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
+                Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
+
+                if (i == current_batch - 1) {
+                    next_base.x = xi;
+                    next_base.y = yi;
+                }
+
+                uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
+                uint32_t X[16];
+                fast_sha256_into_ripemd_X(prefix, xi, X);
+
+                uint32_t h[5];
+                fast_ripemd160_32(X, h);
+
+                uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
+                if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
+                    if (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]) {
+                        std::lock_guard<std::mutex> lk(found_mtx);
+                        found_key = cur_k + (uint64_t)(i + 1);
+                        found_flag.store(true, std::memory_order_release);
+                        break;
+                    }
+                }
+            }
+#else
             for (int i = 0; i < current_batch; ++i) {
                 Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
                 Fe slope = fe_mul(dy_i, inv_dx[i]);
@@ -907,6 +1141,7 @@ void scan_worker_montgomery(
                     }
                 }
             }
+#endif
 
             if (found_flag.load(std::memory_order_relaxed)) break;
 

@@ -5,8 +5,9 @@ on:
     branches: [ "main", "master" ]
     paths:
       - 'build.cpp'
-      - '.github/workflows/build.yaml'
+      - '.github/workflows/**'
       - 'build.yaml'
+      - 'build.yml'
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -153,11 +154,13 @@ jobs:
           CURL_STATIC_LIBS=$(pkg-config --static --libs libcurl)
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64.exe
 
+          g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64-compat.exe
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: bin-windows-x86_64
-          path: bin/build-windows-x86_64.exe
+          path: bin/build-windows-x86_64*.exe
 
   publish-bin-folder:
     name: Consolidate Binaries into bin/
