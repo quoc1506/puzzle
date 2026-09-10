@@ -14,7 +14,7 @@ on:
 
 jobs:
   build-linux:
-    name: Build Linux (x86_64 Static)
+    name: Build Linux (Ubuntu 24.04 x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -48,6 +48,56 @@ jobs:
         with:
           name: bin-linux-x86_64
           path: bin/build-linux-x86_64*
+
+  build-linux-u22:
+    name: Build Linux (Ubuntu 22.04 x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+
+      - name: Compile portable binary (statically link libsecp256k1)
+        run: |
+          mkdir -p bin
+          SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+
+          if [ -n "$SECP_A" ]; then
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-u22-x86_64
+
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-u22-x86_64-compat
+          else
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-u22-x86_64
+
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              -lssl -lcrypto -lcurl -lpthread -ldl \
+              -o bin/build-linux-u22-x86_64-compat
+          fi
+
+          strip bin/build-linux-u22-x86_64*
+          chmod +x bin/build-linux-u22-x86_64*
+
+      - name: Upload Linux Ubuntu 22.04 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-u22-x86_64
+          path: bin/build-linux-u22-x86_64*
 
   build-macos:
     name: Build macOS (ARM64 & x86_64 Cross-Compile)
@@ -164,7 +214,7 @@ jobs:
 
   publish-bin-folder:
     name: Consolidate Binaries into bin/
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-linux-u22, build-macos, build-windows]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:

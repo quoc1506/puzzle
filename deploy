@@ -41,16 +41,53 @@ case "$OS" in
             fi
         fi
 
-        if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
-            TARGET_BIN="bin/build-linux-x86_64"
-        elif [ -f "bin/build-linux-x86_64-compat" ]; then
-            TARGET_BIN="bin/build-linux-x86_64-compat"
-        elif [ -f "bin/build-linux-x86_64" ]; then
-            TARGET_BIN="bin/build-linux-x86_64"
-        elif [ -f "bin/build" ]; then
-            TARGET_BIN="bin/build"
+        IS_U22=0
+        if [ -f /etc/os-release ]; then
+            if grep -q -E 'ID=(ubuntu|debian|linuxmint|pop)' /etc/os-release 2>/dev/null; then
+                if grep -q -E 'VERSION_ID="(20\.|22\.|11|12)' /etc/os-release 2>/dev/null; then
+                    IS_U22=1
+                fi
+            fi
+        fi
+        if command -v getconf >/dev/null 2>&1; then
+            GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+            if [ -n "$GLIBC_VER" ]; then
+                MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
+                MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
+                if [ "$MAJOR" -lt 2 ] 2>/dev/null || ( [ "$MAJOR" -eq 2 ] && [ "$MINOR" -lt 38 ] ) 2>/dev/null; then
+                    IS_U22=1
+                fi
+            fi
+        fi
+
+        if [ "$IS_U22" = "1" ]; then
+            if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
+                TARGET_BIN="bin/build-linux-u22-x86_64"
+            elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
+                TARGET_BIN="bin/build-linux-u22-x86_64-compat"
+            elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
+                TARGET_BIN="bin/build-linux-x86_64"
+            elif [ -f "bin/build-linux-x86_64-compat" ]; then
+                TARGET_BIN="bin/build-linux-x86_64-compat"
+            elif [ -f "bin/build" ]; then
+                TARGET_BIN="bin/build"
+            else
+                TARGET_BIN="bin/build-linux-u22-x86_64"
+            fi
         else
-            TARGET_BIN="bin/build-linux-x86_64"
+            if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
+                TARGET_BIN="bin/build-linux-x86_64"
+            elif [ -f "bin/build-linux-x86_64-compat" ]; then
+                TARGET_BIN="bin/build-linux-x86_64-compat"
+            elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
+                TARGET_BIN="bin/build-linux-u22-x86_64"
+            elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
+                TARGET_BIN="bin/build-linux-u22-x86_64-compat"
+            elif [ -f "bin/build" ]; then
+                TARGET_BIN="bin/build"
+            else
+                TARGET_BIN="bin/build-linux-x86_64"
+            fi
         fi
         ;;
     darwin*)
