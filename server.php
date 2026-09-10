@@ -434,7 +434,7 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
             $w_range = isset($w['current_range']) && $w['current_range'] >= 0 ? '#' . number_format((int)$w['current_range']) : '-';
             $w_done = number_format((int)($w['ranges_done'] ?? 0));
             $w_seen = time_ago((int)($w['last_seen'] ?? 0));
-            $is_online = (time() - (int)($w['last_seen'] ?? 0)) <= 300;
+            $is_online = (time() - (int)($w['last_seen'] ?? 0)) <= 180;
             $badge = $is_online 
                 ? '<span class="badge-online">● Online</span>' 
                 : '<span class="badge-idle">○ Idle</span>';
@@ -532,7 +532,7 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '<div class="stat-card">'
         . '<div class="stat-title">🖥️ Active Workers</div>'
         . '<div class="stat-value" id="val-workers" style="color: #fbbf24;">' . $active_workers_count . ' Node(s)</div>'
-        . '<div class="stat-sub">Reported in last 5m</div>'
+        .                 '<div class="stat-sub">Reported in last 3m</div>'
         . '</div>'
         . '<div class="stat-card">'
         . '<div class="stat-title">📦 Total & Blocks Done</div>'
@@ -611,7 +611,7 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '        var now = Math.floor(Date.now() / 1000);'
         . '        for (var i = 0; i < data.workers.length; i++) {'
         . '          var w = data.workers[i];'
-        . '          var isOnline = (now - w.last_seen) <= 300;'
+        . '          var isOnline = (now - w.last_seen) <= 180;'
         . '          var badge = isOnline ? "<span class=\"badge-online\">● Online</span>" : "<span class=\"badge-idle\">○ Idle</span>";'
         . '          var bText = (w.current_block !== undefined && w.current_block !== null && w.current_block > 0) ? "#" + Number(w.current_block).toLocaleString() : "-";'
         . '          var rText = (w.current_range !== undefined && w.current_range !== null && w.current_range >= 0) ? "#" + Number(w.current_range).toLocaleString() : "-";'
@@ -676,7 +676,7 @@ switch ($action) {
         $st->execute([$now - LEASE_TIMEOUT_SECS, $puzzle_id]);
         $stat = $st->fetch() ?: ['todo_count' => 0, 'active_count' => 0, 'done_count' => 0];
 
-        $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 300) ORDER BY speed DESC LIMIT 50")->fetchAll();
+        $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 180) ORDER BY speed DESC LIMIT 50")->fetchAll();
 
         $st_int = $pdo->prepare("SELECT SUM(end_block - start_block + 1) as blocks_done FROM done_intervals WHERE puzzle_id = ?");
         $st_int->execute([$puzzle_id]);
