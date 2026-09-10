@@ -676,7 +676,7 @@ switch ($action) {
         $st->execute([$now - LEASE_TIMEOUT_SECS, $puzzle_id]);
         $stat = $st->fetch() ?: ['todo_count' => 0, 'active_count' => 0, 'done_count' => 0];
 
-        $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 600) ORDER BY speed DESC LIMIT 50")->fetchAll();
+        $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 300) ORDER BY speed DESC LIMIT 50")->fetchAll();
 
         $st_int = $pdo->prepare("SELECT SUM(end_block - start_block + 1) as blocks_done FROM done_intervals WHERE puzzle_id = ?");
         $st_int->execute([$puzzle_id]);
