@@ -34,61 +34,117 @@ TARGET_BIN=""
 
 case "$OS" in
     linux*)
-        HAS_AVX2=0
-        if [ -f /proc/cpuinfo ]; then
-            if grep -q -m1 'avx2' /proc/cpuinfo 2>/dev/null && grep -q -m1 'bmi2' /proc/cpuinfo 2>/dev/null; then
-                HAS_AVX2=1
-            fi
-        fi
-
-        IS_U22=0
-        if [ -f /etc/os-release ]; then
-            if grep -q -E 'ID=(ubuntu|debian|linuxmint|pop)' /etc/os-release 2>/dev/null; then
-                if grep -q -E 'VERSION_ID="(20\.|22\.|11|12)' /etc/os-release 2>/dev/null; then
-                    IS_U22=1
+        case "$ARCH" in
+            riscv64|riscv)
+                if [ -f "bin/build-linux-riscv64" ]; then
+                    TARGET_BIN="bin/build-linux-riscv64"
+                elif [ -f "bin/build" ]; then
+                    TARGET_BIN="bin/build"
+                elif [ -f "build.cpp" ] && command -v g++ >/dev/null 2>&1; then
+                    mkdir -p bin
+                    SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+                    if [ -n "$SECP_A" ]; then
+                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp "$SECP_A" \
+                            -static-libgcc -static-libstdc++ \
+                            -lssl -lcrypto -lcurl -lpthread -ldl \
+                            -o bin/build-linux-riscv64 2>/dev/null || true
+                    else
+                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp \
+                            -static-libgcc -static-libstdc++ \
+                            -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+                            -lssl -lcrypto -lcurl -lpthread -ldl \
+                            -o bin/build-linux-riscv64 2>/dev/null || \
+                        g++ -std=c++17 -O3 -pthread build.cpp -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl -o bin/build-linux-riscv64 2>/dev/null || true
+                    fi
+                    if [ -f "bin/build-linux-riscv64" ]; then
+                        TARGET_BIN="bin/build-linux-riscv64"
+                    fi
                 fi
-            fi
-        fi
-        if command -v getconf >/dev/null 2>&1; then
-            GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
-            if [ -n "$GLIBC_VER" ]; then
-                MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
-                MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
-                if [ "$MAJOR" -lt 2 ] 2>/dev/null || ( [ "$MAJOR" -eq 2 ] && [ "$MINOR" -lt 38 ] ) 2>/dev/null; then
-                    IS_U22=1
+                ;;
+            aarch64|arm64)
+                if [ -f "bin/build-linux-arm64" ]; then
+                    TARGET_BIN="bin/build-linux-arm64"
+                elif [ -f "bin/build" ]; then
+                    TARGET_BIN="bin/build"
+                elif [ -f "build.cpp" ] && command -v g++ >/dev/null 2>&1; then
+                    mkdir -p bin
+                    SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+                    if [ -n "$SECP_A" ]; then
+                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp "$SECP_A" \
+                            -static-libgcc -static-libstdc++ \
+                            -lssl -lcrypto -lcurl -lpthread -ldl \
+                            -o bin/build-linux-arm64 2>/dev/null || true
+                    else
+                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp \
+                            -static-libgcc -static-libstdc++ \
+                            -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+                            -lssl -lcrypto -lcurl -lpthread -ldl \
+                            -o bin/build-linux-arm64 2>/dev/null || \
+                        g++ -std=c++17 -O3 -pthread build.cpp -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl -o bin/build-linux-arm64 2>/dev/null || true
+                    fi
+                    if [ -f "bin/build-linux-arm64" ]; then
+                        TARGET_BIN="bin/build-linux-arm64"
+                    fi
                 fi
-            fi
-        fi
+                ;;
+            x86_64|amd64|*)
+                HAS_AVX2=0
+                if [ -f /proc/cpuinfo ]; then
+                    if grep -q -m1 'avx2' /proc/cpuinfo 2>/dev/null && grep -q -m1 'bmi2' /proc/cpuinfo 2>/dev/null; then
+                        HAS_AVX2=1
+                    fi
+                fi
 
-        if [ "$IS_U22" = "1" ]; then
-            if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
-                TARGET_BIN="bin/build-linux-u22-x86_64"
-            elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
-                TARGET_BIN="bin/build-linux-u22-x86_64-compat"
-            elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
-                TARGET_BIN="bin/build-linux-x86_64"
-            elif [ -f "bin/build-linux-x86_64-compat" ]; then
-                TARGET_BIN="bin/build-linux-x86_64-compat"
-            elif [ -f "bin/build" ]; then
-                TARGET_BIN="bin/build"
-            else
-                TARGET_BIN="bin/build-linux-u22-x86_64"
-            fi
-        else
-            if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
-                TARGET_BIN="bin/build-linux-x86_64"
-            elif [ -f "bin/build-linux-x86_64-compat" ]; then
-                TARGET_BIN="bin/build-linux-x86_64-compat"
-            elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
-                TARGET_BIN="bin/build-linux-u22-x86_64"
-            elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
-                TARGET_BIN="bin/build-linux-u22-x86_64-compat"
-            elif [ -f "bin/build" ]; then
-                TARGET_BIN="bin/build"
-            else
-                TARGET_BIN="bin/build-linux-x86_64"
-            fi
-        fi
+                IS_U22=0
+                if [ -f /etc/os-release ]; then
+                    if grep -q -E 'ID=(ubuntu|debian|linuxmint|pop)' /etc/os-release 2>/dev/null; then
+                        if grep -q -E 'VERSION_ID="(20\.|22\.|11|12)' /etc/os-release 2>/dev/null; then
+                            IS_U22=1
+                        fi
+                    fi
+                fi
+                if command -v getconf >/dev/null 2>&1; then
+                    GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+                    if [ -n "$GLIBC_VER" ]; then
+                        MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
+                        MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
+                        if [ "$MAJOR" -lt 2 ] 2>/dev/null || ( [ "$MAJOR" -eq 2 ] && [ "$MINOR" -lt 38 ] ) 2>/dev/null; then
+                            IS_U22=1
+                        fi
+                    fi
+                fi
+
+                if [ "$IS_U22" = "1" ]; then
+                    if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
+                        TARGET_BIN="bin/build-linux-u22-x86_64"
+                    elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
+                        TARGET_BIN="bin/build-linux-u22-x86_64-compat"
+                    elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
+                        TARGET_BIN="bin/build-linux-x86_64"
+                    elif [ -f "bin/build-linux-x86_64-compat" ]; then
+                        TARGET_BIN="bin/build-linux-x86_64-compat"
+                    elif [ -f "bin/build" ]; then
+                        TARGET_BIN="bin/build"
+                    else
+                        TARGET_BIN="bin/build-linux-u22-x86_64"
+                    fi
+                else
+                    if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
+                        TARGET_BIN="bin/build-linux-x86_64"
+                    elif [ -f "bin/build-linux-x86_64-compat" ]; then
+                        TARGET_BIN="bin/build-linux-x86_64-compat"
+                    elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
+                        TARGET_BIN="bin/build-linux-u22-x86_64"
+                    elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
+                        TARGET_BIN="bin/build-linux-u22-x86_64-compat"
+                    elif [ -f "bin/build" ]; then
+                        TARGET_BIN="bin/build"
+                    else
+                        TARGET_BIN="bin/build-linux-x86_64"
+                    fi
+                fi
+                ;;
+        esac
         ;;
     darwin*)
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
