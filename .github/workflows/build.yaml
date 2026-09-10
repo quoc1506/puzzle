@@ -110,15 +110,50 @@ jobs:
         run: |
           brew install secp256k1 openssl@3 curl
 
-      - name: Compile Apple Silicon (arm64) binary
+      - name: Build Apple Silicon (arm64) static binary
         run: |
           mkdir -p bin
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
-          CURL_PREFIX=$(brew --prefix curl)
-          SECP_PREFIX=$(brew --prefix secp256k1)
 
-          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto build.cpp             -I${SECP_PREFIX}/include             -I${OPENSSL_PREFIX}/include             -I${CURL_PREFIX}/include             -L${SECP_PREFIX}/lib             -L${OPENSSL_PREFIX}/lib             -L${CURL_PREFIX}/lib             -lsecp256k1 -lssl -lcrypto -lcurl             -o bin/build-macos-arm64
+          mkdir -p arm64_build && cd arm64_build
+          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
+          cd secp256k1
+          cmake -B build -G "Unix Makefiles" \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
+            -DSECP256K1_BUILD_TESTS=OFF \
+            -DSECP256K1_BUILD_BENCHMARK=OFF
+          cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
+          cmake --install build >/dev/null 2>&1
+          SECP_ARM64=$(pwd)/dist
+          cd ..
+          cd ..
+
+          SSL_LIB_DIR="${OPENSSL_PREFIX}/lib"
+          if [ -d "${OPENSSL_PREFIX}/lib64" ]; then
+            SSL_LIB_DIR="${OPENSSL_PREFIX}/lib64"
+          fi
+
+          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+            -target arm64-apple-macos11.0 -mmacosx-version-min=11.0 \
+            -DSECP256K1_STATIC \
+            build.cpp \
+            -I${SECP_ARM64}/include \
+            -I${OPENSSL_PREFIX}/include \
+            ${SECP_ARM64}/lib/libsecp256k1.a \
+            ${SSL_LIB_DIR}/libssl.a \
+            ${SSL_LIB_DIR}/libcrypto.a \
+            -lcurl -lz -lpthread \
+            -framework CoreFoundation -framework SystemConfiguration -framework Security \
+            -o bin/build-macos-arm64
+
           chmod +x bin/build-macos-arm64
+          rm -rf arm64_build
 
       - name: Build Intel (x86_64) static libraries & compile
         run: |
