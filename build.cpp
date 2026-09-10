@@ -479,7 +479,7 @@ static const int BATCH_SIZE = 1024;
 static AffinePoint G_TABLE[BATCH_SIZE];
 
 void init_generator_table() {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     for (int i = 1; i <= BATCH_SIZE; ++i) {
         uint8_t priv[32] = {0};
         priv[31] = (uint8_t)(i & 0xFF);
@@ -952,7 +952,7 @@ void scan_worker_montgomery(
     std::mutex& found_mtx,
     std::atomic<uint64_t>& checked_counter
 ) {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
     if (!ctx) return;
 
     Fe dx[BATCH_SIZE];
