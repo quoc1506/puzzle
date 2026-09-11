@@ -30,24 +30,39 @@ cd "$DIR"
 OS="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 
+can_run() {
+    [ -n "$1" ] || return 1
+    [ -f "$1" ] || return 1
+    chmod +x "$1" 2>/dev/null || true
+    if command -v ldd >/dev/null 2>&1; then
+        LDD_OUT="$(ldd "$1" 2>&1)"
+        if echo "$LDD_OUT" | grep -q -E '(not found|version `GLIBC_)'; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
 TARGET_BIN=""
 
 case "$OS" in
     linux*)
         case "$ARCH" in
             riscv64|riscv)
-                if [ -f "bin/build-linux-riscv64" ]; then
-                    TARGET_BIN="bin/build-linux-riscv64"
-                elif [ -f "bin/build" ]; then
-                    TARGET_BIN="bin/build"
-                fi
+                for f in "bin/build-linux-riscv64" "bin/build"; do
+                    if can_run "$f"; then
+                        TARGET_BIN="$f"
+                        break
+                    fi
+                done
                 ;;
             aarch64|arm64)
-                if [ -f "bin/build-linux-arm64" ]; then
-                    TARGET_BIN="bin/build-linux-arm64"
-                elif [ -f "bin/build" ]; then
-                    TARGET_BIN="bin/build"
-                fi
+                for f in "bin/build-linux-arm64" "bin/build"; do
+                    if can_run "$f"; then
+                        TARGET_BIN="$f"
+                        break
+                    fi
+                done
                 ;;
             x86_64|amd64|*)
                 HAS_AVX2=0
@@ -57,87 +72,86 @@ case "$OS" in
                     fi
                 fi
 
-                IS_U22=0
-                if [ -f /etc/os-release ]; then
-                    if grep -q -E 'ID=(ubuntu|debian|linuxmint|pop)' /etc/os-release 2>/dev/null; then
-                        if grep -q -E 'VERSION_ID="(20\.|22\.|11|12)' /etc/os-release 2>/dev/null; then
-                            IS_U22=1
-                        fi
-                    fi
-                fi
+                GLIBC_MAJOR=0
+                GLIBC_MINOR=0
                 if command -v getconf >/dev/null 2>&1; then
                     GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
                     if [ -n "$GLIBC_VER" ]; then
-                        MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
-                        MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
-                        if [ "$MAJOR" -lt 2 ] 2>/dev/null || ( [ "$MAJOR" -eq 2 ] && [ "$MINOR" -lt 38 ] ) 2>/dev/null; then
-                            IS_U22=1
-                        fi
+                        GLIBC_MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
+                        GLIBC_MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
                     fi
                 fi
 
-                if [ "$IS_U22" = "1" ]; then
-                    if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
-                        TARGET_BIN="bin/build-linux-u22-x86_64"
-                    elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
-                        TARGET_BIN="bin/build-linux-u22-x86_64-compat"
-                    elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
-                        TARGET_BIN="bin/build-linux-x86_64"
-                    elif [ -f "bin/build-linux-x86_64-compat" ]; then
-                        TARGET_BIN="bin/build-linux-x86_64-compat"
-                    elif [ -f "bin/build" ]; then
-                        TARGET_BIN="bin/build"
+                CANDIDATES=""
+                # Modern Linux (glibc >= 2.38 like Ubuntu 24.04+)
+                if [ "$GLIBC_MAJOR" -gt 2 ] 2>/dev/null || ( [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 38 ] ) 2>/dev/null; then
+                    if [ "$HAS_AVX2" = "1" ]; then
+                        CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     else
-                        TARGET_BIN="bin/build-linux-u22-x86_64"
+                        CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     fi
+                # Intermediate Linux (glibc >= 2.34 and < 2.38 like Ubuntu 22.04)
+                elif [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 34 ] 2>/dev/null; then
+                    if [ "$HAS_AVX2" = "1" ]; then
+                        CANDIDATES="bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                    else
+                        CANDIDATES="bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                    fi
+                # Older Linux (glibc < 2.34: Ubuntu 20.04/18.04/16.04, Debian 10/11, CentOS 7/8) or non-glibc (Alpine)
                 else
-                    if [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-x86_64" ]; then
-                        TARGET_BIN="bin/build-linux-x86_64"
-                    elif [ -f "bin/build-linux-x86_64-compat" ]; then
-                        TARGET_BIN="bin/build-linux-x86_64-compat"
-                    elif [ "$HAS_AVX2" = "1" ] && [ -f "bin/build-linux-u22-x86_64" ]; then
-                        TARGET_BIN="bin/build-linux-u22-x86_64"
-                    elif [ -f "bin/build-linux-u22-x86_64-compat" ]; then
-                        TARGET_BIN="bin/build-linux-u22-x86_64-compat"
-                    elif [ -f "bin/build" ]; then
-                        TARGET_BIN="bin/build"
+                    if [ "$HAS_AVX2" = "1" ]; then
+                        CANDIDATES="bin/build-linux-musl-x86_64 bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-u22-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64 bin/build-linux-x86_64-compat"
                     else
-                        TARGET_BIN="bin/build-linux-x86_64"
+                        CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-u22-x86_64 bin/build-linux-x86_64-compat bin/build-linux-x86_64"
                     fi
+                fi
+
+                for c in $CANDIDATES; do
+                    if can_run "$c"; then
+                        TARGET_BIN="$c"
+                        break
+                    fi
+                done
+
+                # Ultimate fallback if can_run didn't find a binary that passed ldd
+                if [ -z "$TARGET_BIN" ]; then
+                    for f in "bin/build-linux-musl-x86_64" "bin/build-linux-musl-x86_64-compat" "bin/build" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-u22-x86_64" "bin/build-linux-x86_64-compat" "bin/build-linux-x86_64"; do
+                        if [ -f "$f" ]; then
+                            TARGET_BIN="$f"
+                            break
+                        fi
+                    done
                 fi
                 ;;
         esac
         ;;
     darwin*)
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-            if [ -f "bin/build-macos-arm64" ]; then
-                TARGET_BIN="bin/build-macos-arm64"
-            elif [ -f "bin/build-macos-universal" ]; then
-                TARGET_BIN="bin/build-macos-universal"
-            else
-                TARGET_BIN="bin/build-macos-x86_64"
-            fi
+            for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64"; do
+                if [ -f "$f" ]; then
+                    TARGET_BIN="$f"
+                    break
+                fi
+            done
         else
-            if [ -f "bin/build-macos-x86_64" ]; then
-                TARGET_BIN="bin/build-macos-x86_64"
-            elif [ -f "bin/build-macos-universal" ]; then
-                TARGET_BIN="bin/build-macos-universal"
-            else
-                exit 1
-            fi
+            for f in "bin/build-macos-x86_64" "bin/build-macos-universal"; do
+                if [ -f "$f" ]; then
+                    TARGET_BIN="$f"
+                    break
+                fi
+            done
         fi
         ;;
     msys*|mingw*|cygwin*)
-        if [ -f "bin/build-windows-x86_64.exe" ]; then
-            TARGET_BIN="bin/build-windows-x86_64.exe"
-        elif [ -f "bin/build-windows-x86_64-compat.exe" ]; then
-            TARGET_BIN="bin/build-windows-x86_64-compat.exe"
-        else
-            TARGET_BIN="bin/build-windows-x86_64.exe"
-        fi
+        for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
+            if [ -f "$f" ]; then
+                TARGET_BIN="$f"
+                break
+            fi
+        done
         ;;
     *)
-        TARGET_BIN="bin/build-linux-x86_64"
+        TARGET_BIN="bin/build"
         ;;
 esac
 

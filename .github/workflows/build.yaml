@@ -173,6 +173,66 @@ jobs:
           name: bin-linux-u22-x86_64
           path: bin/build-linux-u22-x86_64*
 
+  build-linux-musl:
+    name: Build Linux Static (Musl / Alpine - Universal Compatibility)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install build tools and static libraries
+        run: |
+          apk update
+          apk add --no-cache build-base cmake git openssl-dev openssl-libs-static curl-dev curl-static zlib-dev zlib-static linux-headers
+
+      - name: Build static libsecp256k1
+        run: |
+          mkdir -p /tmp/secp_build && cd /tmp/secp_build
+          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
+          cd secp256k1
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
+          cmake --build build -j$(nproc) >/dev/null 2>&1
+          cmake --install build --prefix /usr/local >/dev/null 2>&1
+
+      - name: Compile 100% static universal binaries (Zero GLIBC dependency)
+        run: |
+          mkdir -p bin
+
+          # AVX2 optimized static binary
+          g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -I/usr/local/include -L/usr/local/lib \
+            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
+            -o bin/build-linux-musl-x86_64
+
+          # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
+          g++ -static -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -I/usr/local/include -L/usr/local/lib \
+            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
+            -o bin/build-linux-musl-x86_64-compat
+
+          # Copy as default universal fallback binary
+          cp bin/build-linux-musl-x86_64-compat bin/build
+
+          strip bin/build-linux-musl-* bin/build
+          chmod +x bin/build-linux-musl-* bin/build
+
+          echo "=== Check static executable properties ==="
+          file bin/build-linux-musl-x86_64
+          file bin/build-linux-musl-x86_64-compat
+          file bin/build
+
+      - name: Upload Linux Musl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux-musl-x86_64
+          path: |
+            bin/build-linux-musl-*
+            bin/build
+
   build-linux-riscv64:
     name: Build Linux (RISC-V 64)
     runs-on: ubuntu-latest
@@ -369,7 +429,7 @@ jobs:
 
   publish-bin-folder:
     name: Consolidate Binaries into bin/
-    needs: [build-linux, build-linux-u22, build-linux-riscv64, build-macos, build-windows]
+    needs: [build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
@@ -387,7 +447,7 @@ jobs:
         run: |
           mkdir -p bin
           find bin-download -type f -name "*build*" -exec cp {} bin/ ';'
-          chmod +x bin/build-linux-* 2>/dev/null || true
+          chmod +x bin/build-linux-* bin/build 2>/dev/null || true
           chmod +x bin/build-macos-* 2>/dev/null || true
 
       - name: Commit and push binaries to bin/
