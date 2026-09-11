@@ -37,6 +37,7 @@ jobs:
             -DCURL_STATICLIB=ON \
             -DHTTP_ONLY=ON \
             -DCURL_USE_OPENSSL=ON \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DBUILD_CURL_EXE=OFF \
             -DBUILD_TESTING=OFF
           cmake --build build -j$(nproc) >/dev/null 2>&1
@@ -46,42 +47,45 @@ jobs:
         run: |
           mkdir -p bin
           SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+          if [ -z "$SECP_A" ]; then
+            mkdir -p /tmp/secp_build && cd /tmp/secp_build
+            git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
+            cd secp256k1
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
+            cmake --build build -j$(nproc) >/dev/null 2>&1
+            SECP_A="$(pwd)/build/src/libsecp256k1.a"
+            cd -
+          fi
           CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
           SSL_A=$(find /usr -name "libssl.a" 2>/dev/null | head -n 1)
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          CURL_FLAGS=""
-          if [ -n "$CURL_A" ]; then
-            CURL_FLAGS="-DCURL_STATICLIB -I${CURL_INC}"
-          fi
-
-          STATIC_LIBS=""
-          [ -n "$SECP_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SECP_A}"
-          [ -n "$CURL_A" ] && STATIC_LIBS="${STATIC_LIBS} ${CURL_A}"
-          [ -n "$SSL_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SSL_A}"
-          [ -n "$CRYPTO_A" ] && STATIC_LIBS="${STATIC_LIBS} ${CRYPTO_A}"
-
-          FALLBACK_FLAGS=""
-          [ -z "$SECP_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic"
-          [ -z "$CURL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcurl"
-          [ -z "$SSL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lssl"
-          [ -z "$CRYPTO_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcrypto"
-
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            ${CURL_FLAGS} build.cpp ${STATIC_LIBS} ${FALLBACK_FLAGS} \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
-            -lz -lpthread -ldl \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
             -o bin/build-linux-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            ${CURL_FLAGS} build.cpp ${STATIC_LIBS} ${FALLBACK_FLAGS} \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
-            -lz -lpthread -ldl \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
             -o bin/build-linux-x86_64-compat
 
           strip bin/build-linux-x86_64*
           chmod +x bin/build-linux-x86_64*
+
+          echo "=== Check dynamic dependencies for build-linux-x86_64 ==="
+          ldd bin/build-linux-x86_64 || true
+          if ldd bin/build-linux-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so|libsecp256k1\.so)"; then
+            echo "FATAL: dynamic SSL/Crypto/Curl/Secp256k1 detected!"
+            exit 1
+          fi
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -113,6 +117,7 @@ jobs:
             -DCURL_STATICLIB=ON \
             -DHTTP_ONLY=ON \
             -DCURL_USE_OPENSSL=ON \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
             -DBUILD_CURL_EXE=OFF \
             -DBUILD_TESTING=OFF
           cmake --build build -j$(nproc) >/dev/null 2>&1
@@ -122,42 +127,45 @@ jobs:
         run: |
           mkdir -p bin
           SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+          if [ -z "$SECP_A" ]; then
+            mkdir -p /tmp/secp_build && cd /tmp/secp_build
+            git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
+            cd secp256k1
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
+            cmake --build build -j$(nproc) >/dev/null 2>&1
+            SECP_A="$(pwd)/build/src/libsecp256k1.a"
+            cd -
+          fi
           CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
           SSL_A=$(find /usr -name "libssl.a" 2>/dev/null | head -n 1)
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          CURL_FLAGS=""
-          if [ -n "$CURL_A" ]; then
-            CURL_FLAGS="-DCURL_STATICLIB -I${CURL_INC}"
-          fi
-
-          STATIC_LIBS=""
-          [ -n "$SECP_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SECP_A}"
-          [ -n "$CURL_A" ] && STATIC_LIBS="${STATIC_LIBS} ${CURL_A}"
-          [ -n "$SSL_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SSL_A}"
-          [ -n "$CRYPTO_A" ] && STATIC_LIBS="${STATIC_LIBS} ${CRYPTO_A}"
-
-          FALLBACK_FLAGS=""
-          [ -z "$SECP_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic"
-          [ -z "$CURL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcurl"
-          [ -z "$SSL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lssl"
-          [ -z "$CRYPTO_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcrypto"
-
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            ${CURL_FLAGS} build.cpp ${STATIC_LIBS} ${FALLBACK_FLAGS} \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
-            -lz -lpthread -ldl \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
             -o bin/build-linux-u22-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            ${CURL_FLAGS} build.cpp ${STATIC_LIBS} ${FALLBACK_FLAGS} \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
-            -lz -lpthread -ldl \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
             -o bin/build-linux-u22-x86_64-compat
 
           strip bin/build-linux-u22-x86_64*
           chmod +x bin/build-linux-u22-x86_64*
+
+          echo "=== Check dynamic dependencies for build-linux-u22-x86_64 ==="
+          ldd bin/build-linux-u22-x86_64 || true
+          if ldd bin/build-linux-u22-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so|libsecp256k1\.so)"; then
+            echo "FATAL: dynamic SSL/Crypto/Curl/Secp256k1 detected!"
+            exit 1
+          fi
 
       - name: Upload Linux Ubuntu 22.04 artifact
         uses: actions/upload-artifact@v4
