@@ -349,6 +349,148 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
 }
 #endif
 
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
+static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
+    uint64_t r0, r1, r2, r3;
+    uint64_t t4, t5, t6, t7;
+
+    __asm__ __volatile__ (
+        // --- Row 0: a * b[0] ---
+        "movq 0(%[b]), %%rdx\n\t"
+        "mulx 0(%[a]), %[r0], %[r1]\n\t"
+        "mulx 8(%[a]), %%rax, %[r2]\n\t"
+        "addq %%rax, %[r1]\n\t"
+        "mulx 16(%[a]), %%rax, %[r3]\n\t"
+        "adcq %%rax, %[r2]\n\t"
+        "mulx 24(%[a]), %%rax, %[t4]\n\t"
+        "adcq %%rax, %[r3]\n\t"
+        "adcq $0, %[t4]\n\t"
+        "xorq %[t5], %[t5]\n\t"
+
+        // --- Row 1: a * b[1] ---
+        "movq 8(%[b]), %%rdx\n\t"
+        "mulx 0(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r1]\n\t"
+        "adox %%rcx, %[r2]\n\t"
+        "mulx 8(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r2]\n\t"
+        "adox %%rcx, %[r3]\n\t"
+        "mulx 16(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r3]\n\t"
+        "adox %%rcx, %[t4]\n\t"
+        "mulx 24(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t4]\n\t"
+        "adox %%rcx, %[t5]\n\t"
+        "movq $0, %%rax\n\t"
+        "adcx %%rax, %[t5]\n\t"
+        "adox %%rax, %[t5]\n\t"
+        "xorq %[t6], %[t6]\n\t"
+
+        // --- Row 2: a * b[2] ---
+        "movq 16(%[b]), %%rdx\n\t"
+        "mulx 0(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r2]\n\t"
+        "adox %%rcx, %[r3]\n\t"
+        "mulx 8(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r3]\n\t"
+        "adox %%rcx, %[t4]\n\t"
+        "mulx 16(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t4]\n\t"
+        "adox %%rcx, %[t5]\n\t"
+        "mulx 24(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t5]\n\t"
+        "adox %%rcx, %[t6]\n\t"
+        "movq $0, %%rax\n\t"
+        "adcx %%rax, %[t6]\n\t"
+        "adox %%rax, %[t6]\n\t"
+        "xorq %[t7], %[t7]\n\t"
+
+        // --- Row 3: a * b[3] ---
+        "movq 24(%[b]), %%rdx\n\t"
+        "mulx 0(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r3]\n\t"
+        "adox %%rcx, %[t4]\n\t"
+        "mulx 8(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t4]\n\t"
+        "adox %%rcx, %[t5]\n\t"
+        "mulx 16(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t5]\n\t"
+        "adox %%rcx, %[t6]\n\t"
+        "mulx 24(%[a]), %%rax, %%rcx\n\t"
+        "adcx %%rax, %[t6]\n\t"
+        "adox %%rcx, %[t7]\n\t"
+        "movq $0, %%rax\n\t"
+        "adcx %%rax, %[t7]\n\t"
+        "adox %%rax, %[t7]\n\t"
+
+        // --- Reduction Pass 1: Add (t4, t5, t6, t7) * SECP_K to (r0, r1, r2, r3) ---
+        "movabsq $0x1000003D1, %%rdx\n\t"
+        "xorq %%rax, %%rax\n\t"
+
+        "mulx %[t4], %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r0]\n\t"
+        "adox %%rcx, %[r1]\n\t"
+
+        "mulx %[t5], %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r1]\n\t"
+        "adox %%rcx, %[r2]\n\t"
+
+        "mulx %[t6], %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r2]\n\t"
+        "adox %%rcx, %[r3]\n\t"
+
+        "movq $0, %[t4]\n\t"
+        "mulx %[t7], %%rax, %%rcx\n\t"
+        "adcx %%rax, %[r3]\n\t"
+        "adox %%rcx, %[t4]\n\t"
+        "movq $0, %%rax\n\t"
+        "adcx %%rax, %[t4]\n\t"
+        "adox %%rax, %[t4]\n\t"
+
+        // --- Reduction Pass 2: Add t4 * SECP_K to (r0, r1, r2, r3) ---
+        "mulx %[t4], %%rax, %%rcx\n\t"
+        "addq %%rax, %[r0]\n\t"
+        "adcq %%rcx, %[r1]\n\t"
+        "adcq $0, %[r2]\n\t"
+        "adcq $0, %[r3]\n\t"
+        "movq $0, %[t4]\n\t"
+        "adcq $0, %[t4]\n\t"
+
+        // Extra carry handling (t4 is 0 or 1)
+        "imulq %%rdx, %[t4]\n\t"
+        "addq %[t4], %[r0]\n\t"
+        "adcq $0, %[r1]\n\t"
+        "adcq $0, %[r2]\n\t"
+        "adcq $0, %[r3]\n\t"
+
+        // --- Final boundary check if r >= p: add SECP_K and cmovc ---
+        "movq %[r0], %%rax\n\t"
+        "addq %%rdx, %%rax\n\t"
+        "movq %[r1], %%rcx\n\t"
+        "adcq $0, %%rcx\n\t"
+        "movq %[r2], %[t4]\n\t"
+        "adcq $0, %[t4]\n\t"
+        "movq %[r3], %[t5]\n\t"
+        "adcq $0, %[t5]\n\t"
+        "cmovcq %%rax, %[r0]\n\t"
+        "cmovcq %%rcx, %[r1]\n\t"
+        "cmovcq %[t4], %[r2]\n\t"
+        "cmovcq %[t5], %[r3]\n\t"
+        : [r0] "=&r"(r0), [r1] "=&r"(r1), [r2] "=&r"(r2), [r3] "=&r"(r3),
+          [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
+        : [a] "r"(a.d), [b] "r"(b.d)
+        : "rax", "rcx", "rdx", "cc", "memory"
+    );
+
+    Fe r;
+    r.d[0] = r0; r.d[1] = r1; r.d[2] = r2; r.d[3] = r3;
+    return r;
+}
+
+static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
+    return fe_mul(a, a);
+}
+#else
 static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
@@ -472,6 +614,7 @@ static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
     r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
     return r;
 }
+#endif
 
 static inline Fe fe_inv(const Fe& a) {
     const uint64_t exp[4] = {
