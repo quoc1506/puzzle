@@ -40,25 +40,6 @@ case "$OS" in
                     TARGET_BIN="bin/build-linux-riscv64"
                 elif [ -f "bin/build" ]; then
                     TARGET_BIN="bin/build"
-                elif [ -f "build.cpp" ] && command -v g++ >/dev/null 2>&1; then
-                    mkdir -p bin
-                    SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
-                    if [ -n "$SECP_A" ]; then
-                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp "$SECP_A" \
-                            -static-libgcc -static-libstdc++ \
-                            -lssl -lcrypto -lcurl -lpthread -ldl \
-                            -o bin/build-linux-riscv64 2>/dev/null || true
-                    else
-                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp \
-                            -static-libgcc -static-libstdc++ \
-                            -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-                            -lssl -lcrypto -lcurl -lpthread -ldl \
-                            -o bin/build-linux-riscv64 2>/dev/null || \
-                        g++ -std=c++17 -O3 -pthread build.cpp -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl -o bin/build-linux-riscv64 2>/dev/null || true
-                    fi
-                    if [ -f "bin/build-linux-riscv64" ]; then
-                        TARGET_BIN="bin/build-linux-riscv64"
-                    fi
                 fi
                 ;;
             aarch64|arm64)
@@ -66,25 +47,6 @@ case "$OS" in
                     TARGET_BIN="bin/build-linux-arm64"
                 elif [ -f "bin/build" ]; then
                     TARGET_BIN="bin/build"
-                elif [ -f "build.cpp" ] && command -v g++ >/dev/null 2>&1; then
-                    mkdir -p bin
-                    SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
-                    if [ -n "$SECP_A" ]; then
-                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp "$SECP_A" \
-                            -static-libgcc -static-libstdc++ \
-                            -lssl -lcrypto -lcurl -lpthread -ldl \
-                            -o bin/build-linux-arm64 2>/dev/null || true
-                    else
-                        g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp \
-                            -static-libgcc -static-libstdc++ \
-                            -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-                            -lssl -lcrypto -lcurl -lpthread -ldl \
-                            -o bin/build-linux-arm64 2>/dev/null || \
-                        g++ -std=c++17 -O3 -pthread build.cpp -lsecp256k1 -lssl -lcrypto -lcurl -lpthread -ldl -o bin/build-linux-arm64 2>/dev/null || true
-                    fi
-                    if [ -f "bin/build-linux-arm64" ]; then
-                        TARGET_BIN="bin/build-linux-arm64"
-                    fi
                 fi
                 ;;
             x86_64|amd64|*)

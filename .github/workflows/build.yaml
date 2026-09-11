@@ -23,21 +23,67 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
 
-      - name: Compile portable binary (statically link libsecp256k1)
+      - name: Build static libcurl
+        run: |
+          mkdir -p /tmp/curl_build && cd /tmp/curl_build
+          git clone --depth 1 -b curl-8_6_0 https://github.com/curl/curl.git
+          cd curl
+          cmake -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCURL_STATICLIB=ON \
+            -DHTTP_ONLY=ON \
+            -DCURL_USE_OPENSSL=ON \
+            -DBUILD_CURL_EXE=OFF \
+            -DBUILD_TESTING=OFF
+          cmake --build build -j$(nproc) >/dev/null 2>&1
+          cmake --install build >/dev/null 2>&1
+
+      - name: Compile portable binary (statically link libsecp256k1 & libcurl)
         run: |
           mkdir -p bin
           SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+          CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
+          CURL_INC="/tmp/curl_build/curl/dist/include"
+
+          CURL_FLAGS=""
+          CURL_LINK="-lcurl"
+          if [ -n "$CURL_A" ]; then
+            CURL_FLAGS="-DCURL_STATICLIB -I${CURL_INC}"
+            CURL_LINK="${CURL_A} -lssl -lcrypto -lz"
+          else
+            CURL_LINK="-lssl -lcrypto -lcurl"
+          fi
 
           if [ -n "$SECP_A" ]; then
-            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A"               -static-libgcc -static-libstdc++               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              ${CURL_LINK} -lpthread -ldl \
+              -o bin/build-linux-x86_64
 
-            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A"               -static-libgcc -static-libstdc++               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64-compat
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp "$SECP_A" \
+              -static-libgcc -static-libstdc++ \
+              ${CURL_LINK} -lpthread -ldl \
+              -o bin/build-linux-x86_64-compat
           else
-            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp               -static-libgcc -static-libstdc++               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              ${CURL_LINK} -lpthread -ldl \
+              -o bin/build-linux-x86_64
 
-            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp               -static-libgcc -static-libstdc++               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic               -lssl -lcrypto -lcurl -lpthread -ldl               -o bin/build-linux-x86_64-compat
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp \
+              -static-libgcc -static-libstdc++ \
+              -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
+              ${CURL_LINK} -lpthread -ldl \
+              -o bin/build-linux-x86_64-compat
           fi
 
           strip bin/build-linux-x86_64*
@@ -59,34 +105,66 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
 
-      - name: Compile portable binary (statically link libsecp256k1)
+      - name: Build static libcurl
+        run: |
+          mkdir -p /tmp/curl_build && cd /tmp/curl_build
+          git clone --depth 1 -b curl-8_6_0 https://github.com/curl/curl.git
+          cd curl
+          cmake -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCURL_STATICLIB=ON \
+            -DHTTP_ONLY=ON \
+            -DCURL_USE_OPENSSL=ON \
+            -DBUILD_CURL_EXE=OFF \
+            -DBUILD_TESTING=OFF
+          cmake --build build -j$(nproc) >/dev/null 2>&1
+          cmake --install build >/dev/null 2>&1
+
+      - name: Compile portable binary (statically link libsecp256k1 & libcurl)
         run: |
           mkdir -p bin
           SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
+          CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
+          CURL_INC="/tmp/curl_build/curl/dist/include"
+
+          CURL_FLAGS=""
+          CURL_LINK="-lcurl"
+          if [ -n "$CURL_A" ]; then
+            CURL_FLAGS="-DCURL_STATICLIB -I${CURL_INC}"
+            CURL_LINK="${CURL_A} -lssl -lcrypto -lz"
+          else
+            CURL_LINK="-lssl -lcrypto -lcurl"
+          fi
 
           if [ -n "$SECP_A" ]; then
-            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp "$SECP_A" \
               -static-libgcc -static-libstdc++ \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
+              ${CURL_LINK} -lpthread -ldl \
               -o bin/build-linux-u22-x86_64
 
-            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp "$SECP_A" \
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp "$SECP_A" \
               -static-libgcc -static-libstdc++ \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
+              ${CURL_LINK} -lpthread -ldl \
               -o bin/build-linux-u22-x86_64-compat
           else
-            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+            g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp \
               -static-libgcc -static-libstdc++ \
               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
+              ${CURL_LINK} -lpthread -ldl \
               -o bin/build-linux-u22-x86_64
 
-            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread build.cpp \
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+              ${CURL_FLAGS} build.cpp \
               -static-libgcc -static-libstdc++ \
               -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic \
-              -lssl -lcrypto -lcurl -lpthread -ldl \
+              ${CURL_LINK} -lpthread -ldl \
               -o bin/build-linux-u22-x86_64-compat
           fi
 
