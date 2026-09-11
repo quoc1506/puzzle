@@ -185,7 +185,25 @@ jobs:
       - name: Install build tools and static libraries
         run: |
           apk update
-          apk add --no-cache build-base cmake git openssl-dev openssl-libs-static curl-dev curl-static zlib-dev zlib-static linux-headers
+          apk add --no-cache build-base cmake git openssl-dev openssl-libs-static zlib-dev zlib-static linux-headers
+
+      - name: Build static libcurl with OpenSSL
+        run: |
+          mkdir -p /tmp/curl_build && cd /tmp/curl_build
+          git clone --depth 1 -b curl-8_8_0 https://github.com/curl/curl.git
+          cd curl
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCURL_STATICLIB=ON \
+            -DHTTP_ONLY=ON \
+            -DCURL_USE_OPENSSL=ON \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DBUILD_CURL_EXE=OFF \
+            -DBUILD_TESTING=OFF
+          cmake --build build -j$(nproc) >/dev/null 2>&1
+          cmake --install build >/dev/null 2>&1
 
       - name: Build static libsecp256k1
         run: |
