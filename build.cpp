@@ -28,6 +28,9 @@
 #include <openssl/bn.h>
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#if defined(__GNUC__) || defined(__clang__)
+#include <x86intrin.h>
+#endif
 #endif
 
 #if defined(__clang__)
@@ -245,6 +248,51 @@ static inline bool fe_eq(const Fe& a, const Fe& b) {
     return a.d[0] == b.d[0] && a.d[1] == b.d[1] && a.d[2] == b.d[2] && a.d[3] == b.d[3];
 }
 
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
+    Fe r;
+    unsigned char carry = 0;
+    carry = _addcarry_u64(carry, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    carry = _addcarry_u64(carry, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    carry = _addcarry_u64(carry, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    carry = _addcarry_u64(carry, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (carry) {
+        carry = _addcarry_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
+        carry = _addcarry_u64(carry, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        carry = _addcarry_u64(carry, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _addcarry_u64(carry, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+}
+
+static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
+    Fe r;
+    unsigned char borrow = 0;
+    borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (borrow) {
+        borrow = _subborrow_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
+        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    }
+    return r;
+}
+#else
 static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
@@ -299,6 +347,7 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
     }
     return r;
 }
+#endif
 
 static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
@@ -699,18 +748,33 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     __m256i g = _mm256_set1_epi32(0x1f83d9ab);
     __m256i h = _mm256_set1_epi32(0x5be0cd19);
 
-#define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     __m256i S1 = _mm256_xor_si256(AVX2_ROR(e, 6), _mm256_xor_si256(AVX2_ROR(e, 11), AVX2_ROR(e, 25)));     __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g)));     __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));     __m256i S0 = _mm256_xor_si256(AVX2_ROR(a, 2), _mm256_xor_si256(AVX2_ROR(a, 13), AVX2_ROR(a, 22)));     __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b)));     __m256i temp2 = _mm256_add_epi32(S0, maj);     d = _mm256_add_epi32(d, temp1);     h = _mm256_add_epi32(temp1, temp2); } while (0)
+    __m256i KW[64];
+    #pragma GCC unroll 64
+    for (int i = 0; i < 64; ++i) {
+        KW[i] = _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i]), W[i]);
+    }
+
+#define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
+    __m256i S1 = _mm256_xor_si256(AVX2_ROR(e, 6), _mm256_xor_si256(AVX2_ROR(e, 11), AVX2_ROR(e, 25))); \
+    __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g))); \
+    __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw)); \
+    __m256i S0 = _mm256_xor_si256(AVX2_ROR(a, 2), _mm256_xor_si256(AVX2_ROR(a, 13), AVX2_ROR(a, 22))); \
+    __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b))); \
+    __m256i temp2 = _mm256_add_epi32(S0, maj); \
+    d = _mm256_add_epi32(d, temp1); \
+    h = _mm256_add_epi32(temp1, temp2); \
+} while (0)
 
     #pragma GCC unroll 8
     for (int i = 0; i < 64; i += 8) {
-        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i]), W[i]));
-        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+1]), W[i+1]));
-        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+2]), W[i+2]));
-        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+3]), W[i+3]));
-        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+4]), W[i+4]));
-        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+5]), W[i+5]));
-        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+6]), W[i+6]));
-        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i+7]), W[i+7]));
+        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, KW[i]);
+        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, KW[i+1]);
+        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, KW[i+2]);
+        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, KW[i+3]);
+        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, KW[i+4]);
+        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, KW[i+5]);
+        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, KW[i+6]);
+        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, KW[i+7]);
     }
 #undef AVX2_SHA256_STEP
 
@@ -1032,28 +1096,38 @@ void scan_worker_montgomery(
                     next_base.y = yi[7];
                 }
 
-                alignas(32) uint32_t w_lanes[16][8];
+                alignas(32) uint32_t w0[8], w1[8], w2[8], w3[8], w4[8], w5[8], w6[8], w7[8], w8[8];
                 for (int k = 0; k < 8; ++k) {
                     uint8_t prefix = (yi[k].d[0] & 1) ? 0x03 : 0x02;
                     uint64_t d3 = xi[k].d[3], d2 = xi[k].d[2], d1 = xi[k].d[1], d0 = xi[k].d[0];
-                    w_lanes[0][k] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
-                    w_lanes[1][k] = (uint32_t)(d3 >> 8);
-                    w_lanes[2][k] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
-                    w_lanes[3][k] = (uint32_t)(d2 >> 8);
-                    w_lanes[4][k] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
-                    w_lanes[5][k] = (uint32_t)(d1 >> 8);
-                    w_lanes[6][k] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
-                    w_lanes[7][k] = (uint32_t)(d0 >> 8);
-                    w_lanes[8][k] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
-                    w_lanes[9][k] = 0; w_lanes[10][k] = 0; w_lanes[11][k] = 0;
-                    w_lanes[12][k] = 0; w_lanes[13][k] = 0; w_lanes[14][k] = 0;
-                    w_lanes[15][k] = 264;
+                    w0[k] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
+                    w1[k] = (uint32_t)(d3 >> 8);
+                    w2[k] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
+                    w3[k] = (uint32_t)(d2 >> 8);
+                    w4[k] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
+                    w5[k] = (uint32_t)(d1 >> 8);
+                    w6[k] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
+                    w7[k] = (uint32_t)(d0 >> 8);
+                    w8[k] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
                 }
 
                 __m256i W[16];
-                for (int m = 0; m < 16; ++m) {
-                    W[m] = _mm256_load_si256((const __m256i*)w_lanes[m]);
-                }
+                W[0] = _mm256_load_si256((const __m256i*)w0);
+                W[1] = _mm256_load_si256((const __m256i*)w1);
+                W[2] = _mm256_load_si256((const __m256i*)w2);
+                W[3] = _mm256_load_si256((const __m256i*)w3);
+                W[4] = _mm256_load_si256((const __m256i*)w4);
+                W[5] = _mm256_load_si256((const __m256i*)w5);
+                W[6] = _mm256_load_si256((const __m256i*)w6);
+                W[7] = _mm256_load_si256((const __m256i*)w7);
+                W[8] = _mm256_load_si256((const __m256i*)w8);
+                W[9] = _mm256_setzero_si256();
+                W[10] = _mm256_setzero_si256();
+                W[11] = _mm256_setzero_si256();
+                W[12] = _mm256_setzero_si256();
+                W[13] = _mm256_setzero_si256();
+                W[14] = _mm256_setzero_si256();
+                W[15] = _mm256_set1_epi32(264);
 
                 __m256i X[16];
                 avx2_sha256_8way(W, X);
