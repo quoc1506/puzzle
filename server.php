@@ -397,7 +397,7 @@ function calculate_probability_and_eta(int $puzzle_id, array $config, int $block
     ];
 }
 
-function render_html_dashboard(int $puzzle_id, array $config, array $stat, array $workers, int $blocks_done, float $total_speed, array $found_keys, array $prob_info, ?array $target_hit_info = null): void {
+function render_html_dashboard(int $puzzle_id, array $config, array $stat, array $workers, int $blocks_done, float $total_speed, array $found_keys, array $prob_info, ?array $target_hit_info = null, string $initial_search = ''): void {
     header('Content-Type: text/html; charset=utf-8');
     $speed_str = format_speed($total_speed);
     $active_workers_count = count($workers);
@@ -425,7 +425,10 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
 
     $rows_html = '';
     if (empty($workers)) {
-        $rows_html = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">No workers connected in the last 5 minutes. Run the worker below to start.</td></tr>';
+        $empty_msg = ($initial_search !== '') 
+            ? 'No workers matching "' . htmlspecialchars($initial_search) . '". Clear search to see all.' 
+            : 'No workers connected in the last 5 minutes. Run the worker below to start.';
+        $rows_html = '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 24px;">' . $empty_msg . '</td></tr>';
     } else {
         foreach ($workers as $idx => $w) {
             $w_name = htmlspecialchars($w['worker'] ?? 'anonymous');
@@ -485,6 +488,12 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '.badge-idle { background: rgba(245, 158, 11, 0.15); color: #fbbf24; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }'
         . '.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10b981; animation: pulse 2s infinite; }'
         . '@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }'
+        . '.search-box { display: flex; align-items: center; position: relative; width: 260px; }'
+        . '.search-input { width: 100%; background: #0b0f19; border: 1px solid #334155; border-radius: 8px; padding: 7px 32px 7px 12px; font-size: 13px; color: #f8fafc; outline: none; transition: all 0.2s; }'
+        . '.search-input:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2); }'
+        . '.search-clear { position: absolute; right: 10px; background: none; border: none; color: #94a3b8; font-size: 14px; cursor: pointer; padding: 0; line-height: 1; display: none; }'
+        . '.search-clear:hover { color: #f8fafc; }'
+        . '.count-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; }'
         . '</style>'
         . '</head>'
         . '<body>'
@@ -532,7 +541,7 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '<div class="stat-card">'
         . '<div class="stat-title">🖥️ Active Workers</div>'
         . '<div class="stat-value" id="val-workers" style="color: #fbbf24;">' . $active_workers_count . ' Node(s)</div>'
-        .                 '<div class="stat-sub">Reported in last 3m</div>'
+        . '<div class="stat-sub">Reported in last 3m</div>'
         . '</div>'
         . '<div class="stat-card">'
         . '<div class="stat-title">📦 Total & Blocks Done</div>'
@@ -546,9 +555,15 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '</div>'
         . '</div>'
         . '<div class="info-card" style="padding: 0; overflow: hidden; margin-bottom: 25px;">'
-        . '<div style="padding: 16px 20px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center;">'
+        . '<div style="padding: 16px 20px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">'
+        . '<div style="display: flex; align-items: center; gap: 10px;">'
         . '<span style="font-weight: 700; font-size: 14px; color: #f8fafc;">📋 Online Worker List & Block/Range Monitor</span>'
-        . '<span style="font-size: 12px; color: #64748b;">Top 50 fastest nodes limit</span>'
+        . '<span id="worker-count-pill" class="count-pill">' . $active_workers_count . ' node(s)</span>'
+        . '</div>'
+        . '<div class="search-box">'
+        . '<input type="text" id="worker-search" class="search-input" placeholder="🔍 Search worker name..." value="' . htmlspecialchars($initial_search) . '" autocomplete="off" spellcheck="false" />'
+        . '<button type="button" id="search-clear-btn" class="search-clear" onclick="clearSearch()" title="Clear search">✕</button>'
+        . '</div>'
         . '</div>'
         . '<div style="overflow-x: auto;">'
         . '<table>'
@@ -560,6 +575,35 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '</div>'
         . '<script>'
         . 'var curPuzzle = ' . $puzzle_id . ';'
+        . 'var rawWorkers = [];'
+        . 'var searchInput = document.getElementById("worker-search");'
+        . 'var clearBtn = document.getElementById("search-clear-btn");'
+        . ''
+        . 'function updateClearBtn() {'
+        . '  if (!clearBtn || !searchInput) return;'
+        . '  clearBtn.style.display = searchInput.value.trim() ? "block" : "none";'
+        . '}'
+        . ''
+        . 'function clearSearch() {'
+        . '  if (!searchInput) return;'
+        . '  searchInput.value = "";'
+        . '  updateClearBtn();'
+        . '  filterAndRenderWorkers();'
+        . '  refreshData();'
+        . '}'
+        . ''
+        . 'if (searchInput) {'
+        . '  searchInput.addEventListener("input", function() {'
+        . '    updateClearBtn();'
+        . '    filterAndRenderWorkers();'
+        . '  });'
+        . '  searchInput.addEventListener("keydown", function(e) {'
+        . '    if (e.key === "Escape") { clearSearch(); }'
+        . '    else if (e.key === "Enter") { refreshData(); }'
+        . '  });'
+        . '  updateClearBtn();'
+        . '}'
+        . ''
         . 'function formatSpeed(s) {'
         . '  if (s >= 1000000) return (s / 1000000).toFixed(2) + " Mkeys/s";'
         . '  if (s >= 1000) return (s / 1000).toFixed(2) + " Kkeys/s";'
@@ -571,8 +615,49 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '  if (diff < 60) return diff + "s ago";'
         . '  return Math.floor(diff / 60) + "m ago";'
         . '}'
+        . ''
+        . 'function filterAndRenderWorkers() {'
+        . '  var tbody = document.getElementById("worker-tbody");'
+        . '  if (!tbody) return;'
+        . '  var q = searchInput ? searchInput.value.trim().toLowerCase() : "";'
+        . '  var list = rawWorkers || [];'
+        . '  if (q) {'
+        . '    list = list.filter(function(w) {'
+        . '      return (w.worker && w.worker.toLowerCase().indexOf(q) !== -1);'
+        . '    });'
+        . '  }'
+        . '  var pill = document.getElementById("worker-count-pill");'
+        . '  if (pill) {'
+        . '    if (q) {'
+        . '      pill.textContent = list.length + " / " + rawWorkers.length + " matched";'
+        . '    } else {'
+        . '      pill.textContent = rawWorkers.length + " node(s)";'
+        . '    }'
+        . '  }'
+        . '  if (list.length === 0) {'
+        . '    var msg = q ? ("No workers matching \\"" + q + "\\". <a href=\"javascript:clearSearch()\" style=\"color: #38bdf8;\">Clear search</a>") : "No workers connected in the last 5 minutes.";'
+        . '    tbody.innerHTML = "<tr><td colspan=\"8\" style=\"text-align: center; color: #64748b; padding: 24px;\">" + msg + "</td></tr>";'
+        . '    return;'
+        . '  }'
+        . '  var h = "";'
+        . '  var now = Math.floor(Date.now() / 1000);'
+        . '  for (var i = 0; i < list.length; i++) {'
+        . '    var w = list[i];'
+        . '    var isOnline = (now - w.last_seen) <= 180;'
+        . '    var badge = isOnline ? "<span class=\"badge-online\">● Online</span>" : "<span class=\"badge-idle\">○ Idle</span>";'
+        . '    var bText = (w.current_block !== undefined && w.current_block !== null && w.current_block > 0) ? "#" + Number(w.current_block).toLocaleString() : "-";'
+        . '    var rText = (w.current_range !== undefined && w.current_range !== null && w.current_range >= 0) ? "#" + Number(w.current_range).toLocaleString() : "-";'
+        . '    var wName = w.worker || "anonymous";'
+        . '    h += "<tr><td>" + (i + 1) + "</td><td style=\"font-weight: 600; color: #f8fafc;\">" + wName + "</td><td style=\"font-family: monospace; color: #38bdf8;\">" + formatSpeed(w.speed || 0) + "</td><td style=\"font-family: monospace; color: #fbbf24;\">" + bText + "</td><td style=\"font-family: monospace; color: #a78bfa;\">" + rText + "</td><td style=\"font-family: monospace;\">" + (w.ranges_done || 0).toLocaleString() + "</td><td style=\"color: #94a3b8;\">" + timeAgo(w.last_seen) + "</td><td>" + badge + "</td></tr>";'
+        . '  }'
+        . '  tbody.innerHTML = h;'
+        . '}'
+        . ''
         . 'function refreshData() {'
-        . '  fetch("?action=stats&puzzle=" + curPuzzle + "&format=json")'
+        . '  var q = searchInput ? searchInput.value.trim() : "";'
+        . '  var url = "?action=stats&puzzle=" + curPuzzle + "&format=json";'
+        . '  if (q) { url += "&search=" + encodeURIComponent(q); }'
+        . '  fetch(url)'
         . '    .then(function(r) { return r.json(); })'
         . '    .then(function(data) {'
         . '      if (!data || data.status !== "ok") return;'
@@ -605,19 +690,9 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '        var badge = document.getElementById("target-hit-badge");'
         . '        if (badge) badge.style.display = "inline-flex";'
         . '      }'
-        . '      var tbody = document.getElementById("worker-tbody");'
-        . '      if (tbody && data.workers && data.workers.length > 0) {'
-        . '        var h = "";'
-        . '        var now = Math.floor(Date.now() / 1000);'
-        . '        for (var i = 0; i < data.workers.length; i++) {'
-        . '          var w = data.workers[i];'
-        . '          var isOnline = (now - w.last_seen) <= 180;'
-        . '          var badge = isOnline ? "<span class=\"badge-online\">● Online</span>" : "<span class=\"badge-idle\">○ Idle</span>";'
-        . '          var bText = (w.current_block !== undefined && w.current_block !== null && w.current_block > 0) ? "#" + Number(w.current_block).toLocaleString() : "-";'
-        . '          var rText = (w.current_range !== undefined && w.current_range !== null && w.current_range >= 0) ? "#" + Number(w.current_range).toLocaleString() : "-";'
-        . '          h += "<tr><td>" + (i + 1) + "</td><td style=\"font-weight: 600; color: #f8fafc;\">" + w.worker + "</td><td style=\"font-family: monospace; color: #38bdf8;\">" + formatSpeed(w.speed || 0) + "</td><td style=\"font-family: monospace; color: #fbbf24;\">" + bText + "</td><td style=\"font-family: monospace; color: #a78bfa;\">" + rText + "</td><td style=\"font-family: monospace;\">" + (w.ranges_done || 0).toLocaleString() + "</td><td style=\"color: #94a3b8;\">" + timeAgo(w.last_seen) + "</td><td>" + badge + "</td></tr>";'
-        . '        }'
-        . '        tbody.innerHTML = h;'
+        . '      if (data.workers) {'
+        . '        rawWorkers = data.workers;'
+        . '        filterAndRenderWorkers();'
         . '      }'
         . '    }).catch(function(e) {});'
         . '}'
@@ -676,7 +751,23 @@ switch ($action) {
         $st->execute([$now - LEASE_TIMEOUT_SECS, $puzzle_id]);
         $stat = $st->fetch() ?: ['todo_count' => 0, 'active_count' => 0, 'done_count' => 0];
 
-        $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 180) ORDER BY speed DESC LIMIT 50")->fetchAll();
+        $search_worker = trim((string)($_GET['search'] ?? ($_GET['q'] ?? ($input['search'] ?? ''))));
+
+        // Nếu có tìm kiếm: Tìm trực tiếp trong database không giới hạn speed thấp, LIMIT 100
+        // Nếu không tìm kiếm: Mở rộng LIMIT từ 50 lên 250 worker nhanh nhất gần đây
+        if ($search_worker !== '') {
+            $st_w = $pdo->prepare("
+                SELECT worker, speed, ranges_done, current_block, current_range, last_seen 
+                FROM user_stats 
+                WHERE last_seen >= (? - 300) AND worker LIKE ? 
+                ORDER BY speed DESC 
+                LIMIT 100
+            ");
+            $st_w->execute([$now, '%' . $search_worker . '%']);
+            $workers = $st_w->fetchAll();
+        } else {
+            $workers = $pdo->query("SELECT worker, speed, ranges_done, current_block, current_range, last_seen FROM user_stats WHERE last_seen >= ($now - 180) ORDER BY speed DESC LIMIT 250")->fetchAll();
+        }
 
         $st_int = $pdo->prepare("SELECT SUM(end_block - start_block + 1) as blocks_done FROM done_intervals WHERE puzzle_id = ?");
         $st_int->execute([$puzzle_id]);
@@ -685,10 +776,9 @@ switch ($action) {
         $res_json_file = get_results_json_path($puzzle_id);
         $found_keys = file_exists($res_json_file) ? (json_decode(file_get_contents($res_json_file), true) ?: []) : [];
 
-        $total_speed = 0.0;
-        foreach ($workers as $w) {
-            $total_speed += (float)($w['speed'] ?? 0);
-        }
+        // Tính tổng speed cụm từ toàn bộ online worker trong 3 phút (không bị ảnh hưởng bởi bộ lọc search)
+        $total_speed = (float)$pdo->query("SELECT COALESCE(SUM(speed), 0) FROM user_stats WHERE last_seen >= ($now - 180)")->fetchColumn();
+        $total_active_workers = (int)$pdo->query("SELECT COUNT(*) FROM user_stats WHERE last_seen >= ($now - 180)")->fetchColumn();
 
         $prob_info = calculate_probability_and_eta($puzzle_id, $config, $blocks_done, (int)$stat['done_count'], $total_speed, !empty($found_keys));
 
@@ -722,15 +812,16 @@ switch ($action) {
                 'completed_ranges' => (int)$stat['done_count'],
                 'blocks_done'      => $blocks_done,
                 'cluster_speed'    => $total_speed,
-                'active_workers'   => count($workers),
+                'active_workers'   => $total_active_workers,
                 'workers'          => $workers,
+                'search_query'     => $search_worker,
                 'probability'      => $prob_info,
                 'target_solved'    => !empty($found_keys),
                 'target_hit_info'  => $target_hit_info,
             ]);
         }
 
-        render_html_dashboard($puzzle_id, $config, $stat, $workers, $blocks_done, $total_speed, $found_keys, $prob_info, $target_hit_info);
+        render_html_dashboard($puzzle_id, $config, $stat, $workers, $blocks_done, $total_speed, $found_keys, $prob_info, $target_hit_info, $search_worker);
         break;
 
     case 'config':
