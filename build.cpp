@@ -18,7 +18,7 @@
   #define CUDA_HOSTDEV __host__ __device__
   #define CUDA_DEV __device__
   #define CUDA_GLOBAL __global__
-  #define CUDA_INLINE __device__ __forceinline__
+  #define CUDA_INLINE __forceinline__
 #else
   #define CUDA_HOSTDEV
   #define CUDA_DEV
@@ -30,7 +30,7 @@
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDACC__)
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
 #include <x86intrin.h>
@@ -281,7 +281,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     return r;
 }
 
-#if !defined(__CUDA_ARCH__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
+#if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
 static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t r0, r1, r2, r3;
     uint64_t t4, t5, t6, t7;
