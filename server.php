@@ -848,18 +848,30 @@ switch ($action) {
         $config = PUZZLES[$puzzle_id];
 
         if ($puzzle_id === 70 || (isset($_GET['test']) && $_GET['test'] == 1)) {
-            $test_block = 1382945497;
-            $test_range = 49;
-            $test_user  = !empty($_GET['user']) ? trim((string)$_GET['user']) : "user-{$test_block}-{$test_range}";
+            $test_block    = 1382945497;
+            $test_range    = 49;
+            $test_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
+            $test_start    = '970436974004848820224';
+            $test_span     = bcmul((string)$test_multiple, RANGE_SIZE);
+            $test_end      = bcadd($test_start, $test_span);
+            if (!empty($_GET['user'])) {
+                $test_user = trim((string)$_GET['user']);
+            } else {
+                $test_user = ($test_multiple > 1) ? "user-{$test_block}-{$test_range}-m{$test_multiple}" : "user-{$test_block}-{$test_range}";
+            }
+
             respond([
                 'status'           => 'ok',
                 'puzzle'           => 70,
                 'user'             => $test_user,
                 'block'            => $test_block,
                 'range_idx'        => $test_range,
-                'start'            => '970436974004848820224',
-                'end'              => '970436974005117255680',
-                'range_size'       => (int)RANGE_SIZE,
+                'range_count'      => $test_multiple,
+                'multiple'         => $test_multiple,
+                'start'            => $test_start,
+                'end'              => $test_end,
+                'range_size'       => (int)$test_span,
+                'single_range_size'=> (int)RANGE_SIZE,
                 'target_address'   => '19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR',
                 'version_byte'     => 0,
                 'lower'            => '590295810358705651712',
@@ -878,6 +890,7 @@ switch ($action) {
 
         $now = time();
         $expiry = $now - LEASE_TIMEOUT_SECS;
+        $req_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
 
         $pdo->beginTransaction();
         try {
@@ -900,15 +913,42 @@ switch ($action) {
             $b_id  = (int)$claimed['block_id'];
             $r_idx = (int)$claimed['range_idx'];
 
+            // Nếu yêu cầu multiple > 1, lấy các range LIÊN TIẾP trong CÙNG block $b_id
+            $actual_count = 1;
+            if ($req_multiple > 1) {
+                $st_batch = $pdo->prepare("
+                    SELECT range_idx 
+                    FROM ranges 
+                    WHERE puzzle_id = ? AND block_id = ? AND range_idx >= ? 
+                      AND (status = 0 OR (status = 1 AND claimed_at < ?))
+                    ORDER BY range_idx ASC 
+                    LIMIT ?
+                ");
+                $st_batch->execute([$puzzle_id, $b_id, $r_idx, $expiry, $req_multiple]);
+                $candidate_idxs = $st_batch->fetchAll(PDO::FETCH_COLUMN);
+
+                $consecutive_count = 0;
+                foreach ($candidate_idxs as $step => $cand_idx) {
+                    if ((int)$cand_idx === ($r_idx + $step)) {
+                        $consecutive_count++;
+                    } else {
+                        break; // Ngắt ngay khi có khoảng trống không liên tục
+                    }
+                }
+                $actual_count = max(1, $consecutive_count);
+            }
+
+            $end_r_idx = $r_idx + $actual_count - 1;
+
             // YÊU CẦU 4: random user id trả về, có thể lấy user-{blockid}-{range-id}
             if (!empty($_GET['user'])) {
                 $worker = trim((string)$_GET['user']);
             } else {
-                $worker = "user-{$b_id}-{$r_idx}";
+                $worker = ($actual_count > 1) ? "user-{$b_id}-{$r_idx}-m{$actual_count}" : "user-{$b_id}-{$r_idx}";
             }
 
-            $pdo->prepare("UPDATE ranges SET status = 1, worker = ?, claimed_at = ? WHERE puzzle_id = ? AND block_id = ? AND range_idx = ?")
-                ->execute([$worker, $now, $puzzle_id, $b_id, $r_idx]);
+            $pdo->prepare("UPDATE ranges SET status = 1, worker = ?, claimed_at = ? WHERE puzzle_id = ? AND block_id = ? AND range_idx BETWEEN ? AND ?")
+                ->execute([$worker, $now, $puzzle_id, $b_id, $r_idx, $end_r_idx]);
 
             $pdo->prepare("
                 INSERT INTO user_stats (worker, speed, ranges_done, current_block, current_range, last_seen)
@@ -928,7 +968,8 @@ switch ($action) {
 
             $range_offset = bcmul((string)$r_idx, RANGE_SIZE);
             $start = bcadd($block_start, $range_offset);
-            $end = bcadd($start, RANGE_SIZE);
+            $total_span = bcmul((string)$actual_count, RANGE_SIZE);
+            $end = bcadd($start, $total_span);
 
             // Trả về puzzle (71) và user (user-{blockid}-{range-id}) cho client
             respond([
@@ -936,9 +977,12 @@ switch ($action) {
                 'user'             => $worker,
                 'block'            => $b_id,
                 'range_idx'        => $r_idx,
+                'range_count'      => $actual_count,
+                'multiple'         => $actual_count,
                 'start'            => $start,
                 'end'              => $end,
-                'range_size'       => (int)RANGE_SIZE,
+                'range_size'       => (int)$total_span,
+                'single_range_size'=> (int)RANGE_SIZE,
                 'target_address'   => $config['target_address'],
                 'version_byte'     => (int)$config['version_byte'],
                 'lower'            => $lower,
@@ -971,6 +1015,11 @@ switch ($action) {
             $worker    = trim((string)($input['user'] ?? 'anonymous'));
             $speed     = (float)($input['speed'] ?? 0.0);
 
+            // BẢO VỆ CHỐNG BUG: Client cũ gửi {"count": 268435456}, TUYỆT ĐỐI KHÔNG DÙNG $input['count']!
+            // Chỉ đọc 'range_count' hoặc 'multiple'. Nếu client cũ không gửi, mặc định chuẩn là 1 range.
+            $range_count = max(1, min(RANGES_PER_BLOCK, (int)($input['range_count'] ?? ($input['multiple'] ?? 1))));
+            $end_range_idx = $range_idx + $range_count - 1;
+
             if ($block_id < 0 || $range_idx < 0) error_resp('Missing block or range_idx');
 
             if ($status === 'found') {
@@ -995,11 +1044,15 @@ switch ($action) {
                 file_put_contents($res_json, json_encode($results, JSON_PRETTY_PRINT));
                 file_put_contents($res_txt, json_encode($found_record) . "\n", FILE_APPEND | LOCK_EX);
 
+                // Đánh dấu xong các range trong batch
+                $pdo->prepare("UPDATE ranges SET status = 2 WHERE puzzle_id = ? AND block_id = ? AND range_idx BETWEEN ? AND ?")
+                    ->execute([$puzzle_id, $block_id, $range_idx, $end_range_idx]);
+                // Riêng range tìm thấy đánh dấu status = 3 (SOLVED)
                 $pdo->prepare("UPDATE ranges SET status = 3 WHERE puzzle_id = ? AND block_id = ? AND range_idx = ?")
                     ->execute([$puzzle_id, $block_id, $range_idx]);
             } else {
-                $pdo->prepare("UPDATE ranges SET status = 2 WHERE puzzle_id = ? AND block_id = ? AND range_idx = ?")
-                    ->execute([$puzzle_id, $block_id, $range_idx]);
+                $pdo->prepare("UPDATE ranges SET status = 2 WHERE puzzle_id = ? AND block_id = ? AND range_idx BETWEEN ? AND ?")
+                    ->execute([$puzzle_id, $block_id, $range_idx, $end_range_idx]);
 
                 $st_chk = $pdo->prepare("SELECT COUNT(*) FROM ranges WHERE puzzle_id = ? AND block_id = ? AND status IN (2, 3)");
                 $st_chk->execute([$puzzle_id, $block_id]);
@@ -1016,16 +1069,22 @@ switch ($action) {
             $now = time();
             $pdo->prepare("
                 INSERT INTO user_stats (worker, speed, ranges_done, current_block, current_range, last_seen)
-                VALUES (?, ?, 1, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(worker) DO UPDATE SET
                     speed = excluded.speed,
-                    ranges_done = ranges_done + 1,
+                    ranges_done = ranges_done + excluded.ranges_done,
                     current_block = excluded.current_block,
                     current_range = excluded.current_range,
                     last_seen = excluded.last_seen
-            ")->execute([$worker, $speed, $block_id, $range_idx, $now]);
+            ")->execute([$worker, $speed, $range_count, $block_id, $range_idx, $now]);
 
-            respond(['status' => 'ok', 'puzzle' => $puzzle_id, 'block' => $block_id, 'range_idx' => $range_idx]);
+            respond([
+                'status'      => 'ok', 
+                'puzzle'      => $puzzle_id, 
+                'block'       => $block_id, 
+                'range_idx'   => $range_idx,
+                'range_count' => $range_count
+            ]);
         } catch (\Throwable $e) {
             error_resp('Database error: ' . $e->getMessage(), 500);
         }

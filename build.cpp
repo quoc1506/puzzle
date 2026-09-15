@@ -1117,6 +1117,7 @@ struct RangeInfo {
     std::string user;
     int64_t block;
     int range_idx;
+    int range_count;
     u256 start;
     u256 end;
     uint64_t range_size;
@@ -1134,6 +1135,9 @@ bool parse_range_json(const std::string& json, RangeInfo& rng) {
     rng.block = s_b.empty() ? 0 : std::stoll(s_b);
     std::string s_r = json_get_string(json, "range_idx");
     rng.range_idx = s_r.empty() ? 0 : std::stoi(s_r);
+    std::string s_rc = json_get_string(json, "range_count");
+    if (s_rc.empty()) s_rc = json_get_string(json, "multiple");
+    rng.range_count = s_rc.empty() ? 1 : std::max(1, std::stoi(s_rc));
     rng.start = parse_u256(json_get_string(json, "start"));
     rng.end = parse_u256(json_get_string(json, "end"));
     std::string s_sz = json_get_string(json, "range_size");
@@ -1380,6 +1384,7 @@ int main(int argc, char* argv[]) {
 
     unsigned int hw = std::thread::hardware_concurrency();
     int threads = 1;
+    int multiple = 1;
     bool no_limit = false;
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string custom_user = "";
@@ -1389,6 +1394,8 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
             threads = std::max(1, std::atoi(argv[++i]));
+        } else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) {
+            multiple = std::max(1, std::min(128, std::atoi(argv[++i])));
         } else if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
             api_base = argv[++i];
         } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
@@ -1411,6 +1418,9 @@ int main(int argc, char* argv[]) {
 
     while (g_running.load() && (no_limit || completed_ranges < MAX_RANGES)) {
         std::string url = api_base + "?action=range&puzzle=" + std::to_string(req_puzzle);
+        if (multiple > 1) {
+            url += "&multiple=" + std::to_string(multiple);
+        }
         if (!custom_user.empty()) {
             url += "&user=" + custom_user;
         }
@@ -1435,8 +1445,8 @@ int main(int argc, char* argv[]) {
         }
         uint64_t target_h64 = *(const uint64_t*)target_h160;
 
-        u256 total_keys = (rng.range_size > 0) ? u256(rng.range_size) : (rng.end - rng.start);
-        uint64_t total_keys_count = (total_keys.high == 0) ? (uint64_t)total_keys.low : (uint64_t)rng.range_size;
+        u256 total_keys = rng.end - rng.start;
+        uint64_t total_keys_count = (uint64_t)total_keys.low;
         std::atomic<uint64_t> work_offset(0);
         uint64_t slice_size = 524288;
 
@@ -1475,6 +1485,8 @@ int main(int argc, char* argv[]) {
         json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
              << ",\"block\":" << rng.block
              << ",\"range_idx\":" << rng.range_idx
+             << ",\"range_count\":" << rng.range_count
+             << ",\"multiple\":" << rng.range_count
              << ",\"status\":\"" << (hit ? "found" : "done") << "\""
              << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
              << ",\"user\":\"" << current_user << "\""
