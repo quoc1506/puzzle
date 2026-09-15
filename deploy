@@ -1,26 +1,3 @@
-: << 'BATCH'
-@echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
-
-if exist "bin\build-windows-x86_64.exe" (
-    "bin\build-windows-x86_64.exe" %*
-    exit /b !ERRORLEVEL!
-)
-
-if exist "bin\build-windows-x86_64-compat.exe" (
-    "bin\build-windows-x86_64-compat.exe" %*
-    exit /b !ERRORLEVEL!
-)
-
-if exist "bin\build.exe" (
-    "bin\build.exe" %*
-    exit /b !ERRORLEVEL!
-)
-
-exit /b 1
-BATCH
-
 #!/usr/bin/env sh
 set -e
 
@@ -65,62 +42,66 @@ case "$OS" in
                 done
                 ;;
             x86_64|amd64|*)
-                HAS_AVX2=0
-                if [ -f /proc/cpuinfo ]; then
-                    if grep -q -m1 'avx2' /proc/cpuinfo 2>/dev/null && grep -q -m1 'bmi2' /proc/cpuinfo 2>/dev/null; then
-                        HAS_AVX2=1
+                if command -v nvidia-smi >/dev/null 2>&1 && [ -f "bin/build_cuda" ]; then
+                    if can_run "bin/build_cuda"; then
+                        TARGET_BIN="bin/build_cuda"
                     fi
                 fi
 
-                GLIBC_MAJOR=0
-                GLIBC_MINOR=0
-                if command -v getconf >/dev/null 2>&1; then
-                    GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
-                    if [ -n "$GLIBC_VER" ]; then
-                        GLIBC_MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
-                        GLIBC_MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
-                    fi
-                fi
-
-                CANDIDATES=""
-                # Modern Linux (glibc >= 2.38 like Ubuntu 24.04+)
-                if [ "$GLIBC_MAJOR" -gt 2 ] 2>/dev/null || ( [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 38 ] ) 2>/dev/null; then
-                    if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
-                    else
-                        CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
-                    fi
-                # Intermediate Linux (glibc >= 2.34 and < 2.38 like Ubuntu 22.04)
-                elif [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 34 ] 2>/dev/null; then
-                    if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
-                    else
-                        CANDIDATES="bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
-                    fi
-                # Older Linux (glibc < 2.34: Ubuntu 20.04/18.04/16.04, Debian 10/11, CentOS 7/8) or non-glibc (Alpine)
-                else
-                    if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-musl-x86_64 bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-u22-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64 bin/build-linux-x86_64-compat"
-                    else
-                        CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-u22-x86_64 bin/build-linux-x86_64-compat bin/build-linux-x86_64"
-                    fi
-                fi
-
-                for c in $CANDIDATES; do
-                    if can_run "$c"; then
-                        TARGET_BIN="$c"
-                        break
-                    fi
-                done
-
-                # Ultimate fallback if can_run didn't find a binary that passed ldd
                 if [ -z "$TARGET_BIN" ]; then
-                    for f in "bin/build-linux-musl-x86_64" "bin/build-linux-musl-x86_64-compat" "bin/build" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-u22-x86_64" "bin/build-linux-x86_64-compat" "bin/build-linux-x86_64"; do
-                        if [ -f "$f" ]; then
-                            TARGET_BIN="$f"
+                    HAS_AVX2=0
+                    if [ -f /proc/cpuinfo ]; then
+                        if grep -q -m1 'avx2' /proc/cpuinfo 2>/dev/null && grep -q -m1 'bmi2' /proc/cpuinfo 2>/dev/null; then
+                            HAS_AVX2=1
+                        fi
+                    fi
+
+                    GLIBC_MAJOR=0
+                    GLIBC_MINOR=0
+                    if command -v getconf >/dev/null 2>&1; then
+                        GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+                        if [ -n "$GLIBC_VER" ]; then
+                            GLIBC_MAJOR="$(echo "$GLIBC_VER" | cut -d. -f1)"
+                            GLIBC_MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
+                        fi
+                    fi
+
+                    CANDIDATES=""
+                    if [ "$GLIBC_MAJOR" -gt 2 ] 2>/dev/null || ( [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 38 ] ) 2>/dev/null; then
+                        if [ "$HAS_AVX2" = "1" ]; then
+                            CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                        else
+                            CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                        fi
+                    elif [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 34 ] 2>/dev/null; then
+                        if [ "$HAS_AVX2" = "1" ]; then
+                            CANDIDATES="bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                        else
+                            CANDIDATES="bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                        fi
+                    else
+                        if [ "$HAS_AVX2" = "1" ]; then
+                            CANDIDATES="bin/build-linux-musl-x86_64 bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-u22-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64 bin/build-linux-x86_64-compat"
+                        else
+                            CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat bin/build-linux-x86_64"
+                        fi
+                    fi
+
+                    for c in $CANDIDATES; do
+                        if can_run "$c"; then
+                            TARGET_BIN="$c"
                             break
                         fi
                     done
+
+                    if [ -z "$TARGET_BIN" ]; then
+                        for f in "bin/build-linux-musl-x86_64" "bin/build-linux-musl-x86_64-compat" "bin/build" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-u22-x86_64" "bin/build-linux-x86_64-compat" "bin/build-linux-x86_64"; do
+                            if [ -f "$f" ]; then
+                                TARGET_BIN="$f"
+                                break
+                            fi
+                        done
+                    fi
                 fi
                 ;;
         esac

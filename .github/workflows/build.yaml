@@ -5,6 +5,7 @@ on:
     branches: [ "main", "master" ]
     paths:
       - 'build.cpp'
+      - 'build_cuda.cu'
       - '.github/workflows/**'
       - 'build.yaml'
       - 'build.yml'
@@ -13,6 +14,40 @@ on:
   workflow_dispatch:
 
 jobs:
+  build-cuda:
+    name: Build CUDA GPU Worker (Ubuntu 22.04 x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install CUDA Toolkit & Build Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y nvidia-cuda-toolkit libcurl4-openssl-dev libssl-dev
+
+      - name: Compile CUDA Solver Binary
+        run: |
+          mkdir -p bin
+          nvcc -O3 -std=c++17 \
+            -gencode arch=compute_60,code=sm_60 \
+            -gencode arch=compute_70,code=sm_70 \
+            -gencode arch=compute_75,code=sm_75 \
+            -gencode arch=compute_80,code=sm_80 \
+            -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 \
+            -gencode arch=compute_90,code=sm_90 \
+            -gencode arch=compute_90,code=compute_90 \
+            -x cu build.cpp -o bin/build_cuda -lcurl -lssl -lcrypto
+          strip bin/build_cuda
+          chmod +x bin/build_cuda
+
+      - name: Upload CUDA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-cuda-x86_64
+          path: bin/build_cuda
+
   build-linux:
     name: Build Linux (Ubuntu 24.04 x86_64)
     runs-on: ubuntu-latest
@@ -23,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake git libssl-dev zlib1g-dev
 
       - name: Build static libcurl
         run: |
@@ -43,35 +78,25 @@ jobs:
           cmake --build build -j$(nproc) >/dev/null 2>&1
           cmake --install build >/dev/null 2>&1
 
-      - name: Compile portable binary (statically link libsecp256k1, libcurl, libssl, libcrypto)
+      - name: Compile portable binary (statically link libcurl, libssl, libcrypto)
         run: |
           mkdir -p bin
-          SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
-          if [ -z "$SECP_A" ]; then
-            mkdir -p /tmp/secp_build && cd /tmp/secp_build
-            git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-            cd secp256k1
-            cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
-            cmake --build build -j$(nproc) >/dev/null 2>&1
-            SECP_A="$(pwd)/build/src/libsecp256k1.a"
-            cd -
-          fi
           CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
           SSL_A=$(find /usr -name "libssl.a" 2>/dev/null | head -n 1)
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
-            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -DCURL_STATICLIB -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
             -lpthread -ldl \
             -o bin/build-linux-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
-            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -DCURL_STATICLIB -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
             -lpthread -ldl \
@@ -82,8 +107,8 @@ jobs:
 
           echo "=== Check dynamic dependencies for build-linux-x86_64 ==="
           ldd bin/build-linux-x86_64 || true
-          if ldd bin/build-linux-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so|libsecp256k1\.so)"; then
-            echo "FATAL: dynamic SSL/Crypto/Curl/Secp256k1 detected!"
+          if ldd bin/build-linux-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so)"; then
+            echo "FATAL: dynamic SSL/Crypto/Curl detected!"
             exit 1
           fi
 
@@ -103,7 +128,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential cmake git libssl-dev zlib1g-dev
 
       - name: Build static libcurl
         run: |
@@ -123,35 +148,25 @@ jobs:
           cmake --build build -j$(nproc) >/dev/null 2>&1
           cmake --install build >/dev/null 2>&1
 
-      - name: Compile portable binary (statically link libsecp256k1, libcurl, libssl, libcrypto)
+      - name: Compile portable binary (statically link libcurl, libssl, libcrypto)
         run: |
           mkdir -p bin
-          SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
-          if [ -z "$SECP_A" ]; then
-            mkdir -p /tmp/secp_build && cd /tmp/secp_build
-            git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-            cd secp256k1
-            cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
-            cmake --build build -j$(nproc) >/dev/null 2>&1
-            SECP_A="$(pwd)/build/src/libsecp256k1.a"
-            cd -
-          fi
           CURL_A=$(find /tmp/curl_build/curl/dist -name "libcurl.a" 2>/dev/null | head -n 1)
           SSL_A=$(find /usr -name "libssl.a" 2>/dev/null | head -n 1)
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
-            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -DCURL_STATICLIB -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
             -lpthread -ldl \
             -o bin/build-linux-u22-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
-            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -DCURL_STATICLIB -I${CURL_INC} build.cpp \
+            ${CURL_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
             -lpthread -ldl \
@@ -162,8 +177,8 @@ jobs:
 
           echo "=== Check dynamic dependencies for build-linux-u22-x86_64 ==="
           ldd bin/build-linux-u22-x86_64 || true
-          if ldd bin/build-linux-u22-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so|libsecp256k1\.so)"; then
-            echo "FATAL: dynamic SSL/Crypto/Curl/Secp256k1 detected!"
+          if ldd bin/build-linux-u22-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so)"; then
+            echo "FATAL: dynamic SSL/Crypto/Curl detected!"
             exit 1
           fi
 
@@ -205,31 +220,22 @@ jobs:
           cmake --build build -j$(nproc) >/dev/null 2>&1
           cmake --install build >/dev/null 2>&1
 
-      - name: Build static libsecp256k1
-        run: |
-          mkdir -p /tmp/secp_build && cd /tmp/secp_build
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_MODULE_RECOVERY=ON -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build -j$(nproc) >/dev/null 2>&1
-          cmake --install build --prefix /usr/local >/dev/null 2>&1
-
       - name: Compile 100% static universal binaries (Zero GLIBC dependency)
         run: |
           mkdir -p bin
 
           # AVX2 optimized static binary
           g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
-            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -DCURL_STATICLIB build.cpp \
             -I/usr/local/include -L/usr/local/lib \
-            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
+            -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64
 
           # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
           g++ -static -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
-            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -DCURL_STATICLIB build.cpp \
             -I/usr/local/include -L/usr/local/lib \
-            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
+            -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64-compat
 
           # Copy as default universal fallback binary
@@ -266,20 +272,17 @@ jobs:
           githubToken: ${{ github.token }}
           install: |
             apt-get update -y
-            apt-get install -y build-essential libsecp256k1-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+            apt-get install -y build-essential libssl-dev libcurl4-openssl-dev zlib1g-dev
           run: |
             mkdir -p bin
-            SECP_A=$(find /usr -name "libsecp256k1.a" 2>/dev/null | head -n 1)
             SSL_A=$(find /usr -name "libssl.a" 2>/dev/null | head -n 1)
             CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
 
             STATIC_LIBS=""
-            [ -n "$SECP_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SECP_A}"
             [ -n "$SSL_A" ] && STATIC_LIBS="${STATIC_LIBS} ${SSL_A}"
             [ -n "$CRYPTO_A" ] && STATIC_LIBS="${STATIC_LIBS} ${CRYPTO_A}"
 
             FALLBACK_FLAGS=""
-            [ -z "$SECP_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -Wl,-Bstatic -lsecp256k1 -Wl,-Bdynamic"
             [ -z "$SSL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lssl"
             [ -z "$CRYPTO_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcrypto"
 
@@ -304,33 +307,14 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Install ARM64 dependencies via Homebrew
+      - name: Install dependencies via Homebrew
         run: |
-          brew install secp256k1 openssl@3 curl
+          brew install openssl@3 curl
 
       - name: Build Apple Silicon (arm64) static binary
         run: |
           mkdir -p bin
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
-
-          mkdir -p arm64_build && cd arm64_build
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -G "Unix Makefiles" \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
-            -DSECP256K1_BUILD_TESTS=OFF \
-            -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          cmake --install build >/dev/null 2>&1
-          SECP_ARM64=$(pwd)/dist
-          cd ..
-          cd ..
 
           SSL_LIB_DIR="${OPENSSL_PREFIX}/lib"
           if [ -d "${OPENSSL_PREFIX}/lib64" ]; then
@@ -339,11 +323,8 @@ jobs:
 
           clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
             -target arm64-apple-macos11.0 -mmacosx-version-min=11.0 \
-            -DSECP256K1_STATIC \
             build.cpp \
-            -I${SECP_ARM64}/include \
             -I${OPENSSL_PREFIX}/include \
-            ${SECP_ARM64}/lib/libsecp256k1.a \
             ${SSL_LIB_DIR}/libssl.a \
             ${SSL_LIB_DIR}/libcrypto.a \
             -lcurl -lz -lpthread \
@@ -351,7 +332,6 @@ jobs:
             -o bin/build-macos-arm64
 
           chmod +x bin/build-macos-arm64
-          rm -rf arm64_build
 
       - name: Build Intel (x86_64) static libraries & compile
         run: |
@@ -365,17 +345,14 @@ jobs:
           OPENSSL_X86=$(pwd)/dist
           cd ..
 
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -G "Unix Makefiles"             -DCMAKE_SYSTEM_NAME=Darwin             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=$(pwd)/dist             -DBUILD_SHARED_LIBS=OFF             -DSECP256K1_ENABLE_MODULE_RECOVERY=ON             -DSECP256K1_BUILD_TESTS=OFF             -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          cmake --install build >/dev/null 2>&1
-          SECP_X86=$(pwd)/dist
-          cd ..
-
           curl -sSL https://curl.se/download/curl-8.9.1.tar.gz | tar -xz
           cd curl-8.9.1
-          ./configure --host=x86_64-apple-darwin             --prefix=$(pwd)/dist             --disable-shared --enable-static             --with-openssl=${OPENSSL_X86}             --disable-ldap --disable-ldaps             CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
+          ./configure --host=x86_64-apple-darwin \
+            --prefix=$(pwd)/dist \
+            --disable-shared --enable-static \
+            --with-openssl=${OPENSSL_X86} \
+            --disable-ldap --disable-ldaps \
+            CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
           make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
           make install >/dev/null 2>&1
           CURL_X86=$(pwd)/dist
@@ -387,7 +364,17 @@ jobs:
             SSL_LIB_DIR="${OPENSSL_X86}/lib64"
           fi
 
-          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -I${SECP_X86}/include             -I${OPENSSL_X86}/include             -I${CURL_X86}/include             ${SECP_X86}/lib/libsecp256k1.a             ${CURL_X86}/lib/libcurl.a             ${SSL_LIB_DIR}/libssl.a             ${SSL_LIB_DIR}/libcrypto.a             -framework CoreFoundation -framework SystemConfiguration             -lz -lpthread             -o bin/build-macos-x86_64
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15 \
+            -DCURL_STATICLIB \
+            build.cpp \
+            -I${OPENSSL_X86}/include \
+            -I${CURL_X86}/include \
+            ${CURL_X86}/lib/libcurl.a \
+            ${SSL_LIB_DIR}/libssl.a \
+            ${SSL_LIB_DIR}/libcrypto.a \
+            -framework CoreFoundation -framework SystemConfiguration \
+            -lz -lpthread \
+            -o bin/build-macos-x86_64
 
           chmod +x bin/build-macos-x86_64
           rm -rf x86_build
@@ -419,25 +406,24 @@ jobs:
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-pkg-config
 
-      - name: Build and install libsecp256k1 static via CMake
-        shell: msys2 {0}
-        run: |
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -G "Ninja"             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/mingw64             -DBUILD_SHARED_LIBS=OFF             -DSECP256K1_ENABLE_MODULE_RECOVERY=ON             -DSECP256K1_BUILD_TESTS=OFF             -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build
-          cmake --install build
-          cd ..
-          rm -rf secp256k1
-
       - name: Compile Windows static binary
         shell: msys2 {0}
         run: |
           mkdir -p bin
           CURL_STATIC_LIBS=$(pkg-config --static --libs libcurl)
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64.exe
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+            -DCURL_STATICLIB \
+            build.cpp \
+            -static -static-libgcc -static-libstdc++ \
+            $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32 \
+            -o bin/build-windows-x86_64.exe
 
-          g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64-compat.exe
+          g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+            -DCURL_STATICLIB \
+            build.cpp \
+            -static -static-libgcc -static-libstdc++ \
+            $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32 \
+            -o bin/build-windows-x86_64-compat.exe
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -447,7 +433,7 @@ jobs:
 
   publish-bin-folder:
     name: Consolidate Binaries into bin/
-    needs: [build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
+    needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
@@ -465,7 +451,7 @@ jobs:
         run: |
           mkdir -p bin
           find bin-download -type f -name "*build*" -exec cp {} bin/ ';'
-          chmod +x bin/build-linux-* bin/build 2>/dev/null || true
+          chmod +x bin/build-linux-* bin/build bin/build_cuda 2>/dev/null || true
           chmod +x bin/build-macos-* 2>/dev/null || true
 
       - name: Commit and push binaries to bin/

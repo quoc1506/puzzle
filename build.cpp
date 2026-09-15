@@ -3,40 +3,39 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
-#include <algorithm>
 #include <chrono>
-#include <thread>
 #include <atomic>
-#include <mutex>
 #include <cstring>
 #include <csignal>
 #include <cstdint>
-#include <ctime>
 #include <cstdlib>
+#include <algorithm>
+#include <thread>
+#include <mutex>
 
-#ifndef CURL_STATICLIB
-#define CURL_STATICLIB
-#endif
-#ifndef SECP256K1_STATIC
-#define SECP256K1_STATIC
+#if defined(__CUDACC__)
+  #include <cuda_runtime.h>
+  #define CUDA_HOSTDEV __host__ __device__
+  #define CUDA_DEV __device__
+  #define CUDA_GLOBAL __global__
+  #define CUDA_INLINE __device__ __forceinline__
+#else
+  #define CUDA_HOSTDEV
+  #define CUDA_DEV
+  #define CUDA_GLOBAL
+  #define CUDA_INLINE inline __attribute__((always_inline))
 #endif
 
 #include <curl/curl.h>
-#include <secp256k1.h>
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
-#include <openssl/bn.h>
-#if defined(__x86_64__) || defined(_M_X64)
+
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
 #include <x86intrin.h>
 #endif
 #endif
-
-#if defined(__clang__)
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 static std::atomic<bool> g_running(true);
 
@@ -51,93 +50,45 @@ struct u256 {
     __uint128_t low;
     __uint128_t high;
 
-    u256() : low(0), high(0) {}
-    u256(int v) : low((uint64_t)v), high(0) {}
-    u256(uint32_t v) : low(v), high(0) {}
-    u256(uint64_t v) : low(v), high(0) {}
-    u256(__uint128_t l) : low(l), high(0) {}
-    u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
+    CUDA_HOSTDEV u256() : low(0), high(0) {}
+    CUDA_HOSTDEV u256(uint64_t v) : low(v), high(0) {}
+    CUDA_HOSTDEV u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
 
-    inline bool is_zero() const {
-        return (low | high) == 0;
-    }
-
-    inline void to_bytes_be(uint8_t out[32]) const {
-        for (int i = 0; i < 16; ++i) {
-            out[31 - i] = (uint8_t)(low >> (i * 8));
-            out[15 - i] = (uint8_t)(high >> (i * 8));
-        }
-    }
+    CUDA_HOSTDEV inline bool is_zero() const { return (low | high) == 0; }
 };
 
-inline bool operator==(const u256& a, const u256& b) {
-    return a.low == b.low && a.high == b.high;
-}
-inline bool operator!=(const u256& a, const u256& b) {
-    return !(a == b);
-}
-inline bool operator<(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline bool operator==(const u256& a, const u256& b) { return a.low == b.low && a.high == b.high; }
+CUDA_HOSTDEV inline bool operator!=(const u256& a, const u256& b) { return !(a == b); }
+CUDA_HOSTDEV inline bool operator<(const u256& a, const u256& b) {
     if (a.high != b.high) return a.high < b.high;
     return a.low < b.low;
 }
-inline bool operator<=(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline bool operator<=(const u256& a, const u256& b) {
     return (a < b) || (a == b);
 }
-inline bool operator>(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline bool operator>(const u256& a, const u256& b) {
     return b < a;
 }
-inline bool operator>=(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline bool operator>=(const u256& a, const u256& b) {
     return !(a < b);
 }
-
-inline u256 operator+(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline u256 operator+(const u256& a, const u256& b) {
     u256 r;
     r.low = a.low + b.low;
     r.high = a.high + b.high + (r.low < a.low ? 1 : 0);
     return r;
 }
-inline u256 operator+(const u256& a, uint64_t b) {
+CUDA_HOSTDEV inline u256 operator+(const u256& a, uint64_t b) {
     u256 r;
     r.low = a.low + b;
     r.high = a.high + (r.low < a.low ? 1 : 0);
     return r;
 }
-inline u256& operator+=(u256& a, const u256& b) {
-    __uint128_t old_low = a.low;
-    a.low += b.low;
-    a.high += b.high + (a.low < old_low ? 1 : 0);
-    return a;
-}
-inline u256& operator+=(u256& a, uint64_t b) {
-    __uint128_t old_low = a.low;
-    a.low += b;
-    a.high += (a.low < old_low ? 1 : 0);
-    return a;
-}
-
-inline u256 operator-(const u256& a, const u256& b) {
+CUDA_HOSTDEV inline u256 operator-(const u256& a, const u256& b) {
     u256 r;
     r.low = a.low - b.low;
     r.high = a.high - b.high - (a.low < b.low ? 1 : 0);
     return r;
-}
-inline u256 operator-(const u256& a, uint64_t b) {
-    u256 r;
-    r.low = a.low - b;
-    r.high = a.high - (a.low < b ? 1 : 0);
-    return r;
-}
-inline u256& operator-=(u256& a, const u256& b) {
-    bool borrow = a.low < b.low;
-    a.low -= b.low;
-    a.high -= b.high + (borrow ? 1 : 0);
-    return a;
-}
-inline u256& operator-=(u256& a, uint64_t b) {
-    bool borrow = a.low < b;
-    a.low -= b;
-    a.high -= (borrow ? 1 : 0);
-    return a;
 }
 
 u256 parse_u256(const std::string& str) {
@@ -216,10 +167,6 @@ std::string u256_to_dec(u256 v) {
     return s;
 }
 
-inline std::ostream& operator<<(std::ostream& os, const u256& v) {
-    return os << u256_to_dec(v);
-}
-
 std::string u256_to_hex64(const u256& v) {
     char buf[65];
     snprintf(buf, sizeof(buf), "%016llx%016llx%016llx%016llx",
@@ -230,70 +177,56 @@ std::string u256_to_hex64(const u256& v) {
     return std::string(buf);
 }
 
+static const char* B58_DIGITS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
+    std::vector<uint8_t> bytes(addr.length() + 1, 0);
+    int length = 0;
+
+    for (char c : addr) {
+        const char* p = strchr(B58_DIGITS, c);
+        if (!p) return false;
+        int carry = (int)(p - B58_DIGITS);
+        for (int i = 0; i < length; ++i) {
+            int val = (int)bytes[i] * 58 + carry;
+            bytes[i] = (uint8_t)(val & 0xFF);
+            carry = val >> 8;
+        }
+        while (carry > 0) {
+            bytes[length++] = (uint8_t)(carry & 0xFF);
+            carry >>= 8;
+        }
+    }
+
+    for (size_t i = 0; i < addr.length() && addr[i] == '1'; ++i) {
+        bytes[length++] = 0;
+    }
+
+    std::reverse(bytes.begin(), bytes.begin() + length);
+    bytes.resize(length);
+
+    if (bytes.size() != 25) return false;
+
+    uint8_t sha1[32], sha2[32];
+    SHA256(bytes.data(), 21, sha1);
+    SHA256(sha1, 32, sha2);
+    if (memcmp(sha2, bytes.data() + 21, 4) != 0) return false;
+
+    memcpy(hash160_out, bytes.data() + 1, 20);
+    return true;
+}
+
+#define SECP_K 0x1000003D1ULL
+
 struct Fe {
     uint64_t d[4];
 };
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC optimize("O3,unroll-loops,omit-frame-pointer")
-#endif
-
-static const uint64_t SECP_K = 0x1000003D1ULL;
-
-static inline bool fe_is_zero(const Fe& a) {
+CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
 }
 
-static inline bool fe_eq(const Fe& a, const Fe& b) {
-    return a.d[0] == b.d[0] && a.d[1] == b.d[1] && a.d[2] == b.d[2] && a.d[3] == b.d[3];
-}
-
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
-    Fe r;
-    unsigned char carry = 0;
-    carry = _addcarry_u64(carry, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
-    carry = _addcarry_u64(carry, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
-    carry = _addcarry_u64(carry, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
-    carry = _addcarry_u64(carry, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (carry) {
-        carry = _addcarry_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        carry = _addcarry_u64(carry, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        carry = _addcarry_u64(carry, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _addcarry_u64(carry, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
-    }
-    return r;
-}
-
-static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
-    Fe r;
-    unsigned char borrow = 0;
-    borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
-    borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
-    borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
-    borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (borrow) {
-        borrow = _subborrow_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    }
-    return r;
-}
-#else
-static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
     r.d[0] = (uint64_t)c; c >>= 64;
@@ -325,7 +258,7 @@ static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b)
     return r;
 }
 
-static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] - b.d[0];
     r.d[0] = (uint64_t)c;
@@ -347,15 +280,12 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
     }
     return r;
 }
-#endif
 
-#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
+#if !defined(__CUDA_ARCH__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
 static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t r0, r1, r2, r3;
     uint64_t t4, t5, t6, t7;
-
     __asm__ __volatile__ (
-        // --- Row 0: a * b[0] ---
         "movq 0(%[b]), %%rdx\n\t"
         "mulx 0(%[a]), %[r0], %[r1]\n\t"
         "mulx 8(%[a]), %%rax, %[r2]\n\t"
@@ -367,7 +297,6 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "adcq $0, %[t4]\n\t"
         "xorq %[t5], %[t5]\n\t"
 
-        // --- Row 1: a * b[1] ---
         "movq 8(%[b]), %%rdx\n\t"
         "mulx 0(%[a]), %%rax, %%rcx\n\t"
         "adcx %%rax, %[r1]\n\t"
@@ -386,7 +315,6 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "adox %%rax, %[t5]\n\t"
         "xorq %[t6], %[t6]\n\t"
 
-        // --- Row 2: a * b[2] ---
         "movq 16(%[b]), %%rdx\n\t"
         "mulx 0(%[a]), %%rax, %%rcx\n\t"
         "adcx %%rax, %[r2]\n\t"
@@ -405,7 +333,6 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "adox %%rax, %[t6]\n\t"
         "xorq %[t7], %[t7]\n\t"
 
-        // --- Row 3: a * b[3] ---
         "movq 24(%[b]), %%rdx\n\t"
         "mulx 0(%[a]), %%rax, %%rcx\n\t"
         "adcx %%rax, %[r3]\n\t"
@@ -423,22 +350,17 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "adcx %%rax, %[t7]\n\t"
         "adox %%rax, %[t7]\n\t"
 
-        // --- Reduction Pass 1: Add (t4, t5, t6, t7) * SECP_K to (r0, r1, r2, r3) ---
         "movabsq $0x1000003D1, %%rdx\n\t"
         "xorq %%rax, %%rax\n\t"
-
         "mulx %[t4], %%rax, %%rcx\n\t"
         "adcx %%rax, %[r0]\n\t"
         "adox %%rcx, %[r1]\n\t"
-
         "mulx %[t5], %%rax, %%rcx\n\t"
         "adcx %%rax, %[r1]\n\t"
         "adox %%rcx, %[r2]\n\t"
-
         "mulx %[t6], %%rax, %%rcx\n\t"
         "adcx %%rax, %[r2]\n\t"
         "adox %%rcx, %[r3]\n\t"
-
         "movq $0, %[t4]\n\t"
         "mulx %[t7], %%rax, %%rcx\n\t"
         "adcx %%rax, %[r3]\n\t"
@@ -447,7 +369,6 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "adcx %%rax, %[t4]\n\t"
         "adox %%rax, %[t4]\n\t"
 
-        // --- Reduction Pass 2: Add t4 * SECP_K to (r0, r1, r2, r3) ---
         "mulx %[t4], %%rax, %%rcx\n\t"
         "addq %%rax, %[r0]\n\t"
         "adcq %%rcx, %[r1]\n\t"
@@ -456,14 +377,12 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "movq $0, %[t4]\n\t"
         "adcq $0, %[t4]\n\t"
 
-        // Extra carry handling (t4 is 0 or 1)
         "imulq %%rdx, %[t4]\n\t"
         "addq %[t4], %[r0]\n\t"
         "adcq $0, %[r1]\n\t"
         "adcq $0, %[r2]\n\t"
         "adcq $0, %[r3]\n\t"
 
-        // --- Final boundary check if r >= p: add SECP_K and cmovc ---
         "movq %[r0], %%rax\n\t"
         "addq %%rdx, %%rax\n\t"
         "movq %[r1], %%rcx\n\t"
@@ -476,12 +395,12 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         "cmovcq %%rcx, %[r1]\n\t"
         "cmovcq %[t4], %[r2]\n\t"
         "cmovcq %[t5], %[r3]\n\t"
+
         : [r0] "=&r"(r0), [r1] "=&r"(r1), [r2] "=&r"(r2), [r3] "=&r"(r3),
           [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
         : [a] "r"(a.d), [b] "r"(b.d)
         : "rax", "rcx", "rdx", "cc", "memory"
     );
-
     Fe r;
     r.d[0] = r0; r.d[1] = r1; r.d[2] = r2; r.d[3] = r3;
     return r;
@@ -491,7 +410,7 @@ static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
     return fe_mul(a, a);
 }
 #else
-static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -518,6 +437,7 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
     c += (u128)t[6] + a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
 
     u128 carry = 0;
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
         t[i] = (uint64_t)prod;
@@ -551,7 +471,7 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
     return r;
 }
 
-static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
@@ -616,7 +536,7 @@ static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
 }
 #endif
 
-static inline Fe fe_inv(const Fe& a) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     const uint64_t exp[4] = {
         0xFFFFFFFEFFFFFC2DULL,
         0xFFFFFFFFFFFFFFFFULL,
@@ -639,68 +559,150 @@ static inline Fe fe_inv(const Fe& a) {
     return res;
 }
 
-static inline Fe fe_from_bytes(const uint8_t b[32]) {
-    Fe r;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t val = 0;
-        for (int j = 0; j < 8; ++j) {
-            val = (val << 8) | b[(3 - i) * 8 + j];
-        }
-        r.d[i] = val;
-    }
-    return r;
-}
-
-static inline void fe_to_bytes(const Fe& a, uint8_t b[32]) {
-    for (int i = 0; i < 4; ++i) {
-        uint64_t val = a.d[i];
-        for (int j = 7; j >= 0; --j) {
-            b[(3 - i) * 8 + j] = (uint8_t)(val & 0xFF);
-            val >>= 8;
-        }
-    }
-}
-
 struct AffinePoint {
     Fe x;
     Fe y;
 };
 
-static const int BATCH_SIZE = 1024;
+struct JacobianPoint {
+    Fe X;
+    Fe Y;
+    Fe Z;
+};
 
-static AffinePoint G_TABLE[BATCH_SIZE];
-
-void init_generator_table() {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    for (int i = 1; i <= BATCH_SIZE; ++i) {
-        uint8_t priv[32] = {0};
-        priv[31] = (uint8_t)(i & 0xFF);
-        priv[30] = (uint8_t)((i >> 8) & 0xFF);
-
-        secp256k1_pubkey pub;
-        if (!secp256k1_ec_pubkey_create(ctx, &pub, priv)) {
-            continue;
-        }
-
-        uint8_t out65[65];
-        size_t len65 = 65;
-        secp256k1_ec_pubkey_serialize(ctx, out65, &len65, &pub, SECP256K1_EC_UNCOMPRESSED);
-
-        G_TABLE[i - 1].x = fe_from_bytes(out65 + 1);
-        G_TABLE[i - 1].y = fe_from_bytes(out65 + 33);
-    }
-    secp256k1_context_destroy(ctx);
+CUDA_HOSTDEV CUDA_INLINE AffinePoint get_generator_G() {
+    AffinePoint G;
+    G.x.d[0] = 0x59F2815B16F81798ULL; G.x.d[1] = 0x029BFCDB2DCE28D9ULL;
+    G.x.d[2] = 0x55A06295CE870B07ULL; G.x.d[3] = 0x79BE667EF9DCBBACULL;
+    G.y.d[0] = 0x9C47D08FFB10D4B8ULL; G.y.d[1] = 0xFD17B448A6855419ULL;
+    G.y.d[2] = 0x5DA4FBFC0E1108A8ULL; G.y.d[3] = 0x483ADA7726A3C465ULL;
+    return G;
 }
 
-static inline uint32_t ror32(uint32_t x, int n) {
+CUDA_HOSTDEV CUDA_INLINE void jacobian_double(JacobianPoint& R, const JacobianPoint& P) {
+    if (fe_is_zero(P.Y)) {
+        R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
+        return;
+    }
+    Fe XX = fe_sqr(P.X);
+    Fe YY = fe_sqr(P.Y);
+    Fe YYYY = fe_sqr(YY);
+    Fe ZZ = fe_sqr(P.Z);
+
+    Fe S = fe_mul(P.X, YY);
+    S = fe_add(S, S);
+    S = fe_add(S, S);
+
+    Fe M = fe_add(XX, XX);
+    M = fe_add(M, XX);
+
+    Fe M2 = fe_sqr(M);
+    Fe out_X = fe_sub(fe_sub(M2, S), S);
+
+    Fe Y8 = fe_add(YYYY, YYYY);
+    Y8 = fe_add(Y8, Y8);
+    Y8 = fe_add(Y8, Y8);
+    Fe out_Y = fe_sub(fe_mul(M, fe_sub(S, out_X)), Y8);
+
+    Fe out_Z = fe_add(fe_mul(P.Y, P.Z), fe_mul(P.Y, P.Z));
+
+    R.X = out_X;
+    R.Y = out_Y;
+    R.Z = out_Z;
+}
+
+CUDA_HOSTDEV CUDA_INLINE void jacobian_add_affine(JacobianPoint& R, const JacobianPoint& P, const AffinePoint& Q) {
+    if (fe_is_zero(P.Z)) {
+        R.X = Q.x; R.Y = Q.y; R.Z = {{1, 0, 0, 0}};
+        return;
+    }
+    Fe Z1Z1 = fe_sqr(P.Z);
+    Fe Z1_3 = fe_mul(Z1Z1, P.Z);
+
+    Fe U2 = fe_mul(Q.x, Z1Z1);
+    Fe S2 = fe_mul(Q.y, Z1_3);
+
+    Fe H = fe_sub(U2, P.X);
+    Fe r = fe_sub(S2, P.Y);
+
+    Fe HH = fe_sqr(H);
+    Fe HHH = fe_mul(HH, H);
+    Fe V = fe_mul(P.X, HH);
+
+    Fe r2 = fe_sqr(r);
+    Fe out_X = fe_sub(fe_sub(r2, HHH), fe_add(V, V));
+
+    Fe out_Y = fe_sub(fe_mul(r, fe_sub(V, out_X)), fe_mul(P.Y, HHH));
+
+    Fe out_Z = fe_mul(P.Z, H);
+
+    R.X = out_X;
+    R.Y = out_Y;
+    R.Z = out_Z;
+}
+
+CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& P) {
+    AffinePoint out;
+    Fe Zinv = fe_inv(P.Z);
+    Fe Zinv2 = fe_sqr(Zinv);
+    Fe Zinv3 = fe_mul(Zinv2, Zinv);
+    out.x = fe_mul(P.X, Zinv2);
+    out.y = fe_mul(P.Y, Zinv3);
+    return out;
+}
+
+CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
+    AffinePoint G = get_generator_G();
+    JacobianPoint R;
+    R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
+    bool init = false;
+
+    uint64_t limbs[4] = {
+        (uint64_t)k.low,
+        (uint64_t)(k.low >> 64),
+        (uint64_t)k.high,
+        (uint64_t)(k.high >> 64)
+    };
+
+    for (int i = 3; i >= 0; --i) {
+        uint64_t w = limbs[i];
+        for (int b = 63; b >= 0; --b) {
+            if (init) {
+                jacobian_double(R, R);
+            }
+            if ((w >> b) & 1) {
+                if (!init) {
+                    R.X = G.x;
+                    R.Y = G.y;
+                    R.Z = {{1, 0, 0, 0}};
+                    init = true;
+                } else {
+                    jacobian_add_affine(R, R, G);
+                }
+            }
+        }
+    }
+    return jacobian_to_affine(R);
+}
+
+CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_gpu(uint32_t x, int n) {
     return (x >> n) | (x << (32 - n));
 }
 
-static inline uint32_t rol32(uint32_t x, int n) {
+CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
     return (x << n) | (x >> (32 - n));
 }
 
-static const uint32_t K_SHA256[64] = {
+#if defined(__CUDA_ARCH__)
+CUDA_DEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
+    return __byte_perm(x, 0, 0x0123);
+}
+#define BSWAP32_GPU(x) bswap32_dev(x)
+#else
+#define BSWAP32_GPU(x) __builtin_bswap32(x)
+#endif
+
+static const uint32_t K_SHA256_GPU[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -710,8 +712,11 @@ static const uint32_t K_SHA256[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
+#ifndef K_SHA256
+#define K_SHA256 K_SHA256_GPU
+#endif
 
-static inline __attribute__((always_inline)) void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
+CUDA_HOSTDEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
     uint32_t w[64];
     uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
@@ -726,76 +731,85 @@ static inline __attribute__((always_inline)) void fast_sha256_into_ripemd_X(uint
     w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
     w[15] = 264;
 
-    w[16] = w[0] + (ror32(w[1], 7) ^ ror32(w[1], 18) ^ (w[1] >> 3));
-    w[17] = w[1] + (ror32(w[2], 7) ^ ror32(w[2], 18) ^ (w[2] >> 3)) + 0x00A50000U;
-    w[18] = w[2] + (ror32(w[3], 7) ^ ror32(w[3], 18) ^ (w[3] >> 3)) + (ror32(w[16], 17) ^ ror32(w[16], 19) ^ (w[16] >> 10));
-    w[19] = w[3] + (ror32(w[4], 7) ^ ror32(w[4], 18) ^ (w[4] >> 3)) + (ror32(w[17], 17) ^ ror32(w[17], 19) ^ (w[17] >> 10));
-    w[20] = w[4] + (ror32(w[5], 7) ^ ror32(w[5], 18) ^ (w[5] >> 3)) + (ror32(w[18], 17) ^ ror32(w[18], 19) ^ (w[18] >> 10));
-    w[21] = w[5] + (ror32(w[6], 7) ^ ror32(w[6], 18) ^ (w[6] >> 3)) + (ror32(w[19], 17) ^ ror32(w[19], 19) ^ (w[19] >> 10));
-    w[22] = w[6] + (ror32(w[7], 7) ^ ror32(w[7], 18) ^ (w[7] >> 3)) + 264 + (ror32(w[20], 17) ^ ror32(w[20], 19) ^ (w[20] >> 10));
-    w[23] = w[7] + (ror32(w[8], 7) ^ ror32(w[8], 18) ^ (w[8] >> 3)) + w[16] + (ror32(w[21], 17) ^ ror32(w[21], 19) ^ (w[21] >> 10));
+    w[16] = w[0] + (ror32_gpu(w[1], 7) ^ ror32_gpu(w[1], 18) ^ (w[1] >> 3));
+    w[17] = w[1] + (ror32_gpu(w[2], 7) ^ ror32_gpu(w[2], 18) ^ (w[2] >> 3)) + 0x00A50000U;
+    w[18] = w[2] + (ror32_gpu(w[3], 7) ^ ror32_gpu(w[3], 18) ^ (w[3] >> 3)) + (ror32_gpu(w[16], 17) ^ ror32_gpu(w[16], 19) ^ (w[16] >> 10));
+    w[19] = w[3] + (ror32_gpu(w[4], 7) ^ ror32_gpu(w[4], 18) ^ (w[4] >> 3)) + (ror32_gpu(w[17], 17) ^ ror32_gpu(w[17], 19) ^ (w[17] >> 10));
+    w[20] = w[4] + (ror32_gpu(w[5], 7) ^ ror32_gpu(w[5], 18) ^ (w[5] >> 3)) + (ror32_gpu(w[18], 17) ^ ror32_gpu(w[18], 19) ^ (w[18] >> 10));
+    w[21] = w[5] + (ror32_gpu(w[6], 7) ^ ror32_gpu(w[6], 18) ^ (w[6] >> 3)) + (ror32_gpu(w[19], 17) ^ ror32_gpu(w[19], 19) ^ (w[19] >> 10));
+    w[22] = w[6] + (ror32_gpu(w[7], 7) ^ ror32_gpu(w[7], 18) ^ (w[7] >> 3)) + 264 + (ror32_gpu(w[20], 17) ^ ror32_gpu(w[20], 19) ^ (w[20] >> 10));
+    w[23] = w[7] + (ror32_gpu(w[8], 7) ^ ror32_gpu(w[8], 18) ^ (w[8] >> 3)) + w[16] + (ror32_gpu(w[21], 17) ^ ror32_gpu(w[21], 19) ^ (w[21] >> 10));
 
-    #pragma GCC unroll 40
+    #pragma unroll
     for (int i = 24; i < 64; ++i) {
-        uint32_t s0 = ror32(w[i-15], 7) ^ ror32(w[i-15], 18) ^ (w[i-15] >> 3);
-        uint32_t s1 = ror32(w[i-2], 17) ^ ror32(w[i-2], 19) ^ (w[i-2] >> 10);
+        uint32_t s0 = ror32_gpu(w[i-15], 7) ^ ror32_gpu(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = ror32_gpu(w[i-2], 17) ^ ror32_gpu(w[i-2], 19) ^ (w[i-2] >> 10);
         w[i] = w[i-16] + s0 + w[i-7] + s1;
     }
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-#define SHA256_STEP(a, b, c, d, e, f, g, h, kw) do {     uint32_t S1 = ror32(e, 6) ^ ror32(e, 11) ^ ror32(e, 25);     uint32_t ch = g ^ (e & (f ^ g));     uint32_t temp1 = h + S1 + ch + (kw);     uint32_t S0 = ror32(a, 2) ^ ror32(a, 13) ^ ror32(a, 22);     uint32_t maj = (a & b) | (c & (a ^ b));     uint32_t temp2 = S0 + maj;     d += temp1;     h = temp1 + temp2; } while (0)
+#define SHA256_STEP_GPU(a, b, c, d, e, f, g, h, kw) do { \
+    uint32_t S1 = ror32_gpu(e, 6) ^ ror32_gpu(e, 11) ^ ror32_gpu(e, 25); \
+    uint32_t ch = g ^ (e & (f ^ g)); \
+    uint32_t temp1 = h + S1 + ch + (kw); \
+    uint32_t S0 = ror32_gpu(a, 2) ^ ror32_gpu(a, 13) ^ ror32_gpu(a, 22); \
+    uint32_t maj = (a & b) | (c & (a ^ b)); \
+    uint32_t temp2 = S0 + maj; \
+    d += temp1; \
+    h = temp1 + temp2; \
+} while (0)
 
-    #pragma GCC unroll 8
+    #pragma unroll
     for (int i = 0; i < 64; i += 8) {
-        SHA256_STEP(a, b, c, d, e, f, g, h, K_SHA256[i] + w[i]);
-        SHA256_STEP(h, a, b, c, d, e, f, g, K_SHA256[i+1] + w[i+1]);
-        SHA256_STEP(g, h, a, b, c, d, e, f, K_SHA256[i+2] + w[i+2]);
-        SHA256_STEP(f, g, h, a, b, c, d, e, K_SHA256[i+3] + w[i+3]);
-        SHA256_STEP(e, f, g, h, a, b, c, d, K_SHA256[i+4] + w[i+4]);
-        SHA256_STEP(d, e, f, g, h, a, b, c, K_SHA256[i+5] + w[i+5]);
-        SHA256_STEP(c, d, e, f, g, h, a, b, K_SHA256[i+6] + w[i+6]);
-        SHA256_STEP(b, c, d, e, f, g, h, a, K_SHA256[i+7] + w[i+7]);
+        SHA256_STEP_GPU(a, b, c, d, e, f, g, h, K_SHA256_GPU[i] + w[i]);
+        SHA256_STEP_GPU(h, a, b, c, d, e, f, g, K_SHA256_GPU[i+1] + w[i+1]);
+        SHA256_STEP_GPU(g, h, a, b, c, d, e, f, K_SHA256_GPU[i+2] + w[i+2]);
+        SHA256_STEP_GPU(f, g, h, a, b, c, d, e, K_SHA256_GPU[i+3] + w[i+3]);
+        SHA256_STEP_GPU(e, f, g, h, a, b, c, d, K_SHA256_GPU[i+4] + w[i+4]);
+        SHA256_STEP_GPU(d, e, f, g, h, a, b, c, K_SHA256_GPU[i+5] + w[i+5]);
+        SHA256_STEP_GPU(c, d, e, f, g, h, a, b, K_SHA256_GPU[i+6] + w[i+6]);
+        SHA256_STEP_GPU(b, c, d, e, f, g, h, a, K_SHA256_GPU[i+7] + w[i+7]);
     }
-#undef SHA256_STEP
+#undef SHA256_STEP_GPU
 
-    X[0] = __builtin_bswap32(0x6a09e667 + a);
-    X[1] = __builtin_bswap32(0xbb67ae85 + b);
-    X[2] = __builtin_bswap32(0x3c6ef372 + c);
-    X[3] = __builtin_bswap32(0xa54ff53a + d);
-    X[4] = __builtin_bswap32(0x510e527f + e);
-    X[5] = __builtin_bswap32(0x9b05688c + f);
-    X[6] = __builtin_bswap32(0x1f83d9ab + g);
-    X[7] = __builtin_bswap32(0x5be0cd19 + h);
+    X[0] = BSWAP32_GPU(0x6a09e667 + a);
+    X[1] = BSWAP32_GPU(0xbb67ae85 + b);
+    X[2] = BSWAP32_GPU(0x3c6ef372 + c);
+    X[3] = BSWAP32_GPU(0xa54ff53a + d);
+    X[4] = BSWAP32_GPU(0x510e527f + e);
+    X[5] = BSWAP32_GPU(0x9b05688c + f);
+    X[6] = BSWAP32_GPU(0x1f83d9ab + g);
+    X[7] = BSWAP32_GPU(0x5be0cd19 + h);
     X[8] = 0x00000080U;
     X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
     X[14] = 256;
     X[15] = 0;
 }
 
-static const uint8_t r_left[80] = {
+static const uint8_t rl_gpu[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
     1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
-static const uint8_t s_left[80] = {
+static const uint8_t sl_gpu[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
     11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
-static const uint8_t r_right[80] = {
+static const uint8_t rr_gpu[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
     8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
-static const uint8_t s_right[80] = {
+static const uint8_t sr_gpu[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -803,58 +817,58 @@ static const uint8_t s_right[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
+CUDA_HOSTDEV void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
     uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
-    #pragma GCC unroll 16
+    #pragma unroll
     for (int j = 0; j < 16; ++j) {
         uint32_t f = B ^ C ^ D;
         uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32(A + f + X[r_left[j]], s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x50A28BE6U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]], sl_gpu[j]) + E;
+        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x50A28BE6U, sr_gpu[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    #pragma GCC unroll 16
+    #pragma unroll
     for (int j = 16; j < 32; ++j) {
         uint32_t f = D ^ (B & (C ^ D));
         uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x5A827999U, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x5C4DD124U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x5A827999U, sl_gpu[j]) + E;
+        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x5C4DD124U, sr_gpu[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    #pragma GCC unroll 16
+    #pragma unroll
     for (int j = 32; j < 48; ++j) {
         uint32_t f = (B | ~C) ^ D;
         uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x6ED9EBA1U, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x6D703EF3U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x6ED9EBA1U, sl_gpu[j]) + E;
+        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x6D703EF3U, sr_gpu[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    #pragma GCC unroll 16
+    #pragma unroll
     for (int j = 48; j < 64; ++j) {
         uint32_t f = C ^ (D & (B ^ C));
         uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0x8F1BBCDCU, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]] + 0x7A6D76E9U, s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x8F1BBCDCU, sl_gpu[j]) + E;
+        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x7A6D76E9U, sr_gpu[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    #pragma GCC unroll 16
+    #pragma unroll
     for (int j = 64; j < 80; ++j) {
         uint32_t f = B ^ (C | ~D);
         uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32(A + f + X[r_left[j]] + 0xA953FD4EU, s_left[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-        uint32_t Tp = rol32(Ap + fp + X[r_right[j]], s_right[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0xA953FD4EU, sl_gpu[j]) + E;
+        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]], sr_gpu[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     out_h[0] = 0xEFCDAB89 + C + Dp;
@@ -864,6 +878,39 @@ static inline __attribute__((always_inline)) void fast_ripemd160_32(const uint32
     out_h[4] = 0x67452301 + B + Cp;
 }
 
+CUDA_HOSTDEV bool check_key_hash160(const u256& k, const uint32_t target_w[5], uint64_t target_h64) {
+    AffinePoint P = scalar_mul_G(k);
+    uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
+    uint32_t X[16];
+    fast_sha256_into_ripemd_X(prefix, P.x, X);
+    uint32_t h[5];
+    fast_ripemd160_32(X, h);
+
+    uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
+    if (cur_h64 == target_h64) {
+        return (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]);
+    }
+    return false;
+}
+
+#if defined(__CUDACC__)
+__device__ int dev_found_flag = 0;
+__device__ uint64_t dev_found_offset = 0;
+__device__ uint32_t dev_target_w[5];
+__device__ uint64_t dev_target_h64;
+
+CUDA_GLOBAL void cuda_scan_kernel(u256 base_start, uint64_t total_keys) {
+    uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total_keys || dev_found_flag != 0) return;
+
+    u256 cand_k = base_start + idx;
+    if (check_key_hash160(cand_k, dev_target_w, dev_target_h64)) {
+        if (atomicExch(&dev_found_flag, 1) == 0) {
+            dev_found_offset = idx;
+        }
+    }
+}
+#else
 #if defined(__AVX2__)
 #define AVX2_ROR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
 #define AVX2_ROL(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
@@ -894,7 +941,7 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     __m256i KW[64];
     #pragma GCC unroll 64
     for (int i = 0; i < 64; ++i) {
-        KW[i] = _mm256_add_epi32(_mm256_set1_epi32(K_SHA256[i]), W[i]);
+        KW[i] = _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]), W[i]);
     }
 
 #define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
@@ -906,9 +953,9 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     __m256i temp2 = _mm256_add_epi32(S0, maj); \
     d = _mm256_add_epi32(d, temp1); \
     h = _mm256_add_epi32(temp1, temp2); \
-} while (0)
+} while(0)
 
-    #pragma GCC unroll 8
+    #pragma GCC unroll 64
     for (int i = 0; i < 64; i += 8) {
         AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, KW[i]);
         AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, KW[i+1]);
@@ -921,20 +968,29 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     }
 #undef AVX2_SHA256_STEP
 
-    const __m256i bswap_mask = _mm256_set_epi8(
-        12, 13, 14, 15,  8,  9, 10, 11,  4,  5,  6,  7,  0,  1,  2,  3,
-        12, 13, 14, 15,  8,  9, 10, 11,  4,  5,  6,  7,  0,  1,  2,  3
+    __m256i h0 = _mm256_add_epi32(_mm256_set1_epi32(0x6a09e667), a);
+    __m256i h1 = _mm256_add_epi32(_mm256_set1_epi32(0xbb67ae85), b);
+    __m256i h2 = _mm256_add_epi32(_mm256_set1_epi32(0x3c6ef372), c);
+    __m256i h3 = _mm256_add_epi32(_mm256_set1_epi32(0xa54ff53a), d);
+    __m256i h4 = _mm256_add_epi32(_mm256_set1_epi32(0x510e527f), e);
+    __m256i h5 = _mm256_add_epi32(_mm256_set1_epi32(0x9b05688c), f);
+    __m256i h6 = _mm256_add_epi32(_mm256_set1_epi32(0x1f83d9ab), g);
+    __m256i h7 = _mm256_add_epi32(_mm256_set1_epi32(0x5be0cd19), h);
+
+    const __m256i shuf_mask = _mm256_set_epi8(
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
+        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
     );
 
-    X_out[0] = _mm256_shuffle_epi8(_mm256_add_epi32(a, _mm256_set1_epi32(0x6a09e667)), bswap_mask);
-    X_out[1] = _mm256_shuffle_epi8(_mm256_add_epi32(b, _mm256_set1_epi32(0xbb67ae85)), bswap_mask);
-    X_out[2] = _mm256_shuffle_epi8(_mm256_add_epi32(c, _mm256_set1_epi32(0x3c6ef372)), bswap_mask);
-    X_out[3] = _mm256_shuffle_epi8(_mm256_add_epi32(d, _mm256_set1_epi32(0xa54ff53a)), bswap_mask);
-    X_out[4] = _mm256_shuffle_epi8(_mm256_add_epi32(e, _mm256_set1_epi32(0x510e527f)), bswap_mask);
-    X_out[5] = _mm256_shuffle_epi8(_mm256_add_epi32(f, _mm256_set1_epi32(0x9b05688c)), bswap_mask);
-    X_out[6] = _mm256_shuffle_epi8(_mm256_add_epi32(g, _mm256_set1_epi32(0x1f83d9ab)), bswap_mask);
-    X_out[7] = _mm256_shuffle_epi8(_mm256_add_epi32(h, _mm256_set1_epi32(0x5be0cd19)), bswap_mask);
-    X_out[8] = _mm256_set1_epi32(0x00000080U);
+    X_out[0] = _mm256_shuffle_epi8(h0, shuf_mask);
+    X_out[1] = _mm256_shuffle_epi8(h1, shuf_mask);
+    X_out[2] = _mm256_shuffle_epi8(h2, shuf_mask);
+    X_out[3] = _mm256_shuffle_epi8(h3, shuf_mask);
+    X_out[4] = _mm256_shuffle_epi8(h4, shuf_mask);
+    X_out[5] = _mm256_shuffle_epi8(h5, shuf_mask);
+    X_out[6] = _mm256_shuffle_epi8(h6, shuf_mask);
+    X_out[7] = _mm256_shuffle_epi8(h7, shuf_mask);
+    X_out[8] = _mm256_set1_epi32(0x00000080);
     X_out[9] = _mm256_setzero_si256();
     X_out[10] = _mm256_setzero_si256();
     X_out[11] = _mm256_setzero_si256();
@@ -953,15 +1009,18 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
     __m256i C = _mm256_set1_epi32(0x98BADCFE);
     __m256i D = _mm256_set1_epi32(0x10325476);
     __m256i E = _mm256_set1_epi32(0xC3D2E1F0);
+
     __m256i Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
     #pragma GCC unroll 16
     for (int j = 0; j < 16; ++j) {
         __m256i f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
         __m256i fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, _mm256_xor_si256(Dp, _mm256_set1_epi32(-1))));
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), X[r_left[j]]), s_left[j]), E);
+
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), X[rl_gpu[j]]), sl_gpu[j]), E);
         A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x50A28BE6U))), s_right[j]), Ep);
+
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x50A28BE6U))), sr_gpu[j]), Ep);
         Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -969,9 +1028,11 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
     for (int j = 16; j < 32; ++j) {
         __m256i f = _mm256_xor_si256(D, _mm256_and_si256(B, _mm256_xor_si256(C, D)));
         __m256i fp = _mm256_xor_si256(Cp, _mm256_and_si256(Dp, _mm256_xor_si256(Bp, Cp)));
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x5A827999U))), s_left[j]), E);
+
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x5A827999U))), sl_gpu[j]), E);
         A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x5C4DD124U))), s_right[j]), Ep);
+
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x5C4DD124U))), sr_gpu[j]), Ep);
         Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -979,9 +1040,11 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
     for (int j = 32; j < 48; ++j) {
         __m256i f = _mm256_xor_si256(_mm256_or_si256(B, _mm256_xor_si256(C, _mm256_set1_epi32(-1))), D);
         __m256i fp = _mm256_xor_si256(_mm256_or_si256(Bp, _mm256_xor_si256(Cp, _mm256_set1_epi32(-1))), Dp);
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x6ED9EBA1U))), s_left[j]), E);
+
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x6ED9EBA1U))), sl_gpu[j]), E);
         A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x6D703EF3U))), s_right[j]), Ep);
+
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x6D703EF3U))), sr_gpu[j]), Ep);
         Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -989,9 +1052,11 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
     for (int j = 48; j < 64; ++j) {
         __m256i f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
         __m256i fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0x8F1BBCDCU))), s_left[j]), E);
+
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x8F1BBCDCU))), sl_gpu[j]), E);
         A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[r_right[j]], _mm256_set1_epi32(0x7A6D76E9U))), s_right[j]), Ep);
+
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x7A6D76E9U))), sr_gpu[j]), Ep);
         Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -999,9 +1064,11 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
     for (int j = 64; j < 80; ++j) {
         __m256i f = _mm256_xor_si256(B, _mm256_or_si256(C, _mm256_xor_si256(D, _mm256_set1_epi32(-1))));
         __m256i fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[r_left[j]], _mm256_set1_epi32(0xA953FD4EU))), s_left[j]), E);
+
+        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0xA953FD4EU))), sl_gpu[j]), E);
         A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), X[r_right[j]]), s_right[j]), Ep);
+
+        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), X[rr_gpu[j]]), sr_gpu[j]), Ep);
         Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1013,142 +1080,13 @@ static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
 }
 #endif
 
-static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+static const int BATCH_SIZE = 1024;
+static AffinePoint G_TABLE[BATCH_SIZE];
 
-bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
-    std::vector<uint8_t> bytes;
-    for (char c : addr) {
-        const char* p = strchr(B58_CHARS, c);
-        if (!p) return false;
-        int val = p - B58_CHARS;
-        int carry = val;
-        for (size_t i = 0; i < bytes.size(); ++i) {
-            int cur = bytes[i] * 58 + carry;
-            bytes[i] = cur & 0xFF;
-            carry = cur >> 8;
-        }
-        while (carry > 0) {
-            bytes.push_back(carry & 0xFF);
-            carry >>= 8;
-        }
+void init_generator_table() {
+    for (int i = 1; i <= BATCH_SIZE; ++i) {
+        G_TABLE[i - 1] = scalar_mul_G(u256(i));
     }
-    for (char c : addr) {
-        if (c == '1') bytes.push_back(0);
-        else break;
-    }
-    std::reverse(bytes.begin(), bytes.end());
-    if (bytes.size() != 25) return false;
-
-    uint8_t sha1[32], sha2[32];
-    SHA256(bytes.data(), 21, sha1);
-    SHA256(sha1, 32, sha2);
-    if (memcmp(sha2, bytes.data() + 21, 4) != 0) return false;
-
-    memcpy(hash160_out, bytes.data() + 1, 20);
-    return true;
-}
-
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    ((std::string*)userp)->append((char*)contents, size * nmemb);
-    return size * nmemb;
-}
-
-std::string http_get(const std::string& url) {
-    CURL* curl = curl_easy_init();
-    if (!curl) return "";
-    std::string readBuffer;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "worker/1.0");
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-    return (res == CURLE_OK) ? readBuffer : "";
-}
-
-bool http_post(const std::string& url, const std::string& json_data, std::string* response_out = nullptr) {
-    CURL* curl = curl_easy_init();
-    if (!curl) return false;
-    std::string responseBuffer;
-    struct curl_slist* headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "worker/1.0");
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (res == CURLE_OK && response_out) *response_out = responseBuffer;
-    return (res == CURLE_OK);
-}
-
-std::string json_get_string(const std::string& json, const std::string& key) {
-    std::string pattern = "\"" + key + "\":";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return "";
-    pos += pattern.length();
-    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-    if (pos >= json.length()) return "";
-
-    if (json[pos] == '"') {
-        pos++;
-        size_t end = json.find('"', pos);
-        if (end == std::string::npos) return "";
-        return json.substr(pos, end - pos);
-    } else {
-        size_t end = pos;
-        while (end < json.length() && json[end] != ',' && json[end] != '}' && json[end] != '\n') end++;
-        return json.substr(pos, end - pos);
-    }
-}
-
-struct RangeInfo {
-    int puzzle;
-    std::string user;
-    int64_t block;
-    int range_idx;
-    int range_count;
-    u256 start;
-    u256 end;
-    uint64_t range_size;
-    std::string target_address;
-    u256 lower;
-    u256 total;
-};
-
-bool parse_range_json(const std::string& json, RangeInfo& rng) {
-    if (json.empty() || json.find("\"start\"") == std::string::npos) return false;
-    std::string s_p = json_get_string(json, "puzzle");
-    rng.puzzle = s_p.empty() ? 71 : std::stoi(s_p);
-    rng.user = json_get_string(json, "user");
-    std::string s_b = json_get_string(json, "block");
-    rng.block = s_b.empty() ? 0 : std::stoll(s_b);
-    std::string s_r = json_get_string(json, "range_idx");
-    rng.range_idx = s_r.empty() ? 0 : std::stoi(s_r);
-    std::string s_rc = json_get_string(json, "range_count");
-    if (s_rc.empty()) s_rc = json_get_string(json, "multiple");
-    rng.range_count = s_rc.empty() ? 1 : std::max(1, std::stoi(s_rc));
-    rng.start = parse_u256(json_get_string(json, "start"));
-    rng.end = parse_u256(json_get_string(json, "end"));
-    std::string s_sz = json_get_string(json, "range_size");
-    rng.range_size = s_sz.empty() ? 0 : std::stoull(s_sz);
-    rng.target_address = json_get_string(json, "target_address");
-    rng.lower = parse_u256(json_get_string(json, "lower"));
-    rng.total = parse_u256(json_get_string(json, "total"));
-    if (rng.end <= rng.start && rng.range_size > 0) {
-        rng.end = rng.start + rng.range_size;
-    }
-    return (!rng.target_address.empty() && rng.end > rng.start);
 }
 
 void scan_worker_montgomery(
@@ -1163,9 +1101,6 @@ void scan_worker_montgomery(
     std::mutex& found_mtx,
     std::atomic<uint64_t>& checked_counter
 ) {
-    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx) return;
-
     Fe dx[BATCH_SIZE];
     Fe cum[BATCH_SIZE + 1];
     Fe inv_dx[BATCH_SIZE];
@@ -1192,17 +1127,7 @@ void scan_worker_montgomery(
 
         u256 base_k = (!slice_start.is_zero()) ? (slice_start - 1) : u256(0);
         if (!has_cur_base || cur_k != base_k) {
-            uint8_t priv_start[32] = {0};
-            base_k.to_bytes_be(priv_start);
-            secp256k1_pubkey start_pub;
-            if (!secp256k1_ec_pubkey_create(ctx, &start_pub, priv_start)) {
-                continue;
-            }
-            uint8_t out65[65];
-            size_t len65 = 65;
-            secp256k1_ec_pubkey_serialize(ctx, out65, &len65, &start_pub, SECP256K1_EC_UNCOMPRESSED);
-            cur_base.x = fe_from_bytes(out65 + 1);
-            cur_base.y = fe_from_bytes(out65 + 33);
+            cur_base = scalar_mul_G(base_k);
             has_cur_base = true;
             cur_k = base_k;
         }
@@ -1367,133 +1292,269 @@ void scan_worker_montgomery(
             if (found_flag.load(std::memory_order_relaxed)) break;
 
             cur_base = next_base;
-            cur_k += (uint64_t)current_batch;
+            cur_k = cur_k + (uint64_t)current_batch;
             local_counter += current_batch;
+            if (local_counter >= 65536) {
+                checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+                local_counter = 0;
+            }
         }
     }
 
-    checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+    if (local_counter > 0) {
+        checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+    }
+}
+#endif
 
-    secp256k1_context_destroy(ctx);
+static size_t curl_cb(void* contents, size_t size, size_t nmemb, void* userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
+
+bool http_get(const std::string& url, std::string* out) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    return (res == CURLE_OK);
+}
+
+bool http_post(const std::string& url, const std::string& data, std::string* out) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return false;
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return (res == CURLE_OK);
+}
+
+std::string json_get_string(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return "";
+    pos += pattern.size();
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+    if (pos >= json.size()) return "";
+    if (json[pos] == '"') {
+        pos++;
+        size_t end = json.find('"', pos);
+        if (end == std::string::npos) return "";
+        return json.substr(pos, end - pos);
+    } else {
+        size_t end = pos;
+        while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != ' ' && json[end] != '\n' && json[end] != '\r') {
+            end++;
+        }
+        return json.substr(pos, end - pos);
+    }
 }
 
 int main(int argc, char* argv[]) {
     signal(SIGINT, sigint_handler);
     signal(SIGTERM, sigint_handler);
-    curl_global_init(CURL_GLOBAL_ALL);
 
-    unsigned int hw = std::thread::hardware_concurrency();
-    int threads = 1;
-    int multiple = 1;
-    bool no_limit = false;
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
-    std::string custom_user = "";
     int req_puzzle = 71;
+    int multiple = 1;
+    std::string custom_user = "";
+    bool no_limit = false;
+    int threads = 1;
+    unsigned int hw = std::thread::hardware_concurrency();
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
-            threads = std::max(1, std::atoi(argv[++i]));
-        } else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) {
-            multiple = std::max(1, std::min(128, std::atoi(argv[++i])));
-        } else if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
-            api_base = argv[++i];
-        } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
-            custom_user = argv[++i];
-        } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
-            req_puzzle = std::atoi(argv[++i]);
-        } else if (arg == "-d" || arg == "--double") {
-            threads = 2;
-        } else if (arg == "--fast") {
-            threads = (hw > 0) ? (int)hw : 4;
-        } else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") {
-            no_limit = true;
-        }
+        if ((arg == "-s" || arg == "--server") && i + 1 < argc) api_base = argv[++i];
+        else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) req_puzzle = std::atoi(argv[++i]);
+        else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) multiple = std::atoi(argv[++i]);
+        else if ((arg == "-u" || arg == "--user") && i + 1 < argc) custom_user = argv[++i];
+        else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) threads = std::atoi(argv[++i]);
+        else if (arg == "-d" || arg == "--double") threads = 2;
+        else if (arg == "--fast") threads = (hw > 0) ? (int)hw : 4;
+        else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") no_limit = true;
     }
 
+#if defined(__CUDACC__)
+    int device_count = 0;
+    cudaGetDeviceCount(&device_count);
+    if (device_count == 0) {
+        return 1;
+    }
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, 0);
+    if (custom_user.empty()) custom_user = "gpu-" + std::string(prop.name);
+#else
+    init_generator_table();
+#endif
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
     const int MAX_RANGES = 5;
     int completed_ranges = 0;
 
-    init_generator_table();
-
     while (g_running.load() && (no_limit || completed_ranges < MAX_RANGES)) {
-        std::string url = api_base + "?action=range&puzzle=" + std::to_string(req_puzzle);
-        if (multiple > 1) {
-            url += "&multiple=" + std::to_string(multiple);
-        }
-        if (!custom_user.empty()) {
-            url += "&user=" + custom_user;
-        }
+        std::stringstream ss;
+        ss << api_base << "?action=range&puzzle=" << req_puzzle;
+        if (multiple > 1) ss << "&multiple=" << multiple;
+        if (!custom_user.empty()) ss << "&user=" << custom_user;
 
-        std::string resp = http_get(url);
-
-        RangeInfo rng;
-        if (!parse_range_json(resp, rng)) {
+        std::string resp;
+        if (!http_get(ss.str(), &resp)) {
             std::this_thread::sleep_for(std::chrono::seconds(3));
             continue;
         }
 
-        int current_puzzle = (rng.puzzle > 0) ? rng.puzzle : req_puzzle;
+        if (resp.empty() || resp.find("\"start\"") == std::string::npos) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        std::string s_start = json_get_string(resp, "start");
+        std::string s_end   = json_get_string(resp, "end");
+        std::string target_addr = json_get_string(resp, "target_address");
+        int block = std::atoi(json_get_string(resp, "block").c_str());
+        int range_idx = std::atoi(json_get_string(resp, "range_idx").c_str());
+        int range_count = std::atoi(json_get_string(resp, "range_count").c_str());
+        if (range_count <= 0) range_count = 1;
+
+        int current_puzzle = std::atoi(json_get_string(resp, "puzzle").c_str());
+        if (current_puzzle <= 0) current_puzzle = req_puzzle;
+
         std::string current_user = !custom_user.empty() 
             ? custom_user 
-            : (rng.user.empty() ? ("user-" + std::to_string(rng.block) + "-" + std::to_string(rng.range_idx)) : rng.user);
+            : json_get_string(resp, "user");
+        if (current_user.empty()) current_user = "user-" + std::to_string(block) + "-" + std::to_string(range_idx);
 
-        uint8_t target_h160[20];
-        if (!b58check_decode_hash160(rng.target_address, target_h160)) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+        u256 start_k = parse_u256(s_start);
+        u256 end_k   = parse_u256(s_end);
+        std::string s_sz = json_get_string(resp, "range_size");
+        uint64_t r_sz = s_sz.empty() ? 0 : std::stoull(s_sz);
+        if (end_k <= start_k && r_sz > 0) {
+            end_k = start_k + r_sz;
+        }
+        u256 total_k = end_k - start_k;
+        uint64_t total_keys_count = (uint64_t)total_k.low;
+
+        uint8_t h160[20];
+        if (!b58check_decode_hash160(target_addr, h160)) {
             continue;
         }
-        uint64_t target_h64 = *(const uint64_t*)target_h160;
 
-        u256 total_keys = rng.end - rng.start;
-        uint64_t total_keys_count = (uint64_t)total_keys.low;
+        uint32_t target_w[5];
+        for (int i = 0; i < 5; ++i) {
+            target_w[i] = (uint32_t)h160[4*i] | ((uint32_t)h160[4*i+1]<<8) | ((uint32_t)h160[4*i+2]<<16) | ((uint32_t)h160[4*i+3]<<24);
+        }
+        uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
+
+        auto t_start = std::chrono::high_resolution_clock::now();
+        bool found = false;
+        u256 found_key = 0;
+        uint64_t actual_checked = 0;
+
+#if defined(__CUDACC__)
+        cudaMemcpyToSymbol(dev_target_w, target_w, 5 * sizeof(uint32_t));
+        cudaMemcpyToSymbol(dev_target_h64, &target_h64, sizeof(uint64_t));
+        int zero = 0;
+        cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
+
+        uint64_t chunk_size = 16777216;
+        while (actual_checked < total_keys_count && g_running.load() && !found) {
+            uint64_t cur_chunk = std::min(chunk_size, total_keys_count - actual_checked);
+            u256 cur_start = start_k + actual_checked;
+
+            int threadsPerBlock = 256;
+            int blocks = (cur_chunk + threadsPerBlock - 1) / threadsPerBlock;
+            cuda_scan_kernel<<<blocks, threadsPerBlock>>>(cur_start, cur_chunk);
+            cudaDeviceSynchronize();
+
+            int h_found = 0;
+            cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
+            if (h_found != 0) {
+                uint64_t h_offset = 0;
+                cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
+                found = true;
+                found_key = cur_start + h_offset;
+                actual_checked += h_offset + 1;
+                break;
+            }
+
+            actual_checked += cur_chunk;
+        }
+#else
         std::atomic<uint64_t> work_offset(0);
+        std::atomic<uint64_t> checked_counter(0);
+        std::atomic<bool> found_flag(false);
+        std::mutex found_mtx;
         uint64_t slice_size = 524288;
 
-        std::atomic<bool> found_flag(false);
-        u256 found_key = 0;
-        std::mutex found_mtx;
-        std::atomic<uint64_t> checked_counter(0);
-
-        std::vector<std::thread> pool;
-        auto t_start = std::chrono::high_resolution_clock::now();
-
-        for (int i = 0; i < threads; ++i) {
-            pool.emplace_back(scan_worker_montgomery, rng.start, std::ref(work_offset), total_keys_count, slice_size, target_h160, target_h64,
-                              std::ref(found_flag), std::ref(found_key),
-                              std::ref(found_mtx), std::ref(checked_counter));
+        std::vector<std::thread> workers;
+        workers.reserve(threads);
+        for (int t = 0; t < threads; ++t) {
+            workers.emplace_back(
+                scan_worker_montgomery,
+                start_k,
+                std::ref(work_offset),
+                total_keys_count,
+                slice_size,
+                h160,
+                target_h64,
+                std::ref(found_flag),
+                std::ref(found_key),
+                std::ref(found_mtx),
+                std::ref(checked_counter)
+            );
         }
 
-        for (auto& th : pool) if (th.joinable()) th.join();
+        while (g_running.load() && !found_flag.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            uint64_t done = checked_counter.load(std::memory_order_relaxed);
+            if (done >= total_keys_count) {
+                break;
+            }
+        }
+
+        for (auto& w : workers) {
+            if (w.joinable()) w.join();
+        }
+
+        found = found_flag.load();
+        actual_checked = checked_counter.load();
+#endif
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         if (elapsed <= 0.0) elapsed = 0.001;
+        double speed = (double)actual_checked / elapsed;
 
-        bool hit = found_flag.load();
-        uint64_t checked = checked_counter.load();
-        if (!hit && g_running.load() && checked < total_keys_count) {
-            checked = total_keys_count;
-        }
-        double speed = (double)checked / elapsed;
-
-        if (!hit && !g_running.load()) {
+        if (!found && !g_running.load()) {
             break;
         }
 
         std::stringstream json;
         json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
-             << ",\"block\":" << rng.block
-             << ",\"range_idx\":" << rng.range_idx
-             << ",\"range_count\":" << rng.range_count
-             << ",\"multiple\":" << rng.range_count
-             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
-             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
+             << ",\"block\":" << block
+             << ",\"range_idx\":" << range_idx
+             << ",\"range_count\":" << range_count
+             << ",\"multiple\":" << range_count
+             << ",\"status\":\"" << (found ? "found" : "done") << "\""
+             << ",\"private_key\":\"" << (found ? u256_to_hex64(found_key) : "") << "\""
              << ",\"user\":\"" << current_user << "\""
              << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
-             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"count\":" << checked
+             << ",\"keys\":\"" << u256_to_dec(total_k) << "\""
+             << ",\"range_size\":\"" << u256_to_dec(total_k) << "\""
+             << ",\"count\":" << total_keys_count
              << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
 
         std::string post_url = api_base + "?action=result&user=" + current_user;
@@ -1501,10 +1562,7 @@ int main(int argc, char* argv[]) {
         http_post(post_url, json.str(), &ack);
 
         completed_ranges++;
-
-        if (hit) {
-            break;
-        }
+        if (found) break;
     }
 
     curl_global_cleanup();
