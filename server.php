@@ -892,7 +892,9 @@ switch ($action) {
         $expiry = $now - LEASE_TIMEOUT_SECS;
         $req_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
 
-        $pdo->beginTransaction();
+        // Sử dụng BEGIN IMMEDIATE để khóa ghi ngay lập tức, ngăn ngừa 100% race condition
+        // khi nhiều worker cùng xin range trong cùng một mili-giây
+        $pdo->exec("BEGIN IMMEDIATE");
         try {
             // Ưu tiên dứt điểm từng block: block_id ASC, range_idx ASC
             $stmt = $pdo->prepare("
@@ -906,7 +908,7 @@ switch ($action) {
             $claimed = $stmt->fetch();
 
             if (!$claimed) {
-                $pdo->commit();
+                $pdo->exec("COMMIT");
                 respond(['status' => 'no_work', 'message' => 'Loading new blocks, try again in 2 seconds'], 200);
             }
 
@@ -959,7 +961,7 @@ switch ($action) {
                     last_seen = excluded.last_seen
             ")->execute([$worker, $b_id, $r_idx, $now]);
 
-            $pdo->commit();
+            $pdo->exec("COMMIT");
 
             $lower = (string)$config['lower'];
             $block_keys = bcmul((string)RANGES_PER_BLOCK, RANGE_SIZE);
@@ -991,7 +993,7 @@ switch ($action) {
                 'ranges_per_block' => RANGES_PER_BLOCK,
             ]);
         } catch (Exception $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
+            try { $pdo->exec("ROLLBACK"); } catch (Throwable $t) {}
             error_resp('Database busy: ' . $e->getMessage(), 500);
         }
         break;
