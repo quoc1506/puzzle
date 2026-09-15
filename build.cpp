@@ -19,11 +19,13 @@
   #define CUDA_DEV __device__
   #define CUDA_GLOBAL __global__
   #define CUDA_INLINE __forceinline__
+  #define CUDA_CONST __device__ __constant__ const
 #else
   #define CUDA_HOSTDEV
-  #define CUDA_DEV
+  #define CUDA_DEV static
   #define CUDA_GLOBAL
   #define CUDA_INLINE inline __attribute__((always_inline))
+  #define CUDA_CONST static const
 #endif
 
 #include <curl/curl.h>
@@ -651,7 +653,7 @@ CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& P) 
     return out;
 }
 
-CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
+CUDA_DEV AffinePoint scalar_mul_G(const u256& k) {
     AffinePoint G = get_generator_G();
     JacobianPoint R;
     R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
@@ -664,9 +666,24 @@ CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
         (uint64_t)(k.high >> 64)
     };
 
-    for (int i = 3; i >= 0; --i) {
+    int top_limb = 3;
+    while (top_limb > 0 && limbs[top_limb] == 0) {
+        top_limb--;
+    }
+    if (limbs[top_limb] == 0) {
+        return jacobian_to_affine(R);
+    }
+
+#if defined(__CUDA_ARCH__)
+    int top_bit = 63 - __clzll((long long)limbs[top_limb]);
+#else
+    int top_bit = 63 - __builtin_clzll(limbs[top_limb]);
+#endif
+
+    for (int i = top_limb; i >= 0; --i) {
         uint64_t w = limbs[i];
-        for (int b = 63; b >= 0; --b) {
+        int start_b = (i == top_limb) ? top_bit : 63;
+        for (int b = start_b; b >= 0; --b) {
             if (init) {
                 jacobian_double(R, R);
             }
@@ -702,7 +719,7 @@ CUDA_DEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
 #define BSWAP32_GPU(x) __builtin_bswap32(x)
 #endif
 
-static const uint32_t K_SHA256_GPU[64] = {
+CUDA_CONST uint32_t K_SHA256_GPU[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -716,7 +733,7 @@ static const uint32_t K_SHA256_GPU[64] = {
 #define K_SHA256 K_SHA256_GPU
 #endif
 
-CUDA_HOSTDEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
+CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
     uint32_t w[64];
     uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
@@ -788,28 +805,28 @@ CUDA_HOSTDEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_
     X[15] = 0;
 }
 
-static const uint8_t rl_gpu[80] = {
+CUDA_CONST uint8_t rl_gpu[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
     1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
-static const uint8_t sl_gpu[80] = {
+CUDA_CONST uint8_t sl_gpu[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
     11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
-static const uint8_t rr_gpu[80] = {
+CUDA_CONST uint8_t rr_gpu[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
     8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
-static const uint8_t sr_gpu[80] = {
+CUDA_CONST uint8_t sr_gpu[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -817,7 +834,7 @@ static const uint8_t sr_gpu[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-CUDA_HOSTDEV void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
+CUDA_DEV void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
     uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
@@ -878,7 +895,7 @@ CUDA_HOSTDEV void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     out_h[4] = 0x67452301 + B + Cp;
 }
 
-CUDA_HOSTDEV bool check_key_hash160(const u256& k, const uint32_t target_w[5], uint64_t target_h64) {
+CUDA_DEV bool check_key_hash160(const u256& k, const uint32_t target_w[5], uint64_t target_h64) {
     AffinePoint P = scalar_mul_G(k);
     uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
     uint32_t X[16];
