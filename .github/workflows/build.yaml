@@ -15,8 +15,8 @@ on:
 
 jobs:
   build-cuda:
-    name: Build CUDA GPU Worker (Ubuntu 22.04 x86_64)
-    runs-on: ubuntu-22.04
+    name: Build CUDA GPU Worker (Ubuntu x86_64)
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -29,15 +29,25 @@ jobs:
       - name: Compile CUDA Solver Binary
         run: |
           mkdir -p bin
-          nvcc -O3 -std=c++17 \
-            -gencode arch=compute_60,code=sm_60 \
-            -gencode arch=compute_70,code=sm_70 \
-            -gencode arch=compute_75,code=sm_75 \
-            -gencode arch=compute_80,code=sm_80 \
-            -gencode arch=compute_86,code=sm_86 \
-            -gencode arch=compute_89,code=sm_89 \
-            -gencode arch=compute_90,code=sm_90 \
-            -gencode arch=compute_90,code=compute_90 \
+          echo "=== Detecting supported GPU architectures for installed nvcc ==="
+          nvcc --version
+
+          GENCODES=""
+          LAST_ARCH=""
+          for arch in 60 61 70 75 80 86 89 90; do
+            if nvcc -gencode arch=compute_${arch},code=sm_${arch} -E -x cu /dev/null -o /dev/null 2>/dev/null; then
+              GENCODES="${GENCODES} -gencode arch=compute_${arch},code=sm_${arch}"
+              LAST_ARCH=${arch}
+            fi
+          done
+
+          if [ -n "${LAST_ARCH}" ]; then
+            GENCODES="${GENCODES} -gencode arch=compute_${LAST_ARCH},code=compute_${LAST_ARCH}"
+          fi
+
+          echo "Selected NVCC architecture flags: ${GENCODES}"
+
+          nvcc -O3 -std=c++17 ${GENCODES} \
             -x cu build.cpp -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda
           chmod +x bin/build_cuda
