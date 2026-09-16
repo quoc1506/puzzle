@@ -13,6 +13,12 @@
 #include <thread>
 #include <mutex>
 
+#if defined(_WIN32)
+  #include <winsock2.h>
+#else
+  #include <unistd.h>
+#endif
+
 #if defined(__CUDACC__)
   #include <cuda_runtime.h>
   #define CUDA_HOSTDEV __host__ __device__
@@ -653,7 +659,7 @@ CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& P) 
     return out;
 }
 
-CUDA_DEV AffinePoint scalar_mul_G(const u256& k) {
+CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
     AffinePoint G = get_generator_G();
     JacobianPoint R;
     R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
