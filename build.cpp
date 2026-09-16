@@ -613,26 +613,77 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
-    const uint64_t exp[4] = {
-        0xFFFFFFFEFFFFFC2DULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL
-    };
-    Fe res = {{1, 0, 0, 0}};
-    Fe base = a;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t w = exp[i];
-        for (int b = 0; b < 64; ++b) {
-            if (i == 3 && w == 0) break;
-            if (w & 1) {
-                res = fe_mul(res, base);
-            }
-            base = fe_mul(base, base);
-            w >>= 1;
-        }
-    }
-    return res;
+    // Addition chain for secp256k1 field inversion: a^(p - 2) mod p
+    // p - 2 = 2^256 - 2^32 - 979
+    // Requires only ~255 squarings and 14 multiplications (total 269 ops instead of 510 ops)
+    Fe x2, x3, x6, x9, x11, x22, x44, x88, x176, x220, x223, t;
+
+    // x2 = a^3 = a^(2^2 - 1)
+    t = fe_sqr(a);
+    x2 = fe_mul(t, a);
+
+    // x3 = a^(2^3 - 1)
+    t = fe_sqr(x2);
+    x3 = fe_mul(t, a);
+
+    // x6 = a^(2^6 - 1)
+    t = x3;
+    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
+    x6 = fe_mul(t, x3);
+
+    // x9 = a^(2^9 - 1)
+    t = x6;
+    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
+    x9 = fe_mul(t, x3);
+
+    // x11 = a^(2^11 - 1)
+    t = x9;
+    for (int i = 0; i < 2; ++i) t = fe_sqr(t);
+    x11 = fe_mul(t, x2);
+
+    // x22 = a^(2^22 - 1)
+    t = x11;
+    for (int i = 0; i < 11; ++i) t = fe_sqr(t);
+    x22 = fe_mul(t, x11);
+
+    // x44 = a^(2^44 - 1)
+    t = x22;
+    for (int i = 0; i < 22; ++i) t = fe_sqr(t);
+    x44 = fe_mul(t, x22);
+
+    // x88 = a^(2^88 - 1)
+    t = x44;
+    for (int i = 0; i < 44; ++i) t = fe_sqr(t);
+    x88 = fe_mul(t, x44);
+
+    // x176 = a^(2^176 - 1)
+    t = x88;
+    for (int i = 0; i < 88; ++i) t = fe_sqr(t);
+    x176 = fe_mul(t, x88);
+
+    // x220 = a^(2^220 - 1)
+    t = x176;
+    for (int i = 0; i < 44; ++i) t = fe_sqr(t);
+    x220 = fe_mul(t, x44);
+
+    // x223 = a^(2^223 - 1)
+    t = x220;
+    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
+    x223 = fe_mul(t, x3);
+
+    // t = a^(2^256 - 2^33 + 2^32 - 1)
+    t = x223;
+    for (int i = 0; i < 23; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x22);
+
+    for (int i = 0; i < 6; ++i) t = fe_sqr(t);
+    t = fe_mul(t, a);
+
+    for (int i = 0; i < 2; ++i) t = fe_sqr(t);
+    t = fe_mul(t, a);
+
+    t = fe_sqr(t);
+    return t;
 }
 
 struct AffinePoint {
@@ -1741,9 +1792,11 @@ int main(int argc, char* argv[]) {
         cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
         const uint32_t threadsPerBlock = 256;
-        const uint32_t numBlocks = 256;
-        const uint32_t grid_threads = threadsPerBlock * numBlocks; // 65,536 threads
-        const uint32_t steps_per_launch = 1024;                    // 65536 * 1024 = 67,108,864 keys per launch!
+        int num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
+        // Launch 16 blocks per SM to maximize occupancy and latency hiding
+        const uint32_t numBlocks = (uint32_t)(num_sms * 16); 
+        const uint32_t grid_threads = threadsPerBlock * numBlocks;
+        const uint32_t steps_per_launch = 1024;
         const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
         AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
