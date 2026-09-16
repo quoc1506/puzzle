@@ -1685,8 +1685,10 @@ int main(int argc, char* argv[]) {
 #if !defined(__CUDACC__)
     int threads = 1;
     unsigned int hw = std::thread::hardware_concurrency();
+#if defined(_SC_NPROCESSORS_ONLN)
     long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
     if (nprocs > 0 && (unsigned int)nprocs > hw) hw = (unsigned int)nprocs;
+#endif
 #endif
 
     for (int i = 1; i < argc; ++i) {
