@@ -47,12 +47,14 @@ static inline void portable_sleep_ms(int ms) {
   #include <cuda_runtime.h>
   #define CUDA_HOSTDEV __host__ __device__
   #define CUDA_DEV __device__
+  #define CUDA_DEVICE __device__
   #define CUDA_GLOBAL __global__
   #define CUDA_INLINE __forceinline__
   #define CUDA_CONST __device__ __constant__ const
 #else
   #define CUDA_HOSTDEV
   #define CUDA_DEV static
+  #define CUDA_DEVICE static
   #define CUDA_GLOBAL
   #define CUDA_INLINE inline __attribute__((always_inline))
   #define CUDA_CONST static const
@@ -302,7 +304,7 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
 }
 #else
 #if defined(__CUDA_ARCH__)
-CUDA_DEVICE CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
+CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     uint32_t c = 0;
     asm volatile (
@@ -338,7 +340,7 @@ CUDA_DEVICE CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     return r;
 }
 
-CUDA_DEVICE CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
+CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
     uint32_t borrow = 0;
     asm volatile (
@@ -551,7 +553,7 @@ static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
 }
 #else
 #if defined(__CUDA_ARCH__)
-CUDA_DEVICE CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
+CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8];
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -695,7 +697,7 @@ CUDA_DEVICE CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     return res;
 }
 
-CUDA_DEVICE CUDA_INLINE Fe fe_sqr(const Fe& a) {
+CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t[8];
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
