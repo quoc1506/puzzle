@@ -42,9 +42,15 @@ case "$OS" in
                 done
                 ;;
             x86_64|amd64|*)
-                if command -v nvidia-smi >/dev/null 2>&1 && [ -f "bin/build_cuda" ]; then
-                    if can_run "bin/build_cuda"; then
-                        TARGET_BIN="bin/build_cuda"
+                if command -v nvidia-smi >/dev/null 2>&1; then
+                    if [ -f "bin/build_cuda" ]; then
+                        if can_run "bin/build_cuda"; then
+                            TARGET_BIN="bin/build_cuda"
+                        else
+                            echo "[WARN] NVIDIA GPU detected, but bin/build_cuda failed dynamic/GLIBC checks. Falling back to CPU..."
+                        fi
+                    else
+                        echo "[WARN] NVIDIA GPU detected, but bin/build_cuda not found in bin/. Falling back to CPU..."
                     fi
                 fi
 
@@ -138,6 +144,7 @@ esac
 
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
+    echo "[LAUNCH] Running binary: $TARGET_BIN"
     exec "./$TARGET_BIN" "$@"
 fi
 

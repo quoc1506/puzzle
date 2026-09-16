@@ -16,7 +16,7 @@ on:
 jobs:
   build-cuda:
     name: Build CUDA GPU Worker (Ubuntu x86_64)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4

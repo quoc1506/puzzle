@@ -1671,7 +1671,7 @@ int main(int argc, char* argv[]) {
         const uint32_t threadsPerBlock = 256;
         const uint32_t numBlocks = 256;
         const uint32_t grid_threads = threadsPerBlock * numBlocks; // 65,536 threads
-        const uint32_t steps_per_launch = 256;                     // 65536 * 256 = 16,777,216 keys per launch!
+        const uint32_t steps_per_launch = 1024;                    // 65536 * 1024 = 67,108,864 keys per launch!
         const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
         AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
