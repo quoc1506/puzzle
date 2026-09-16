@@ -301,6 +301,69 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
     return r;
 }
 #else
+#if defined(__CUDA_ARCH__)
+CUDA_DEVICE CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
+    Fe r;
+    uint32_t c = 0;
+    asm volatile (
+        "add.cc.u64      %0, %2, %6;\n\t"
+        "addc.cc.u64     %1, %3, %7;\n\t"
+        "addc.cc.u64     %2, %4, %8;\n\t"
+        "addc.cc.u64     %3, %5, %9;\n\t"
+        "addc.u32        %4, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(c)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+    );
+    if (c) {
+        asm volatile (
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, 0;\n\t"
+            "addc.cc.u64     %2, %2, 0;\n\t"
+            "addc.u64        %3, %3, 0;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+            : "l"(SECP_K)
+        );
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+}
+
+CUDA_DEVICE CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
+    Fe r;
+    uint32_t borrow = 0;
+    asm volatile (
+        "sub.cc.u64      %0, %2, %6;\n\t"
+        "subc.cc.u64     %1, %3, %7;\n\t"
+        "subc.cc.u64     %2, %4, %8;\n\t"
+        "subc.cc.u64     %3, %5, %9;\n\t"
+        "subc.u32        %4, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(borrow)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+    );
+    if (borrow) {
+        asm volatile (
+            "sub.cc.u64      %0, %0, %4;\n\t"
+            "subc.cc.u64     %1, %1, 0;\n\t"
+            "subc.cc.u64     %2, %2, 0;\n\t"
+            "subc.u64        %3, %3, 0;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+            : "l"(SECP_K)
+        );
+    }
+    return r;
+}
+#else
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
@@ -355,6 +418,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     }
     return r;
 }
+#endif
 #endif
 
 #if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
@@ -486,6 +550,284 @@ static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
     return fe_mul(a, a);
 }
 #else
+#if defined(__CUDA_ARCH__)
+CUDA_DEVICE CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
+    uint64_t t[8];
+    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
+
+    // Row 0: a * b0
+    t[0] = a0 * b0;
+    uint64_t hi0 = __umul64hi(a0, b0);
+    uint64_t p1 = a1 * b0, hi1 = __umul64hi(a1, b0);
+    uint64_t p2 = a2 * b0, hi2 = __umul64hi(a2, b0);
+    uint64_t p3 = a3 * b0, hi3 = __umul64hi(a3, b0);
+    asm volatile (
+        "add.cc.u64      %0, %4, %8;\n\t"
+        "addc.cc.u64     %1, %5, %9;\n\t"
+        "addc.cc.u64     %2, %6, %10;\n\t"
+        "addc.u64        %3, %7, 0;\n\t"
+        : "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(p1), "l"(p2), "l"(p3), "l"(hi3),
+          "l"(hi0), "l"(hi1), "l"(hi2)
+    );
+
+    // Row 1: a * b1
+    uint64_t p0_1 = a0 * b1; hi0 = __umul64hi(a0, b1);
+    uint64_t p1_1 = a1 * b1; hi1 = __umul64hi(a1, b1);
+    uint64_t p2_1 = a2 * b1; hi2 = __umul64hi(a2, b1);
+    uint64_t p3_1 = a3 * b1; hi3 = __umul64hi(a3, b1);
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %9;\n\t"
+        "addc.cc.u64     %2, %2, %10;\n\t"
+        "addc.cc.u64     %3, %3, %11;\n\t"
+        "addc.u64        %4, %4, %12;\n\t"
+        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "=l"(t[5])
+        : "l"(p0_1), "l"(p1_1), "l"(p2_1), "l"(p3_1),
+          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+    );
+
+    // Row 2: a * b2
+    uint64_t p0_2 = a0 * b2; hi0 = __umul64hi(a0, b2);
+    uint64_t p1_2 = a1 * b2; hi1 = __umul64hi(a1, b2);
+    uint64_t p2_2 = a2 * b2; hi2 = __umul64hi(a2, b2);
+    uint64_t p3_2 = a3 * b2; hi3 = __umul64hi(a3, b2);
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %9;\n\t"
+        "addc.cc.u64     %2, %2, %10;\n\t"
+        "addc.cc.u64     %3, %3, %11;\n\t"
+        "addc.u64        %4, %4, %12;\n\t"
+        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(t[6])
+        : "l"(p0_2), "l"(p1_2), "l"(p2_2), "l"(p3_2),
+          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+    );
+
+    // Row 3: a * b3
+    uint64_t p0_3 = a0 * b3; hi0 = __umul64hi(a0, b3);
+    uint64_t p1_3 = a1 * b3; hi1 = __umul64hi(a1, b3);
+    uint64_t p2_3 = a2 * b3; hi2 = __umul64hi(a2, b3);
+    uint64_t p3_3 = a3 * b3; hi3 = __umul64hi(a3, b3);
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %9;\n\t"
+        "addc.cc.u64     %2, %2, %10;\n\t"
+        "addc.cc.u64     %3, %3, %11;\n\t"
+        "addc.u64        %4, %4, %12;\n\t"
+        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(t[7])
+        : "l"(p0_3), "l"(p1_3), "l"(p2_3), "l"(p3_3),
+          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+    );
+
+    // secp256k1 reduction: high 4 limbs * SECP_K
+    uint64_t k = SECP_K;
+    uint64_t m0 = t[4] * k, mhi0 = __umul64hi(t[4], k);
+    uint64_t m1 = t[5] * k, mhi1 = __umul64hi(t[5], k);
+    uint64_t m2 = t[6] * k, mhi2 = __umul64hi(t[6], k);
+    uint64_t m3 = t[7] * k, mhi3 = __umul64hi(t[7], k);
+
+    uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
+    uint64_t red_carry = 0;
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %9;\n\t"
+        "addc.cc.u64     %2, %2, %10;\n\t"
+        "addc.cc.u64     %3, %3, %11;\n\t"
+        "addc.u64        %4, %4, %12;\n\t"
+        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(red_carry)
+        : "l"(m0), "l"(m1), "l"(m2), "l"(m3),
+          "l"(mhi0), "l"(mhi1), "l"(mhi2), "l"(mhi3)
+    );
+
+    if (red_carry) {
+        uint64_t cm0 = red_carry * k;
+        uint64_t cmhi0 = __umul64hi(red_carry, k);
+        uint32_t extra = 0;
+        asm volatile (
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, %5;\n\t"
+            "addc.cc.u64     %2, %2, 0;\n\t"
+            "addc.cc.u64     %3, %3, 0;\n\t"
+            "addc.u32        %6, 0, 0;\n\t"
+            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
+        );
+        if (extra) {
+            asm volatile (
+                "add.cc.u64      %0, %0, %4;\n\t"
+                "addc.cc.u64     %1, %1, 0;\n\t"
+                "addc.cc.u64     %2, %2, 0;\n\t"
+                "addc.u64        %3, %3, 0;\n\t"
+                : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
+                : "l"(k)
+            );
+        }
+    }
+
+    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
+        r2 == 0xFFFFFFFFFFFFFFFFULL &&
+        r1 == 0xFFFFFFFFFFFFFFFFULL &&
+        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
+        r0 -= 0xFFFFFFFEFFFFFC2FULL;
+        r1 = 0;
+        r2 = 0;
+        r3 = 0;
+    }
+
+    Fe res;
+    res.d[0] = r0; res.d[1] = r1; res.d[2] = r2; res.d[3] = r3;
+    return res;
+}
+
+CUDA_DEVICE CUDA_INLINE Fe fe_sqr(const Fe& a) {
+    uint64_t t[8];
+    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    // Off-diagonal products
+    uint64_t p01 = a0 * a1, hi01 = __umul64hi(a0, a1);
+    uint64_t p02 = a0 * a2, hi02 = __umul64hi(a0, a2);
+    uint64_t p03 = a0 * a3, hi03 = __umul64hi(a0, a3);
+    uint64_t p12 = a1 * a2, hi12 = __umul64hi(a1, a2);
+    uint64_t p13 = a1 * a3, hi13 = __umul64hi(a1, a3);
+    uint64_t p23 = a2 * a3, hi23 = __umul64hi(a2, a3);
+
+    t[1] = p01;
+    asm volatile (
+        "add.cc.u64      %0, %5, %9;\n\t"
+        "addc.cc.u64     %1, %6, %10;\n\t"
+        "addc.cc.u64     %2, %7, %11;\n\t"
+        "addc.cc.u64     %3, %8, %12;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %13;\n\t"
+        "addc.cc.u64     %2, %2, %14;\n\t"
+        "addc.cc.u64     %3, %3, %15;\n\t"
+        "addc.u64        %4, %4, %16;\n\t"
+        : "=l"(t[2]), "=l"(t[3]), "=l"(t[4]), "=l"(t[5]), "=l"(t[6])
+        : "l"(p02), "l"(p03), "l"(0ULL), "l"(0ULL),
+          "l"(hi01), "l"(hi02), "l"(hi03), "l"(0ULL),
+          "l"(p12), "l"(p13), "l"(p23), "l"(0ULL)
+    );
+    // Add hi terms for row 1 & 2
+    asm volatile (
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %1, %4;\n\t"
+        "addc.u64        %2, %2, %5;\n\t"
+        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6])
+        : "l"(hi12), "l"(hi13), "l"(hi23)
+    );
+
+    // Double off-diagonal products (shift left by 1)
+    uint64_t carry = 0;
+    asm volatile (
+        "add.cc.u64      %0, %0, %0;\n\t"
+        "addc.cc.u64     %1, %1, %1;\n\t"
+        "addc.cc.u64     %2, %2, %2;\n\t"
+        "addc.cc.u64     %3, %3, %3;\n\t"
+        "addc.cc.u64     %4, %4, %4;\n\t"
+        "addc.cc.u64     %5, %5, %5;\n\t"
+        "addc.u64        %6, 0, 0;\n\t"
+        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(carry)
+    );
+    t[7] = carry;
+
+    // Diagonal squares
+    t[0] = a0 * a0;
+    uint64_t sq_hi0 = __umul64hi(a0, a0);
+    uint64_t sq_lo1 = a1 * a1, sq_hi1 = __umul64hi(a1, a1);
+    uint64_t sq_lo2 = a2 * a2, sq_hi2 = __umul64hi(a2, a2);
+    uint64_t sq_lo3 = a3 * a3, sq_hi3 = __umul64hi(a3, a3);
+
+    asm volatile (
+        "add.cc.u64      %0, %0, %7;\n\t"
+        "addc.cc.u64     %1, %1, %8;\n\t"
+        "addc.cc.u64     %2, %2, %9;\n\t"
+        "addc.cc.u64     %3, %3, %10;\n\t"
+        "addc.cc.u64     %4, %4, %11;\n\t"
+        "addc.cc.u64     %5, %5, %12;\n\t"
+        "addc.u64        %6, %6, %13;\n\t"
+        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
+        : "l"(sq_hi0), "l"(sq_lo1), "l"(sq_hi1), "l"(sq_lo2), "l"(sq_hi2), "l"(sq_lo3), "l"(sq_hi3)
+    );
+
+    // Reduction
+    uint64_t k = SECP_K;
+    uint64_t m0 = t[4] * k, mhi0 = __umul64hi(t[4], k);
+    uint64_t m1 = t[5] * k, mhi1 = __umul64hi(t[5], k);
+    uint64_t m2 = t[6] * k, mhi2 = __umul64hi(t[6], k);
+    uint64_t m3 = t[7] * k, mhi3 = __umul64hi(t[7], k);
+
+    uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
+    uint64_t red_carry = 0;
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, 0, 0;\n\t"
+        "add.cc.u64      %1, %1, %9;\n\t"
+        "addc.cc.u64     %2, %2, %10;\n\t"
+        "addc.cc.u64     %3, %3, %11;\n\t"
+        "addc.u64        %4, %4, %12;\n\t"
+        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(red_carry)
+        : "l"(m0), "l"(m1), "l"(m2), "l"(m3),
+          "l"(mhi0), "l"(mhi1), "l"(mhi2), "l"(mhi3)
+    );
+
+    if (red_carry) {
+        uint64_t cm0 = red_carry * k;
+        uint64_t cmhi0 = __umul64hi(red_carry, k);
+        uint32_t extra = 0;
+        asm volatile (
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, %5;\n\t"
+            "addc.cc.u64     %2, %2, 0;\n\t"
+            "addc.cc.u64     %3, %3, 0;\n\t"
+            "addc.u32        %6, 0, 0;\n\t"
+            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
+        );
+        if (extra) {
+            asm volatile (
+                "add.cc.u64      %0, %0, %4;\n\t"
+                "addc.cc.u64     %1, %1, 0;\n\t"
+                "addc.cc.u64     %2, %2, 0;\n\t"
+                "addc.u64        %3, %3, 0;\n\t"
+                : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
+                : "l"(k)
+            );
+        }
+    }
+
+    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
+        r2 == 0xFFFFFFFFFFFFFFFFULL &&
+        r1 == 0xFFFFFFFFFFFFFFFFULL &&
+        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
+        r0 -= 0xFFFFFFFEFFFFFC2FULL;
+        r1 = 0;
+        r2 = 0;
+        r3 = 0;
+    }
+
+    Fe res;
+    res.d[0] = r0; res.d[1] = r1; res.d[2] = r2; res.d[3] = r3;
+    return res;
+}
+#else
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
@@ -610,6 +952,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
     return r;
 }
+#endif
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
@@ -1191,7 +1534,7 @@ __device__ __forceinline__ bool check_point_hash160(
 }
 
 #if defined(__CUDACC__)
-__launch_bounds__(256, 4)
+__launch_bounds__(128, 8)
 #endif
 CUDA_GLOBAL void cuda_scan_kernel(
     u256 base_start,
@@ -1812,9 +2155,9 @@ int main(int argc, char* argv[]) {
         int zero = 0;
         cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
-        const uint32_t threadsPerBlock = 256;
+        const uint32_t threadsPerBlock = 128;
         int num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-        // Launch 16 blocks per SM to maximize occupancy and latency hiding
+        // Launch 16 blocks per SM (each 128 threads = 4 warps) for 64 warps/SM on Turing T4
         const uint32_t numBlocks = (uint32_t)(num_sms * 16); 
         const uint32_t grid_threads = threadsPerBlock * numBlocks;
         const uint32_t steps_per_launch = 1024;
