@@ -1232,8 +1232,15 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     const __m256i W_in[16],
     __m256i X_out[16]
 ) {
-    __m256i W[16];
+    __m256i W[64];
     for (int i = 0; i < 16; ++i) W[i] = W_in[i];
+
+    #pragma GCC unroll 48
+    for (int i = 16; i < 64; ++i) {
+        __m256i s0 = _mm256_xor_si256(AVX2_ROR(W[i-15], 7), _mm256_xor_si256(AVX2_ROR(W[i-15], 18), _mm256_srli_epi32(W[i-15], 3)));
+        __m256i s1 = _mm256_xor_si256(AVX2_ROR(W[i-2], 17), _mm256_xor_si256(AVX2_ROR(W[i-2], 19), _mm256_srli_epi32(W[i-2], 10)));
+        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i-16], s0), _mm256_add_epi32(W[i-7], s1));
+    }
 
     __m256i a = _mm256_set1_epi32(0x6a09e667);
     __m256i b = _mm256_set1_epi32(0xbb67ae85);
@@ -1255,43 +1262,16 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     h = _mm256_add_epi32(temp1, temp2); \
 } while(0)
 
-    // Rounds 0 - 15: direct from input buffer
-    AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[0]),  W[0]));
-    AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[1]),  W[1]));
-    AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[2]),  W[2]));
-    AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[3]),  W[3]));
-    AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[4]),  W[4]));
-    AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[5]),  W[5]));
-    AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[6]),  W[6]));
-    AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[7]),  W[7]));
-
-    AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[8]),  W[8]));
-    AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[9]),  W[9]));
-    AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[10]), W[10]));
-    AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[11]), W[11]));
-    AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[12]), W[12]));
-    AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[13]), W[13]));
-    AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[14]), W[14]));
-    AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[15]), W[15]));
-
-    // Rounds 16 - 63: on-the-fly circular schedule expansion with zero memory spills
-    #pragma GCC unroll 48
-    for (int i = 16; i < 64; i += 8) {
-        #pragma GCC unroll 8
-        for (int k = 0; k < 8; ++k) {
-            int idx = i + k;
-            __m256i s0 = _mm256_xor_si256(AVX2_ROR(W[(idx - 15) & 15], 7), _mm256_xor_si256(AVX2_ROR(W[(idx - 15) & 15], 18), _mm256_srli_epi32(W[(idx - 15) & 15], 3)));
-            __m256i s1 = _mm256_xor_si256(AVX2_ROR(W[(idx - 2) & 15], 17), _mm256_xor_si256(AVX2_ROR(W[(idx - 2) & 15], 19), _mm256_srli_epi32(W[(idx - 2) & 15], 10)));
-            W[idx & 15] = _mm256_add_epi32(_mm256_add_epi32(W[(idx - 16) & 15], s0), _mm256_add_epi32(W[(idx - 7) & 15], s1));
-        }
-        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]),   W[i & 15]));
-        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+1]), W[(i+1) & 15]));
-        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+2]), W[(i+2) & 15]));
-        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+3]), W[(i+3) & 15]));
-        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+4]), W[(i+4) & 15]));
-        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+5]), W[(i+5) & 15]));
-        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+6]), W[(i+6) & 15]));
-        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+7]), W[(i+7) & 15]));
+    #pragma GCC unroll 64
+    for (int i = 0; i < 64; i += 8) {
+        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]),   W[i]));
+        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+1]), W[i+1]));
+        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+2]), W[i+2]));
+        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+3]), W[i+3]));
+        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+4]), W[i+4]));
+        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+5]), W[i+5]));
+        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+6]), W[i+6]));
+        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+7]), W[i+7]));
     }
 #undef AVX2_SHA256_STEP
 
