@@ -197,7 +197,7 @@ jobs:
           echo "=== Check dynamic dependencies for build-linux-u22-x86_64 ==="
           ldd bin/build-linux-u22-x86_64 || true
           if ldd bin/build-linux-u22-x86_64 2>&1 | grep -E "(libssl\.so|libcrypto\.so|libcurl\.so)"; then
-            echo "FATAL: dynamic SSL/Crypto/Curl detected!"
+            echo "FATAL: dynamic SSL/Crypto/Curl detected !"
             exit 1
           fi
 
