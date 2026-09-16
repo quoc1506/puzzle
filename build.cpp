@@ -671,18 +671,35 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     for (int i = 0; i < 3; ++i) t = fe_sqr(t);
     x223 = fe_mul(t, x3);
 
-    // t = a^(2^256 - 2^33 + 2^32 - 1)
-    t = x223;
-    for (int i = 0; i < 23; ++i) t = fe_sqr(t);
+    // Remaining 33 bits: 0 1111111111111111111111 0000 1 0 11 0 1
+    // 1. Bit 223 is '0': 1 squaring
+    t = fe_sqr(x223);
+
+    // 2. 22 ones ('1'*22): 22 squarings, multiply by x22
+    for (int i = 0; i < 22; ++i) t = fe_sqr(t);
     t = fe_mul(t, x22);
 
-    for (int i = 0; i < 6; ++i) t = fe_sqr(t);
-    t = fe_mul(t, a);
+    // 3. 4 zeros ('0000'): 4 squarings
+    for (int i = 0; i < 4; ++i) t = fe_sqr(t);
 
-    for (int i = 0; i < 2; ++i) t = fe_sqr(t);
-    t = fe_mul(t, a);
-
+    // 4. '1': 1 squaring, multiply by a
     t = fe_sqr(t);
+    t = fe_mul(t, a);
+
+    // 5. '0': 1 squaring
+    t = fe_sqr(t);
+
+    // 6. '11': 2 squarings, multiply by x2
+    t = fe_sqr(fe_sqr(t));
+    t = fe_mul(t, x2);
+
+    // 7. '0': 1 squaring
+    t = fe_sqr(t);
+
+    // 8. '1': 1 squaring, multiply by a
+    t = fe_sqr(t);
+    t = fe_mul(t, a);
+
     return t;
 }
 
@@ -1668,6 +1685,8 @@ int main(int argc, char* argv[]) {
 #if !defined(__CUDACC__)
     int threads = 1;
     unsigned int hw = std::thread::hardware_concurrency();
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    if (nprocs > 0 && (unsigned int)nprocs > hw) hw = (unsigned int)nprocs;
 #endif
 
     for (int i = 1; i < argc; ++i) {
@@ -1677,9 +1696,9 @@ int main(int argc, char* argv[]) {
         else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) multiple = std::atoi(argv[++i]);
         else if ((arg == "-u" || arg == "--user") && i + 1 < argc) custom_user = argv[++i];
 #if !defined(__CUDACC__)
-        else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) threads = std::atoi(argv[++i]);
+        else if ((arg == "-t" || arg == "--threads" || arg == "--cpu") && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (arg == "-d" || arg == "--double") threads = 2;
-        else if (arg == "--fast") threads = (hw > 0) ? (int)hw : 4;
+        else if (arg == "--fast" || arg == "--max") threads = (hw > 0) ? (int)hw : 4;
 #endif
         else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") no_limit = true;
     }
