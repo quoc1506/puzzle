@@ -10,14 +10,26 @@
 #include <cstdint>
 #include <cstdlib>
 #include <algorithm>
-#include <thread>
-#include <mutex>
+
+#if !defined(__CUDACC__)
+  #include <thread>
+  #include <mutex>
+#endif
 
 #if defined(_WIN32)
   #include <winsock2.h>
+  #include <windows.h>
 #else
   #include <unistd.h>
 #endif
+
+static inline void portable_sleep_ms(int ms) {
+#if defined(_WIN32)
+    Sleep(ms);
+#else
+    usleep(ms * 1000);
+#endif
+}
 
 #if defined(__CUDACC__)
   #include <cuda_runtime.h>
@@ -1546,8 +1558,10 @@ int main(int argc, char* argv[]) {
     int multiple = 1;
     std::string custom_user = "";
     bool no_limit = false;
+#if !defined(__CUDACC__)
     int threads = 1;
     unsigned int hw = std::thread::hardware_concurrency();
+#endif
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -1555,9 +1569,11 @@ int main(int argc, char* argv[]) {
         else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) req_puzzle = std::atoi(argv[++i]);
         else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) multiple = std::atoi(argv[++i]);
         else if ((arg == "-u" || arg == "--user") && i + 1 < argc) custom_user = argv[++i];
+#if !defined(__CUDACC__)
         else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (arg == "-d" || arg == "--double") threads = 2;
         else if (arg == "--fast") threads = (hw > 0) ? (int)hw : 4;
+#endif
         else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") no_limit = true;
     }
 
@@ -1606,12 +1622,12 @@ int main(int argc, char* argv[]) {
 
         std::string resp;
         if (!http_get(ss.str(), &resp)) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+            portable_sleep_ms(3000);
             continue;
         }
 
         if (resp.empty() || resp.find("\"start\"") == std::string::npos) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            portable_sleep_ms(2000);
             continue;
         }
 
@@ -1727,7 +1743,7 @@ int main(int argc, char* argv[]) {
         }
 
         while (g_running.load() && !found_flag.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            portable_sleep_ms(250);
             uint64_t done = checked_counter.load(std::memory_order_relaxed);
             if (done >= total_keys_count) {
                 break;
@@ -1771,7 +1787,7 @@ int main(int argc, char* argv[]) {
         bool post_ok = http_post(post_url, json.str(), &ack);
         if (!post_ok || ack.find("\"status\":\"ok\"") == std::string::npos) {
             std::cerr << "[WARN] Submit failed: " << (ack.empty() ? "network error" : ack) << ". Retrying..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            portable_sleep_ms(500);
             http_post(post_url, json.str(), &ack);
         } else {
             std::cout << "[OK] Range submitted: Block " << block << " Range " << range_idx 

@@ -254,7 +254,7 @@ jobs:
           strip bin/build-linux-musl-* bin/build
           chmod +x bin/build-linux-musl-* bin/build
 
-          echo "=== Check  static executable properties ==="
+          echo "=== Check static executable properties ==="
           file bin/build-linux-musl-x86_64
           file bin/build-linux-musl-x86_64-compat
           file bin/build
