@@ -9,12 +9,24 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <algorithm>
-
 #if !defined(__CUDACC__)
+  #include <algorithm>
   #include <thread>
   #include <mutex>
 #endif
+
+template<typename T>
+static inline T host_min(T a, T b) { return (a < b) ? a : b; }
+
+template<typename It>
+static inline void host_reverse(It first, It last) {
+    while ((first != last) && (first != --last)) {
+        auto tmp = *first;
+        *first = *last;
+        *last = tmp;
+        ++first;
+    }
+}
 
 #if defined(_WIN32)
   #include <winsock2.h>
@@ -183,7 +195,7 @@ std::string u256_to_dec(u256 v) {
         v.low = ((__uint128_t)l1 << 64) | l0;
         v.high = ((__uint128_t)h1 << 64) | h0;
     }
-    std::reverse(s.begin(), s.end());
+    host_reverse(s.begin(), s.end());
     return s;
 }
 
@@ -222,7 +234,7 @@ bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
         bytes[length++] = 0;
     }
 
-    std::reverse(bytes.begin(), bytes.begin() + length);
+    host_reverse(bytes.begin(), bytes.begin() + length);
     bytes.resize(length);
 
     if (bytes.size() != 25) return false;
@@ -246,6 +258,49 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
 }
 
+#if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
+static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
+    Fe r;
+    unsigned char c = _addcarry_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    c = _addcarry_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (c) {
+        c = _addcarry_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
+        c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+}
+
+static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
+    Fe r;
+    unsigned char c = _subborrow_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    c = _subborrow_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    c = _subborrow_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    c = _subborrow_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (c) {
+        c = _subborrow_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
+        c = _subborrow_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        c = _subborrow_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _subborrow_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    }
+    return r;
+}
+#else
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
@@ -300,6 +355,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     }
     return r;
 }
+#endif
 
 #if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
 static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
@@ -419,7 +475,7 @@ static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b)
         : [r0] "=&r"(r0), [r1] "=&r"(r1), [r2] "=&r"(r2), [r3] "=&r"(r3),
           [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
         : [a] "r"(a.d), [b] "r"(b.d)
-        : "rax", "rcx", "rdx", "cc", "memory"
+        : "rax", "rcx", "rdx", "cc"
     );
     Fe r;
     r.d[0] = r0; r.d[1] = r1; r.d[2] = r2; r.d[3] = r3;
@@ -1121,12 +1177,6 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
     __m256i g = _mm256_set1_epi32(0x1f83d9ab);
     __m256i h = _mm256_set1_epi32(0x5be0cd19);
 
-    __m256i KW[64];
-    #pragma GCC unroll 64
-    for (int i = 0; i < 64; ++i) {
-        KW[i] = _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]), W[i]);
-    }
-
 #define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
     __m256i S1 = _mm256_xor_si256(AVX2_ROR(e, 6), _mm256_xor_si256(AVX2_ROR(e, 11), AVX2_ROR(e, 25))); \
     __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g))); \
@@ -1140,14 +1190,14 @@ static inline __attribute__((always_inline)) void avx2_sha256_8way(
 
     #pragma GCC unroll 64
     for (int i = 0; i < 64; i += 8) {
-        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, KW[i]);
-        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, KW[i+1]);
-        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, KW[i+2]);
-        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, KW[i+3]);
-        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, KW[i+4]);
-        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, KW[i+5]);
-        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, KW[i+6]);
-        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, KW[i+7]);
+        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]),   W[i]));
+        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+1]), W[i+1]));
+        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+2]), W[i+2]));
+        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+3]), W[i+3]));
+        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+4]), W[i+4]));
+        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+5]), W[i+5]));
+        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+6]), W[i+6]));
+        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+7]), W[i+7]));
     }
 #undef AVX2_SHA256_STEP
 
@@ -1304,7 +1354,7 @@ void scan_worker_montgomery(
     while (!found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
         uint64_t off = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
         if (off >= total_keys) break;
-        uint64_t count_in_slice = std::min(slice_size, total_keys - off);
+        uint64_t count_in_slice = host_min(slice_size, total_keys - off);
         u256 slice_start = range_start + off;
         u256 slice_end = slice_start + count_in_slice;
 
@@ -1318,7 +1368,7 @@ void scan_worker_montgomery(
         while (cur_k < slice_end - 1 && !found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
             u256 rem = (slice_end - 1 - cur_k);
             uint64_t remaining = (rem.high == 0) ? (uint64_t)rem.low : 0xFFFFFFFFFFFFFFFFULL;
-            int current_batch = (int)std::min((uint64_t)BATCH_SIZE, remaining);
+            int current_batch = (int)host_min((uint64_t)BATCH_SIZE, remaining);
 
             cum[0] = {{1, 0, 0, 0}};
             for (int i = 0; i < current_batch; ++i) {
@@ -1693,7 +1743,7 @@ int main(int argc, char* argv[]) {
         AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
 
         while (actual_checked < total_keys_count && g_running.load() && !found) {
-            uint64_t cur_chunk = std::min(chunk_size, total_keys_count - actual_checked);
+            uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
             u256 cur_start = start_k + actual_checked;
 
             uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
@@ -1789,13 +1839,6 @@ int main(int argc, char* argv[]) {
             std::cerr << "[WARN] Submit failed: " << (ack.empty() ? "network error" : ack) << ". Retrying..." << std::endl;
             portable_sleep_ms(500);
             http_post(post_url, json.str(), &ack);
-        } else {
-            std::cout << "[OK] Range submitted: Block " << block << " Range " << range_idx 
-                      << " (" << range_count << " range" << (range_count > 1 ? "s" : "") << ")"
-                      << " | Speed: " << std::fixed << std::setprecision(1) 
-                      << (speed >= 1e6 ? speed/1e6 : speed/1e3) 
-                      << (speed >= 1e6 ? " Mkeys/s" : " Kkeys/s") 
-                      << " | Worker: " << current_user << std::endl;
         }
 
         completed_ranges++;
