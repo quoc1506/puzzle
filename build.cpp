@@ -808,7 +808,7 @@ CUDA_CONST uint32_t K_SHA256_GPU[64] = {
 #endif
 
 CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
-    uint32_t w[64];
+    uint32_t w[16];
     uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
     w[1] = (uint32_t)(d3 >> 8);
@@ -821,22 +821,6 @@ CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[
     w[8] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
     w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
     w[15] = 264;
-
-    w[16] = w[0] + (ror32_gpu(w[1], 7) ^ ror32_gpu(w[1], 18) ^ (w[1] >> 3));
-    w[17] = w[1] + (ror32_gpu(w[2], 7) ^ ror32_gpu(w[2], 18) ^ (w[2] >> 3)) + 0x00A50000U;
-    w[18] = w[2] + (ror32_gpu(w[3], 7) ^ ror32_gpu(w[3], 18) ^ (w[3] >> 3)) + (ror32_gpu(w[16], 17) ^ ror32_gpu(w[16], 19) ^ (w[16] >> 10));
-    w[19] = w[3] + (ror32_gpu(w[4], 7) ^ ror32_gpu(w[4], 18) ^ (w[4] >> 3)) + (ror32_gpu(w[17], 17) ^ ror32_gpu(w[17], 19) ^ (w[17] >> 10));
-    w[20] = w[4] + (ror32_gpu(w[5], 7) ^ ror32_gpu(w[5], 18) ^ (w[5] >> 3)) + (ror32_gpu(w[18], 17) ^ ror32_gpu(w[18], 19) ^ (w[18] >> 10));
-    w[21] = w[5] + (ror32_gpu(w[6], 7) ^ ror32_gpu(w[6], 18) ^ (w[6] >> 3)) + (ror32_gpu(w[19], 17) ^ ror32_gpu(w[19], 19) ^ (w[19] >> 10));
-    w[22] = w[6] + (ror32_gpu(w[7], 7) ^ ror32_gpu(w[7], 18) ^ (w[7] >> 3)) + 264 + (ror32_gpu(w[20], 17) ^ ror32_gpu(w[20], 19) ^ (w[20] >> 10));
-    w[23] = w[7] + (ror32_gpu(w[8], 7) ^ ror32_gpu(w[8], 18) ^ (w[8] >> 3)) + w[16] + (ror32_gpu(w[21], 17) ^ ror32_gpu(w[21], 19) ^ (w[21] >> 10));
-
-    #pragma unroll
-    for (int i = 24; i < 64; ++i) {
-        uint32_t s0 = ror32_gpu(w[i-15], 7) ^ ror32_gpu(w[i-15], 18) ^ (w[i-15] >> 3);
-        uint32_t s1 = ror32_gpu(w[i-2], 17) ^ ror32_gpu(w[i-2], 19) ^ (w[i-2] >> 10);
-        w[i] = w[i-16] + s0 + w[i-7] + s1;
-    }
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
@@ -853,7 +837,7 @@ CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[
 } while (0)
 
     #pragma unroll
-    for (int i = 0; i < 64; i += 8) {
+    for (int i = 0; i < 16; i += 8) {
         SHA256_STEP_GPU(a, b, c, d, e, f, g, h, K_SHA256_GPU[i] + w[i]);
         SHA256_STEP_GPU(h, a, b, c, d, e, f, g, K_SHA256_GPU[i+1] + w[i+1]);
         SHA256_STEP_GPU(g, h, a, b, c, d, e, f, K_SHA256_GPU[i+2] + w[i+2]);
@@ -862,6 +846,25 @@ CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[
         SHA256_STEP_GPU(d, e, f, g, h, a, b, c, K_SHA256_GPU[i+5] + w[i+5]);
         SHA256_STEP_GPU(c, d, e, f, g, h, a, b, K_SHA256_GPU[i+6] + w[i+6]);
         SHA256_STEP_GPU(b, c, d, e, f, g, h, a, K_SHA256_GPU[i+7] + w[i+7]);
+    }
+
+    #pragma unroll
+    for (int i = 16; i < 64; i += 8) {
+        #pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            int idx = i + k;
+            uint32_t s0 = ror32_gpu(w[(idx-15)&15], 7) ^ ror32_gpu(w[(idx-15)&15], 18) ^ (w[(idx-15)&15] >> 3);
+            uint32_t s1 = ror32_gpu(w[(idx-2)&15], 17) ^ ror32_gpu(w[(idx-2)&15], 19) ^ (w[(idx-2)&15] >> 10);
+            w[idx & 15] = w[(idx-16)&15] + s0 + w[(idx-7)&15] + s1;
+        }
+        SHA256_STEP_GPU(a, b, c, d, e, f, g, h, K_SHA256_GPU[i]   + w[i&15]);
+        SHA256_STEP_GPU(h, a, b, c, d, e, f, g, K_SHA256_GPU[i+1] + w[(i+1)&15]);
+        SHA256_STEP_GPU(g, h, a, b, c, d, e, f, K_SHA256_GPU[i+2] + w[(i+2)&15]);
+        SHA256_STEP_GPU(f, g, h, a, b, c, d, e, K_SHA256_GPU[i+3] + w[(i+3)&15]);
+        SHA256_STEP_GPU(e, f, g, h, a, b, c, d, K_SHA256_GPU[i+4] + w[(i+4)&15]);
+        SHA256_STEP_GPU(d, e, f, g, h, a, b, c, K_SHA256_GPU[i+5] + w[(i+5)&15]);
+        SHA256_STEP_GPU(c, d, e, f, g, h, a, b, K_SHA256_GPU[i+6] + w[(i+6)&15]);
+        SHA256_STEP_GPU(b, c, d, e, f, g, h, a, K_SHA256_GPU[i+7] + w[(i+7)&15]);
     }
 #undef SHA256_STEP_GPU
 
@@ -1119,6 +1122,9 @@ __device__ __forceinline__ bool check_point_hash160(
     return false;
 }
 
+#if defined(__CUDACC__)
+__launch_bounds__(256, 4)
+#endif
 CUDA_GLOBAL void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
