@@ -13,7 +13,7 @@ can_run() {
     chmod +x "$1" 2>/dev/null || true
     if command -v ldd >/dev/null 2>&1; then
         LDD_OUT="$(ldd "$1" 2>&1)"
-        if echo "$LDD_OUT" | grep -q -E '(not found|version `GLIBC_)'; then
+        if echo "$LDD_OUT" | grep -q -E '(not found| version `GLIBC_)'; then
             return 1
         fi
     fi
