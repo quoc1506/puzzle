@@ -916,14 +916,162 @@ __device__ uint64_t dev_found_offset = 0;
 __device__ uint32_t dev_target_w[5];
 __device__ uint64_t dev_target_h64;
 
-CUDA_GLOBAL void cuda_scan_kernel(u256 base_start, uint64_t total_keys) {
-    uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total_keys || dev_found_flag != 0) return;
+__device__ __forceinline__ uint64_t shfl_up64(uint64_t val, int delta) {
+    uint32_t lo = (uint32_t)val;
+    uint32_t hi = (uint32_t)(val >> 32);
+    lo = __shfl_up_sync(0xFFFFFFFF, lo, delta);
+    hi = __shfl_up_sync(0xFFFFFFFF, hi, delta);
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
 
-    u256 cand_k = base_start + idx;
-    if (check_key_hash160(cand_k, dev_target_w, dev_target_h64)) {
-        if (atomicExch(&dev_found_flag, 1) == 0) {
-            dev_found_offset = idx;
+__device__ __forceinline__ uint64_t shfl_down64(uint64_t val, int delta) {
+    uint32_t lo = (uint32_t)val;
+    uint32_t hi = (uint32_t)(val >> 32);
+    lo = __shfl_down_sync(0xFFFFFFFF, lo, delta);
+    hi = __shfl_down_sync(0xFFFFFFFF, hi, delta);
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+
+__device__ __forceinline__ uint64_t shfl64(uint64_t val, int src_lane) {
+    uint32_t lo = (uint32_t)val;
+    uint32_t hi = (uint32_t)(val >> 32);
+    lo = __shfl_sync(0xFFFFFFFF, lo, src_lane);
+    hi = __shfl_sync(0xFFFFFFFF, hi, src_lane);
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+
+__device__ __forceinline__ Fe shfl_up_fe(const Fe& a, int delta) {
+    Fe r;
+    r.d[0] = shfl_up64(a.d[0], delta);
+    r.d[1] = shfl_up64(a.d[1], delta);
+    r.d[2] = shfl_up64(a.d[2], delta);
+    r.d[3] = shfl_up64(a.d[3], delta);
+    return r;
+}
+
+__device__ __forceinline__ Fe shfl_down_fe(const Fe& a, int delta) {
+    Fe r;
+    r.d[0] = shfl_down64(a.d[0], delta);
+    r.d[1] = shfl_down64(a.d[1], delta);
+    r.d[2] = shfl_down64(a.d[2], delta);
+    r.d[3] = shfl_down64(a.d[3], delta);
+    return r;
+}
+
+__device__ __forceinline__ Fe shfl_fe(const Fe& a, int src_lane) {
+    Fe r;
+    r.d[0] = shfl64(a.d[0], src_lane);
+    r.d[1] = shfl64(a.d[1], src_lane);
+    r.d[2] = shfl64(a.d[2], src_lane);
+    r.d[3] = shfl64(a.d[3], src_lane);
+    return r;
+}
+
+__device__ __forceinline__ Fe warp_montgomery_inv(const Fe& d, int lane) {
+    Fe c = d;
+    #pragma unroll
+    for (int offset = 1; offset < 32; offset <<= 1) {
+        Fe prev = shfl_up_fe(c, offset);
+        if (lane >= offset) {
+            c = fe_mul(c, prev);
+        }
+    }
+
+    Fe inv_total;
+    if (lane == 31) {
+        inv_total = fe_inv(c);
+    }
+    Fe inv = shfl_fe(inv_total, 31);
+
+    Fe suffix = d;
+    #pragma unroll
+    for (int offset = 1; offset < 32; offset <<= 1) {
+        Fe next_val = shfl_down_fe(suffix, offset);
+        if (lane + offset < 32) {
+            suffix = fe_mul(suffix, next_val);
+        }
+    }
+
+    Fe next_suffix = shfl_down_fe(suffix, 1);
+    Fe inv_c;
+    if (lane == 31) {
+        inv_c = inv;
+    } else {
+        inv_c = fe_mul(inv, next_suffix);
+    }
+
+    Fe prev_c = shfl_up_fe(c, 1);
+    if (lane == 0) {
+        return inv_c;
+    } else {
+        return fe_mul(inv_c, prev_c);
+    }
+}
+
+__device__ __forceinline__ AffinePoint warp_montgomery_add_affine(
+    const AffinePoint& P,
+    const AffinePoint& G_delta,
+    int lane
+) {
+    Fe dx = fe_sub(P.x, G_delta.x);
+    Fe dy = fe_sub(P.y, G_delta.y);
+    Fe inv_dx = warp_montgomery_inv(dx, lane);
+    Fe lambda = fe_mul(dy, inv_dx);
+    Fe lambda2 = fe_sqr(lambda);
+    Fe x3 = fe_sub(fe_sub(lambda2, P.x), G_delta.x);
+    Fe diff_x = fe_sub(P.x, x3);
+    Fe y3 = fe_sub(fe_mul(lambda, diff_x), P.y);
+    AffinePoint R;
+    R.x = x3;
+    R.y = y3;
+    return R;
+}
+
+__device__ __forceinline__ bool check_point_hash160(
+    const AffinePoint& P,
+    const uint32_t target_w[5],
+    uint64_t target_h64
+) {
+    uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
+    uint32_t X[16];
+    fast_sha256_into_ripemd_X(prefix, P.x, X);
+    uint32_t h[5];
+    fast_ripemd160_32(X, h);
+
+    uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
+    if (cur_h64 == target_h64) {
+        return (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]);
+    }
+    return false;
+}
+
+CUDA_GLOBAL void cuda_scan_kernel(
+    u256 base_start,
+    uint64_t total_keys,
+    AffinePoint delta_G,
+    uint32_t grid_threads,
+    uint32_t steps
+) {
+    uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total_keys || dev_found_flag != 0) return;
+
+    int lane = threadIdx.x & 31;
+    u256 start_k = base_start + tid;
+    AffinePoint P = scalar_mul_G(start_k);
+
+    for (uint32_t s = 0; s < steps; ++s) {
+        uint64_t offset = tid + (uint64_t)s * grid_threads;
+        if (offset >= total_keys || dev_found_flag != 0) break;
+
+        if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
+            if (atomicExch(&dev_found_flag, 1) == 0) {
+                dev_found_offset = offset;
+            }
+            break;
+        }
+
+        if (s + 1 < steps && offset + grid_threads < total_keys) {
+            P = warp_montgomery_add_affine(P, delta_G, lane);
         }
     }
 }
@@ -1352,7 +1500,10 @@ bool http_post(const std::string& url, const std::string& data, std::string* out
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -1412,9 +1563,29 @@ int main(int argc, char* argv[]) {
     }
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
-    if (custom_user.empty()) custom_user = "gpu-" + std::string(prop.name);
+    if (custom_user.empty()) {
+        std::string dev_clean = "";
+        for (char c : std::string(prop.name)) {
+            if (isalnum(c) || c == '-' || c == '_') dev_clean += c;
+            else if (c == ' ') dev_clean += '_';
+        }
+        if (dev_clean.empty()) dev_clean = "device";
+        custom_user = "gpu-" + dev_clean;
+    }
 #else
     init_generator_table();
+    if (custom_user.empty()) {
+        char hname[64] = {0};
+        gethostname(hname, sizeof(hname) - 1);
+        std::string host_s = (hname[0] != '\0') ? hname : "worker";
+        std::string clean_h = "";
+        for (char c : host_s) {
+            if (isalnum(c) || c == '-' || c == '_') clean_h += c;
+        }
+        if (clean_h.empty()) clean_h = "worker";
+        uint32_t r_suffix = (uint32_t)(time(nullptr) & 0xFFFF);
+        custom_user = "cpu-" + clean_h + "-" + std::to_string(r_suffix);
+    }
 #endif
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -1441,7 +1612,11 @@ int main(int argc, char* argv[]) {
         std::string s_start = json_get_string(resp, "start");
         std::string s_end   = json_get_string(resp, "end");
         std::string target_addr = json_get_string(resp, "target_address");
-        int block = std::atoi(json_get_string(resp, "block").c_str());
+        std::string s_block = json_get_string(resp, "block");
+        int64_t block = s_block.empty() ? -1 : std::strtoll(s_block.c_str(), nullptr, 10);
+        if (block < 0 && !s_block.empty()) {
+            block = (int64_t)std::strtoull(s_block.c_str(), nullptr, 10);
+        }
         int range_idx = std::atoi(json_get_string(resp, "range_idx").c_str());
         int range_count = std::atoi(json_get_string(resp, "range_count").c_str());
         if (range_count <= 0) range_count = 1;
@@ -1453,6 +1628,7 @@ int main(int argc, char* argv[]) {
             ? custom_user 
             : json_get_string(resp, "user");
         if (current_user.empty()) current_user = "user-" + std::to_string(block) + "-" + std::to_string(range_idx);
+        if (custom_user.empty()) custom_user = current_user;
 
         u256 start_k = parse_u256(s_start);
         u256 end_k   = parse_u256(s_end);
@@ -1486,14 +1662,24 @@ int main(int argc, char* argv[]) {
         int zero = 0;
         cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
-        uint64_t chunk_size = 16777216;
+        const uint32_t threadsPerBlock = 256;
+        const uint32_t numBlocks = 256;
+        const uint32_t grid_threads = threadsPerBlock * numBlocks; // 65,536 threads
+        const uint32_t steps_per_launch = 256;                     // 65536 * 256 = 16,777,216 keys per launch!
+        const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
+
+        AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
+
         while (actual_checked < total_keys_count && g_running.load() && !found) {
             uint64_t cur_chunk = std::min(chunk_size, total_keys_count - actual_checked);
             u256 cur_start = start_k + actual_checked;
 
-            int threadsPerBlock = 256;
-            int blocks = (cur_chunk + threadsPerBlock - 1) / threadsPerBlock;
-            cuda_scan_kernel<<<blocks, threadsPerBlock>>>(cur_start, cur_chunk);
+            uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
+            if (cur_steps == 0) cur_steps = 1;
+
+            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
+                cur_start, cur_chunk, delta_G, grid_threads, cur_steps
+            );
             cudaDeviceSynchronize();
 
             int h_found = 0;
@@ -1576,7 +1762,19 @@ int main(int argc, char* argv[]) {
 
         std::string post_url = api_base + "?action=result&user=" + current_user;
         std::string ack;
-        http_post(post_url, json.str(), &ack);
+        bool post_ok = http_post(post_url, json.str(), &ack);
+        if (!post_ok || ack.find("\"status\":\"ok\"") == std::string::npos) {
+            std::cerr << "[WARN] Submit failed: " << (ack.empty() ? "network error" : ack) << ". Retrying..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            http_post(post_url, json.str(), &ack);
+        } else {
+            std::cout << "[OK] Range submitted: Block " << block << " Range " << range_idx 
+                      << " (" << range_count << " range" << (range_count > 1 ? "s" : "") << ")"
+                      << " | Speed: " << std::fixed << std::setprecision(1) 
+                      << (speed >= 1e6 ? speed/1e6 : speed/1e3) 
+                      << (speed >= 1e6 ? " Mkeys/s" : " Kkeys/s") 
+                      << " | Worker: " << current_user << std::endl;
+        }
 
         completed_ranges++;
         if (found) break;
