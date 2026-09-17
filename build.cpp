@@ -306,21 +306,20 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
 #if defined(__CUDA_ARCH__)
 CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
-    uint32_t c = 0;
-    uint32_t z32 = 0;
+    uint64_t c = 0;
+    uint64_t z64 = 0;
     asm volatile (
-        "add.cc.u64      %0, %2, %6;\n\t"
-        "addc.cc.u64     %1, %3, %7;\n\t"
-        "addc.cc.u64     %2, %4, %8;\n\t"
-        "addc.cc.u64     %3, %5, %9;\n\t"
-        "addc.u32        %4, %10, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(c)
+        "add.cc.u64      %0, %5, %9;\n\t"
+        "addc.cc.u64     %1, %6, %10;\n\t"
+        "addc.cc.u64     %2, %7, %11;\n\t"
+        "addc.cc.u64     %3, %8, %12;\n\t"
+        "addc.u64        %4, %13, %13;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
-          "r"(z32)
+          "l"(z64)
     );
     if (c) {
-        uint64_t z64 = 0;
         asm volatile (
             "add.cc.u64      %0, %0, %4;\n\t"
             "addc.cc.u64     %1, %1, %5;\n\t"
@@ -345,21 +344,20 @@ CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 
 CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
-    uint32_t borrow = 0;
-    uint32_t z32 = 0;
+    uint64_t borrow = 0;
+    uint64_t z64 = 0;
     asm volatile (
-        "sub.cc.u64      %0, %2, %6;\n\t"
-        "subc.cc.u64     %1, %3, %7;\n\t"
-        "subc.cc.u64     %2, %4, %8;\n\t"
-        "subc.cc.u64     %3, %5, %9;\n\t"
-        "subc.u32        %4, %10, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(borrow)
+        "sub.cc.u64      %0, %5, %9;\n\t"
+        "subc.cc.u64     %1, %6, %10;\n\t"
+        "subc.cc.u64     %2, %7, %11;\n\t"
+        "subc.cc.u64     %3, %8, %12;\n\t"
+        "subc.u64        %4, %13, %13;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
-          "r"(z32)
+          "l"(z64)
     );
     if (borrow) {
-        uint64_t z64 = 0;
         asm volatile (
             "sub.cc.u64      %0, %0, %4;\n\t"
             "subc.cc.u64     %1, %1, %5;\n\t"
@@ -689,15 +687,15 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     if (carry0) {
         cm0 = carry0 * SECP_K;
         cmhi0 = __umul64hi(carry0, SECP_K);
-        uint32_t extra = 0;
+        uint64_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, %5;\n\t"
+            "add.cc.u64      %0, %0, %5;\n\t"
+            "addc.cc.u64     %1, %1, %6;\n\t"
             "addc.cc.u64     %2, %2, %7;\n\t"
             "addc.cc.u64     %3, %3, %7;\n\t"
-            "addc.u32        %6, %8, 0;\n\t"
-            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
-            : "l"(z64), "r"(z32)
+            "addc.u64        %4, %7, %7;\n\t"
+            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(extra)
+            : "l"(cm0), "l"(cmhi0), "l"(z64)
         );
         if (extra) {
             asm volatile (
@@ -834,15 +832,15 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     if (carry0) {
         cm0 = carry0 * SECP_K;
         cmhi0 = __umul64hi(carry0, SECP_K);
-        uint32_t extra = 0;
+        uint64_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, %5;\n\t"
+            "add.cc.u64      %0, %0, %5;\n\t"
+            "addc.cc.u64     %1, %1, %6;\n\t"
             "addc.cc.u64     %2, %2, %7;\n\t"
             "addc.cc.u64     %3, %3, %7;\n\t"
-            "addc.u32        %6, %8, 0;\n\t"
-            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
-            : "l"(z64), "r"(z32)
+            "addc.u64        %4, %7, %7;\n\t"
+            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(extra)
+            : "l"(cm0), "l"(cmhi0), "l"(z64)
         );
         if (extra) {
             asm volatile (
