@@ -2246,7 +2246,7 @@ int main(int argc, char* argv[]) {
         std::atomic<uint64_t> checked_counter(0);
         std::atomic<bool> found_flag(false);
         std::mutex found_mtx;
-        uint64_t slice_size = 524288;
+        uint64_t slice_size = 2097152;
 
         std::vector<std::thread> workers;
         workers.reserve(threads);
