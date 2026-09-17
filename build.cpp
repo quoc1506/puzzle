@@ -677,14 +677,18 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %4, %9;\n\t"
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
-        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
+        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
     );
+
 
     if (carry0) {
         cm0 = carry0 * SECP_K;
@@ -797,12 +801,11 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         : "l"(hsq1), "l"(sq2), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(t[5]), "+l"(t[6]), "+l"(t[7]), "+l"(t[7])
-        : "l"(hsq2), "l"(sq3), "l"(hsq3), "l"(z64)
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %1, %4;\n\t"
+        "addc.u64        %2, %2, %5;\n\t"
+        : "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
+        : "l"(hsq2), "l"(sq3), "l"(hsq3)
     );
 
     // Reduction mod 2^256 - 2^32 - 979
@@ -823,14 +826,18 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %4, %9;\n\t"
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
-        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
+        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
     );
+
 
     if (carry0) {
         cm0 = carry0 * SECP_K;
