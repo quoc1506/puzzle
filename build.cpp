@@ -1468,7 +1468,7 @@ __device__ uint64_t dev_found_offset = 0;
 __device__ uint32_t dev_target_w[5];
 __device__ uint64_t dev_target_h64;
 __device__ volatile int dev_work_flag = 0;
-__device__ uint64_t dev_work_base = 0;
+__device__ u256 dev_work_base = {0, 0};
 __device__ uint64_t dev_work_count = 0;
 __device__ uint64_t dev_work_grid_threads = 0;
 __device__ uint32_t dev_work_steps = 0;
@@ -1652,13 +1652,12 @@ CUDA_GLOBAL void cuda_persistent_scan_kernel(
         }
         if (dev_work_flag == -1) break;
 
-        uint64_t work_base = dev_work_base;
+        u256 chunk_start = dev_work_base;
         uint64_t work_count = dev_work_count;
         uint64_t gthreads = dev_work_grid_threads;
         uint32_t local_steps = dev_work_steps;
 
-        uint64_t my_global_key = work_base + tid;
-        if (my_global_key >= work_base + work_count) {
+        if (tid >= work_count) {
             if (threadIdx.x == 0) {
                 int prev = atomicSub((int*)&dev_work_active_blocks, 1);
                 if (prev == 1) dev_work_flag = 0;
@@ -1667,7 +1666,7 @@ CUDA_GLOBAL void cuda_persistent_scan_kernel(
             continue;
         }
 
-        u256 start_k = base_start + my_global_key;
+        u256 start_k = chunk_start + tid;
         uint64_t limbs[4] = {
             (uint64_t)start_k.low,
             (uint64_t)(start_k.low >> 64),
