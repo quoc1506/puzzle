@@ -1109,6 +1109,8 @@ CUDA_HOSTDEV CUDA_INLINE AffinePoint get_generator_G() {
 }
 
 #if defined(__CUDACC__)
+CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k);
+__device__ __constant__ AffinePoint dev_G_table[16];
 static void build_dev_G_table() {
     AffinePoint table[16];
     table[0] = {{0,0,0,0}, {0,0,0,0}};
@@ -1471,7 +1473,6 @@ __device__ uint64_t dev_work_count = 0;
 __device__ uint64_t dev_work_grid_threads = 0;
 __device__ uint32_t dev_work_steps = 0;
 __device__ int dev_work_active_blocks = 0;
-__device__ __constant__ AffinePoint dev_G_table[16];
 
 __device__ __forceinline__ uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
