@@ -677,14 +677,10 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
         : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
     );
@@ -826,14 +822,10 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
         : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
     );
@@ -1239,13 +1231,21 @@ CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
     return jacobian_to_affine(R);
 }
 
+#if defined(__CUDA_ARCH__)
+CUDA_DEV CUDA_INLINE uint32_t ror32_gpu(uint32_t x, int n) {
+    return __funnelshift_r(x, x, n);
+}
+CUDA_DEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
+    return __funnelshift_l(x, x, n);
+}
+#else
 CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_gpu(uint32_t x, int n) {
     return (x >> n) | (x << (32 - n));
 }
-
 CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
     return (x << n) | (x >> (32 - n));
 }
+#endif
 
 #if defined(__CUDA_ARCH__)
 CUDA_DEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
