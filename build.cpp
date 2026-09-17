@@ -309,16 +309,11 @@ CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     uint32_t c = 0;
     uint32_t z32 = 0;
     asm volatile (
-        "add.cc.u64      %0, %2, %6;
-	"
-        "addc.cc.u64     %1, %3, %7;
-	"
-        "addc.cc.u64     %2, %4, %8;
-	"
-        "addc.cc.u64     %3, %5, %9;
-	"
-        "addc.u32        %4, %10, 0;
-	"
+        "add.cc.u64      %0, %2, %6;\n\t"
+        "addc.cc.u64     %1, %3, %7;\n\t"
+        "addc.cc.u64     %2, %4, %8;\n\t"
+        "addc.cc.u64     %3, %5, %9;\n\t"
+        "addc.u32        %4, %10, 0;\n\t"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(c)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
@@ -327,14 +322,10 @@ CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     if (c) {
         uint64_t z64 = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;
-	"
-            "addc.cc.u64     %1, %1, %5;
-	"
-            "addc.cc.u64     %2, %2, %5;
-	"
-            "addc.u64        %3, %3, %5;
-	"
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, %5;\n\t"
+            "addc.cc.u64     %2, %2, %5;\n\t"
+            "addc.u64        %3, %3, %5;\n\t"
             : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
             : "l"(SECP_K), "l"(z64)
         );
@@ -357,16 +348,11 @@ CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     uint32_t borrow = 0;
     uint32_t z32 = 0;
     asm volatile (
-        "sub.cc.u64      %0, %2, %6;
-	"
-        "subc.cc.u64     %1, %3, %7;
-	"
-        "subc.cc.u64     %2, %4, %8;
-	"
-        "subc.cc.u64     %3, %5, %9;
-	"
-        "subc.u32        %4, %10, 0;
-	"
+        "sub.cc.u64      %0, %2, %6;\n\t"
+        "subc.cc.u64     %1, %3, %7;\n\t"
+        "subc.cc.u64     %2, %4, %8;\n\t"
+        "subc.cc.u64     %3, %5, %9;\n\t"
+        "subc.u32        %4, %10, 0;\n\t"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(borrow)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
@@ -375,14 +361,10 @@ CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     if (borrow) {
         uint64_t z64 = 0;
         asm volatile (
-            "sub.cc.u64      %0, %0, %4;
-	"
-            "subc.cc.u64     %1, %1, %5;
-	"
-            "subc.cc.u64     %2, %2, %5;
-	"
-            "subc.u64        %3, %3, %5;
-	"
+            "sub.cc.u64      %0, %0, %4;\n\t"
+            "subc.cc.u64     %1, %1, %5;\n\t"
+            "subc.cc.u64     %2, %2, %5;\n\t"
+            "subc.u64        %3, %3, %5;\n\t"
             : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
             : "l"(SECP_K), "l"(z64)
         );
@@ -593,14 +575,10 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p2 = a2 * b0, hi2 = __umul64hi(a2, b0);
     uint64_t p3 = a3 * b0, hi3 = __umul64hi(a3, b0);
     asm volatile (
-        "add.cc.u64      %0, %4, %8;
-	"
-        "addc.cc.u64     %1, %5, %9;
-	"
-        "addc.cc.u64     %2, %6, %10;
-	"
-        "addc.u64        %3, %7, %11;
-	"
+        "add.cc.u64      %0, %4, %8;\n\t"
+        "addc.cc.u64     %1, %5, %9;\n\t"
+        "addc.cc.u64     %2, %6, %10;\n\t"
+        "addc.u64        %3, %7, %11;\n\t"
         : "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
         : "l"(p1), "l"(p2), "l"(p3), "l"(hi3),
           "l"(hi0), "l"(hi1), "l"(hi2), "l"(z64)
@@ -613,28 +591,19 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p2_1 = a2 * b1; hi2 = __umul64hi(a2, b1);
     uint64_t p3_1 = a3 * b1; hi3 = __umul64hi(a3, b1);
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "=l"(t[5])
         : "l"(p0_1), "l"(p1_1), "l"(p2_1), "l"(p3_1), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
         : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
     );
@@ -646,30 +615,20 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p3_2 = a3 * b2; hi3 = __umul64hi(a3, b2);
     uint64_t c_out = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(c_out)
         : "l"(p0_2), "l"(p1_2), "l"(p2_2), "l"(p3_2), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(t[6]), "=l"(t[7])
         : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3), "l"(z64)
     );
@@ -682,29 +641,20 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p3_3 = a3 * b3; hi3 = __umul64hi(a3, b3);
     c_out = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(c_out)
         : "l"(p0_3), "l"(p1_3), "l"(p2_3), "l"(p3_3), "l"(z64)
     );
     t[7] += c_out;
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
         : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
     );
@@ -718,30 +668,20 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
     uint64_t carry0 = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %4, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %4, %9;\n\t"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
         : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
     );
@@ -751,29 +691,20 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         cmhi0 = __umul64hi(carry0, SECP_K);
         uint32_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;
-	"
-            "addc.cc.u64     %1, %1, %5;
-	"
-            "addc.cc.u64     %2, %2, %7;
-	"
-            "addc.cc.u64     %3, %3, %7;
-	"
-            "addc.u32        %6, %8, 0;
-	"
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, %5;\n\t"
+            "addc.cc.u64     %2, %2, %7;\n\t"
+            "addc.cc.u64     %3, %3, %7;\n\t"
+            "addc.u32        %6, %8, 0;\n\t"
             : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
             : "l"(z64), "r"(z32)
         );
         if (extra) {
             asm volatile (
-                "add.cc.u64      %0, %0, %4;
-	"
-                "addc.cc.u64     %1, %1, %5;
-	"
-                "addc.cc.u64     %2, %2, %5;
-	"
-                "addc.u64        %3, %3, %5;
-	"
+                "add.cc.u64      %0, %0, %4;\n\t"
+                "addc.cc.u64     %1, %1, %5;\n\t"
+                "addc.cc.u64     %2, %2, %5;\n\t"
+                "addc.u64        %3, %3, %5;\n\t"
                 : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
                 : "l"(SECP_K), "l"(z64)
             );
@@ -812,34 +743,24 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 
     t[1] = p01; t[2] = hi01;
     asm volatile (
-        "add.cc.u64      %0, %0, %3;
-	"
-        "addc.cc.u64     %1, %4, %5;
-	"
-        "addc.u64        %2, %6, %7;
-	"
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %4, %5;\n\t"
+        "addc.u64        %2, %6, %7;\n\t"
         : "+l"(t[2]), "=l"(t[3]), "=l"(t[4])
         : "l"(p02), "l"(hi02), "l"(p03), "l"(hi03), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %3;
-	"
-        "addc.cc.u64     %1, %1, %4;
-	"
-        "addc.u64        %2, %2, %5;
-	"
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %1, %4;\n\t"
+        "addc.u64        %2, %2, %5;\n\t"
         : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
         : "l"(p12), "l"(hi12), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
         : "l"(p13), "l"(hi13), "l"(p23), "l"(hi23)
     );
@@ -862,34 +783,24 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 
     t[0] = sq0;
     asm volatile (
-        "add.cc.u64      %0, %0, %3;
-	"
-        "addc.cc.u64     %1, %1, %4;
-	"
-        "addc.u64        %2, %2, %5;
-	"
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %1, %4;\n\t"
+        "addc.u64        %2, %2, %5;\n\t"
         : "+l"(t[1]), "+l"(t[2]), "+l"(t[3])
         : "l"(hsq0), "l"(sq1), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %3;
-	"
-        "addc.cc.u64     %1, %1, %4;
-	"
-        "addc.u64        %2, %2, %5;
-	"
+        "add.cc.u64      %0, %0, %3;\n\t"
+        "addc.cc.u64     %1, %1, %4;\n\t"
+        "addc.u64        %2, %2, %5;\n\t"
         : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
         : "l"(hsq1), "l"(sq2), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %4;
-	"
-        "addc.cc.u64     %1, %1, %5;
-	"
-        "addc.cc.u64     %2, %2, %6;
-	"
-        "addc.u64        %3, %3, %7;
-	"
+        "add.cc.u64      %0, %0, %4;\n\t"
+        "addc.cc.u64     %1, %1, %5;\n\t"
+        "addc.cc.u64     %2, %2, %6;\n\t"
+        "addc.u64        %3, %3, %7;\n\t"
         : "+l"(t[5]), "+l"(t[6]), "+l"(t[7]), "+l"(t[7])
         : "l"(hsq2), "l"(sq3), "l"(hsq3), "l"(z64)
     );
@@ -903,30 +814,20 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
     uint64_t carry0 = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %9, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %9, %9;\n\t"
         : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
         : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
     );
     asm volatile (
-        "add.cc.u64      %0, %0, %5;
-	"
-        "addc.cc.u64     %1, %1, %6;
-	"
-        "addc.cc.u64     %2, %2, %7;
-	"
-        "addc.cc.u64     %3, %3, %8;
-	"
-        "addc.u64        %4, %4, %9;
-	"
+        "add.cc.u64      %0, %0, %5;\n\t"
+        "addc.cc.u64     %1, %1, %6;\n\t"
+        "addc.cc.u64     %2, %2, %7;\n\t"
+        "addc.cc.u64     %3, %3, %8;\n\t"
+        "addc.u64        %4, %4, %9;\n\t"
         : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
         : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
     );
@@ -936,29 +837,20 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         cmhi0 = __umul64hi(carry0, SECP_K);
         uint32_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;
-	"
-            "addc.cc.u64     %1, %1, %5;
-	"
-            "addc.cc.u64     %2, %2, %7;
-	"
-            "addc.cc.u64     %3, %3, %7;
-	"
-            "addc.u32        %6, %8, 0;
-	"
+            "add.cc.u64      %0, %0, %4;\n\t"
+            "addc.cc.u64     %1, %1, %5;\n\t"
+            "addc.cc.u64     %2, %2, %7;\n\t"
+            "addc.cc.u64     %3, %3, %7;\n\t"
+            "addc.u32        %6, %8, 0;\n\t"
             : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
             : "l"(z64), "r"(z32)
         );
         if (extra) {
             asm volatile (
-                "add.cc.u64      %0, %0, %4;
-	"
-                "addc.cc.u64     %1, %1, %5;
-	"
-                "addc.cc.u64     %2, %2, %5;
-	"
-                "addc.u64        %3, %3, %5;
-	"
+                "add.cc.u64      %0, %0, %4;\n\t"
+                "addc.cc.u64     %1, %1, %5;\n\t"
+                "addc.cc.u64     %2, %2, %5;\n\t"
+                "addc.u64        %3, %3, %5;\n\t"
                 : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
                 : "l"(SECP_K), "l"(z64)
             );
