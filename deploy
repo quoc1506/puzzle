@@ -17,10 +17,18 @@ can_run() {
             return 1
         fi
     fi
+    if ! "$1" --test-probe >/dev/null 2>&1; then
+        return 1
+    fi
     return 0
 }
 
 TARGET_BIN=""
+
+if [ "$1" = "--cpu" ] || [ "$1" = "--cpu-only" ]; then
+    FORCE_CPU=1
+    shift
+fi
 
 case "$OS" in
     linux*)
@@ -42,15 +50,17 @@ case "$OS" in
                 done
                 ;;
             x86_64|amd64|*)
-                if command -v nvidia-smi >/dev/null 2>&1; then
-                    if [ -f "bin/build_cuda" ]; then
-                        if can_run "bin/build_cuda"; then
-                            TARGET_BIN="bin/build_cuda"
+                if [ "$FORCE_CPU" != "1" ]; then
+                    if command -v nvidia-smi >/dev/null 2>&1; then
+                        if [ -f "bin/build_cuda" ]; then
+                            if can_run "bin/build_cuda"; then
+                                TARGET_BIN="bin/build_cuda"
+                            else
+                                echo "[WARN] NVIDIA GPU detected, but bin/build_cuda failed dynamic/GLIBC checks. Falling back to CPU..."
+                            fi
                         else
-                            echo "[WARN] NVIDIA GPU detected, but bin/build_cuda failed dynamic/GLIBC checks. Falling back to CPU..."
+                            echo "[WARN] NVIDIA GPU detected, but bin/build_cuda not found in bin/. Falling back to CPU..."
                         fi
-                    else
-                        echo "[WARN] NVIDIA GPU detected, but bin/build_cuda not found in bin/. Falling back to CPU..."
                     fi
                 fi
 
@@ -131,7 +141,7 @@ case "$OS" in
         ;;
     msys*|mingw*|cygwin*)
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
-            if [ -f "$f" ]; then
+            if can_run "$f"; then
                 TARGET_BIN="$f"
                 break
             fi

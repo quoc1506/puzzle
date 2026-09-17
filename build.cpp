@@ -307,24 +307,36 @@ static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b)
 CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     uint32_t c = 0;
+    uint32_t z32 = 0;
     asm volatile (
-        "add.cc.u64      %0, %2, %6;\n\t"
-        "addc.cc.u64     %1, %3, %7;\n\t"
-        "addc.cc.u64     %2, %4, %8;\n\t"
-        "addc.cc.u64     %3, %5, %9;\n\t"
-        "addc.u32        %4, 0, 0;\n\t"
+        "add.cc.u64      %0, %2, %6;
+	"
+        "addc.cc.u64     %1, %3, %7;
+	"
+        "addc.cc.u64     %2, %4, %8;
+	"
+        "addc.cc.u64     %3, %5, %9;
+	"
+        "addc.u32        %4, %10, 0;
+	"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(c)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
-          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
+          "r"(z32)
     );
     if (c) {
+        uint64_t z64 = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, 0;\n\t"
-            "addc.cc.u64     %2, %2, 0;\n\t"
-            "addc.u64        %3, %3, 0;\n\t"
+            "add.cc.u64      %0, %0, %4;
+	"
+            "addc.cc.u64     %1, %1, %5;
+	"
+            "addc.cc.u64     %2, %2, %5;
+	"
+            "addc.u64        %3, %3, %5;
+	"
             : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(SECP_K)
+            : "l"(SECP_K), "l"(z64)
         );
     } else {
         if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -343,24 +355,36 @@ CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
     uint32_t borrow = 0;
+    uint32_t z32 = 0;
     asm volatile (
-        "sub.cc.u64      %0, %2, %6;\n\t"
-        "subc.cc.u64     %1, %3, %7;\n\t"
-        "subc.cc.u64     %2, %4, %8;\n\t"
-        "subc.cc.u64     %3, %5, %9;\n\t"
-        "subc.u32        %4, 0, 0;\n\t"
+        "sub.cc.u64      %0, %2, %6;
+	"
+        "subc.cc.u64     %1, %3, %7;
+	"
+        "subc.cc.u64     %2, %4, %8;
+	"
+        "subc.cc.u64     %3, %5, %9;
+	"
+        "subc.u32        %4, %10, 0;
+	"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=r"(borrow)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
-          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
+          "r"(z32)
     );
     if (borrow) {
+        uint64_t z64 = 0;
         asm volatile (
-            "sub.cc.u64      %0, %0, %4;\n\t"
-            "subc.cc.u64     %1, %1, 0;\n\t"
-            "subc.cc.u64     %2, %2, 0;\n\t"
-            "subc.u64        %3, %3, 0;\n\t"
+            "sub.cc.u64      %0, %0, %4;
+	"
+            "subc.cc.u64     %1, %1, %5;
+	"
+            "subc.cc.u64     %2, %2, %5;
+	"
+            "subc.u64        %3, %3, %5;
+	"
             : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(SECP_K)
+            : "l"(SECP_K), "l"(z64)
         );
     }
     return r;
@@ -421,6 +445,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     return r;
 }
 #endif
+
 #endif
 
 #if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
@@ -558,6 +583,9 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
+    uint64_t z64 = 0;
+    uint32_t z32 = 0;
+
     // Row 0: a * b0
     t[0] = a0 * b0;
     uint64_t hi0 = __umul64hi(a0, b0);
@@ -565,14 +593,19 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p2 = a2 * b0, hi2 = __umul64hi(a2, b0);
     uint64_t p3 = a3 * b0, hi3 = __umul64hi(a3, b0);
     asm volatile (
-        "add.cc.u64      %0, %4, %8;\n\t"
-        "addc.cc.u64     %1, %5, %9;\n\t"
-        "addc.cc.u64     %2, %6, %10;\n\t"
-        "addc.u64        %3, %7, 0;\n\t"
+        "add.cc.u64      %0, %4, %8;
+	"
+        "addc.cc.u64     %1, %5, %9;
+	"
+        "addc.cc.u64     %2, %6, %10;
+	"
+        "addc.u64        %3, %7, %11;
+	"
         : "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
         : "l"(p1), "l"(p2), "l"(p3), "l"(hi3),
-          "l"(hi0), "l"(hi1), "l"(hi2)
+          "l"(hi0), "l"(hi1), "l"(hi2), "l"(z64)
     );
+    t[5] = 0; t[6] = 0; t[7] = 0;
 
     // Row 1: a * b1
     uint64_t p0_1 = a0 * b1; hi0 = __umul64hi(a0, b1);
@@ -580,18 +613,30 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p2_1 = a2 * b1; hi2 = __umul64hi(a2, b1);
     uint64_t p3_1 = a3 * b1; hi3 = __umul64hi(a3, b1);
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %9;\n\t"
-        "addc.cc.u64     %2, %2, %10;\n\t"
-        "addc.cc.u64     %3, %3, %11;\n\t"
-        "addc.u64        %4, %4, %12;\n\t"
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
         : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "=l"(t[5])
-        : "l"(p0_1), "l"(p1_1), "l"(p2_1), "l"(p3_1),
-          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+        : "l"(p0_1), "l"(p1_1), "l"(p2_1), "l"(p3_1), "l"(z64)
+    );
+    asm volatile (
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
+        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
+        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
     );
 
     // Row 2: a * b2
@@ -599,85 +644,138 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t p1_2 = a1 * b2; hi1 = __umul64hi(a1, b2);
     uint64_t p2_2 = a2 * b2; hi2 = __umul64hi(a2, b2);
     uint64_t p3_2 = a3 * b2; hi3 = __umul64hi(a3, b2);
+    uint64_t c_out = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %9;\n\t"
-        "addc.cc.u64     %2, %2, %10;\n\t"
-        "addc.cc.u64     %3, %3, %11;\n\t"
-        "addc.u64        %4, %4, %12;\n\t"
-        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(t[6])
-        : "l"(p0_2), "l"(p1_2), "l"(p2_2), "l"(p3_2),
-          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
+        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(c_out)
+        : "l"(p0_2), "l"(p1_2), "l"(p2_2), "l"(p3_2), "l"(z64)
     );
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
+        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(t[6]), "=l"(t[7])
+        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3), "l"(z64)
+    );
+    t[6] += c_out;
 
     // Row 3: a * b3
     uint64_t p0_3 = a0 * b3; hi0 = __umul64hi(a0, b3);
     uint64_t p1_3 = a1 * b3; hi1 = __umul64hi(a1, b3);
     uint64_t p2_3 = a2 * b3; hi2 = __umul64hi(a2, b3);
     uint64_t p3_3 = a3 * b3; hi3 = __umul64hi(a3, b3);
+    c_out = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %9;\n\t"
-        "addc.cc.u64     %2, %2, %10;\n\t"
-        "addc.cc.u64     %3, %3, %11;\n\t"
-        "addc.u64        %4, %4, %12;\n\t"
-        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(t[7])
-        : "l"(p0_3), "l"(p1_3), "l"(p2_3), "l"(p3_3),
-          "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
+        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(c_out)
+        : "l"(p0_3), "l"(p1_3), "l"(p2_3), "l"(p3_3), "l"(z64)
+    );
+    t[7] += c_out;
+    asm volatile (
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
+        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
+        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
     );
 
-    // secp256k1 reduction: high 4 limbs * SECP_K
-    uint64_t k = SECP_K;
-    uint64_t m0 = t[4] * k, mhi0 = __umul64hi(t[4], k);
-    uint64_t m1 = t[5] * k, mhi1 = __umul64hi(t[5], k);
-    uint64_t m2 = t[6] * k, mhi2 = __umul64hi(t[6], k);
-    uint64_t m3 = t[7] * k, mhi3 = __umul64hi(t[7], k);
+    // Reduction mod 2^256 - 2^32 - 979
+    uint64_t cm0 = t[4] * SECP_K, cmhi0 = __umul64hi(t[4], SECP_K);
+    uint64_t cm1 = t[5] * SECP_K, cmhi1 = __umul64hi(t[5], SECP_K);
+    uint64_t cm2 = t[6] * SECP_K, cmhi2 = __umul64hi(t[6], SECP_K);
+    uint64_t cm3 = t[7] * SECP_K, cmhi3 = __umul64hi(t[7], SECP_K);
 
     uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
-    uint64_t red_carry = 0;
+    uint64_t carry0 = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %9;\n\t"
-        "addc.cc.u64     %2, %2, %10;\n\t"
-        "addc.cc.u64     %3, %3, %11;\n\t"
-        "addc.u64        %4, %4, %12;\n\t"
-        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(red_carry)
-        : "l"(m0), "l"(m1), "l"(m2), "l"(m3),
-          "l"(mhi0), "l"(mhi1), "l"(mhi2), "l"(mhi3)
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
+        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
+        : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
+    );
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %4, %9;
+	"
+        : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
+        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
     );
 
-    if (red_carry) {
-        uint64_t cm0 = red_carry * k;
-        uint64_t cmhi0 = __umul64hi(red_carry, k);
+    if (carry0) {
+        cm0 = carry0 * SECP_K;
+        cmhi0 = __umul64hi(carry0, SECP_K);
         uint32_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, %5;\n\t"
-            "addc.cc.u64     %2, %2, 0;\n\t"
-            "addc.cc.u64     %3, %3, 0;\n\t"
-            "addc.u32        %6, 0, 0;\n\t"
+            "add.cc.u64      %0, %0, %4;
+	"
+            "addc.cc.u64     %1, %1, %5;
+	"
+            "addc.cc.u64     %2, %2, %7;
+	"
+            "addc.cc.u64     %3, %3, %7;
+	"
+            "addc.u32        %6, %8, 0;
+	"
             : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
+            : "l"(z64), "r"(z32)
         );
         if (extra) {
             asm volatile (
-                "add.cc.u64      %0, %0, %4;\n\t"
-                "addc.cc.u64     %1, %1, 0;\n\t"
-                "addc.cc.u64     %2, %2, 0;\n\t"
-                "addc.u64        %3, %3, 0;\n\t"
+                "add.cc.u64      %0, %0, %4;
+	"
+                "addc.cc.u64     %1, %1, %5;
+	"
+                "addc.cc.u64     %2, %2, %5;
+	"
+                "addc.u64        %3, %3, %5;
+	"
                 : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
-                : "l"(k)
+                : "l"(SECP_K), "l"(z64)
             );
         }
     }
@@ -698,8 +796,11 @@ CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-    uint64_t t[8];
+    uint64_t t[8] = {0};
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    uint64_t z64 = 0;
+    uint32_t z32 = 0;
 
     // Off-diagonal products
     uint64_t p01 = a0 * a1, hi01 = __umul64hi(a0, a1);
@@ -709,108 +810,157 @@ CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t p13 = a1 * a3, hi13 = __umul64hi(a1, a3);
     uint64_t p23 = a2 * a3, hi23 = __umul64hi(a2, a3);
 
-    t[1] = p01;
+    t[1] = p01; t[2] = hi01;
     asm volatile (
-        "add.cc.u64      %0, %5, %9;\n\t"
-        "addc.cc.u64     %1, %6, %10;\n\t"
-        "addc.cc.u64     %2, %7, %11;\n\t"
-        "addc.cc.u64     %3, %8, %12;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %13;\n\t"
-        "addc.cc.u64     %2, %2, %14;\n\t"
-        "addc.cc.u64     %3, %3, %15;\n\t"
-        "addc.u64        %4, %4, %16;\n\t"
-        : "=l"(t[2]), "=l"(t[3]), "=l"(t[4]), "=l"(t[5]), "=l"(t[6])
-        : "l"(p02), "l"(p03), "l"(0ULL), "l"(0ULL),
-          "l"(hi01), "l"(hi02), "l"(hi03), "l"(0ULL),
-          "l"(p12), "l"(p13), "l"(p23), "l"(0ULL)
+        "add.cc.u64      %0, %0, %3;
+	"
+        "addc.cc.u64     %1, %4, %5;
+	"
+        "addc.u64        %2, %6, %7;
+	"
+        : "+l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(p02), "l"(hi02), "l"(p03), "l"(hi03), "l"(z64)
     );
-    // Add hi terms for row 1 & 2
     asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %1, %4;\n\t"
-        "addc.u64        %2, %2, %5;\n\t"
-        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6])
-        : "l"(hi12), "l"(hi13), "l"(hi23)
+        "add.cc.u64      %0, %0, %3;
+	"
+        "addc.cc.u64     %1, %1, %4;
+	"
+        "addc.u64        %2, %2, %5;
+	"
+        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
+        : "l"(p12), "l"(hi12), "l"(z64)
     );
-
-    // Double off-diagonal products (shift left by 1)
-    uint64_t carry = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %0;\n\t"
-        "addc.cc.u64     %1, %1, %1;\n\t"
-        "addc.cc.u64     %2, %2, %2;\n\t"
-        "addc.cc.u64     %3, %3, %3;\n\t"
-        "addc.cc.u64     %4, %4, %4;\n\t"
-        "addc.cc.u64     %5, %5, %5;\n\t"
-        "addc.u64        %6, 0, 0;\n\t"
-        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(carry)
-    );
-    t[7] = carry;
-
-    // Diagonal squares
-    t[0] = a0 * a0;
-    uint64_t sq_hi0 = __umul64hi(a0, a0);
-    uint64_t sq_lo1 = a1 * a1, sq_hi1 = __umul64hi(a1, a1);
-    uint64_t sq_lo2 = a2 * a2, sq_hi2 = __umul64hi(a2, a2);
-    uint64_t sq_lo3 = a3 * a3, sq_hi3 = __umul64hi(a3, a3);
-
-    asm volatile (
-        "add.cc.u64      %0, %0, %7;\n\t"
-        "addc.cc.u64     %1, %1, %8;\n\t"
-        "addc.cc.u64     %2, %2, %9;\n\t"
-        "addc.cc.u64     %3, %3, %10;\n\t"
-        "addc.cc.u64     %4, %4, %11;\n\t"
-        "addc.cc.u64     %5, %5, %12;\n\t"
-        "addc.u64        %6, %6, %13;\n\t"
-        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
-        : "l"(sq_hi0), "l"(sq_lo1), "l"(sq_hi1), "l"(sq_lo2), "l"(sq_hi2), "l"(sq_lo3), "l"(sq_hi3)
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
+        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
+        : "l"(p13), "l"(hi13), "l"(p23), "l"(hi23)
     );
 
-    // Reduction
-    uint64_t k = SECP_K;
-    uint64_t m0 = t[4] * k, mhi0 = __umul64hi(t[4], k);
-    uint64_t m1 = t[5] * k, mhi1 = __umul64hi(t[5], k);
-    uint64_t m2 = t[6] * k, mhi2 = __umul64hi(t[6], k);
-    uint64_t m3 = t[7] * k, mhi3 = __umul64hi(t[7], k);
+    // Double off-diagonal terms
+    uint64_t c = 0;
+    #pragma unroll
+    for (int i = 1; i < 7; ++i) {
+        uint64_t next_c = t[i] >> 63;
+        t[i] = (t[i] << 1) | c;
+        c = next_c;
+    }
+    t[7] = (t[7] << 1) | c;
+
+    // Add diagonal terms
+    uint64_t sq0 = a0 * a0, hsq0 = __umul64hi(a0, a0);
+    uint64_t sq1 = a1 * a1, hsq1 = __umul64hi(a1, a1);
+    uint64_t sq2 = a2 * a2, hsq2 = __umul64hi(a2, a2);
+    uint64_t sq3 = a3 * a3, hsq3 = __umul64hi(a3, a3);
+
+    t[0] = sq0;
+    asm volatile (
+        "add.cc.u64      %0, %0, %3;
+	"
+        "addc.cc.u64     %1, %1, %4;
+	"
+        "addc.u64        %2, %2, %5;
+	"
+        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3])
+        : "l"(hsq0), "l"(sq1), "l"(z64)
+    );
+    asm volatile (
+        "add.cc.u64      %0, %0, %3;
+	"
+        "addc.cc.u64     %1, %1, %4;
+	"
+        "addc.u64        %2, %2, %5;
+	"
+        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
+        : "l"(hsq1), "l"(sq2), "l"(z64)
+    );
+    asm volatile (
+        "add.cc.u64      %0, %0, %4;
+	"
+        "addc.cc.u64     %1, %1, %5;
+	"
+        "addc.cc.u64     %2, %2, %6;
+	"
+        "addc.u64        %3, %3, %7;
+	"
+        : "+l"(t[5]), "+l"(t[6]), "+l"(t[7]), "+l"(t[7])
+        : "l"(hsq2), "l"(sq3), "l"(hsq3), "l"(z64)
+    );
+
+    // Reduction mod 2^256 - 2^32 - 979
+    uint64_t cm0 = t[4] * SECP_K, cmhi0 = __umul64hi(t[4], SECP_K);
+    uint64_t cm1 = t[5] * SECP_K, cmhi1 = __umul64hi(t[5], SECP_K);
+    uint64_t cm2 = t[6] * SECP_K, cmhi2 = __umul64hi(t[6], SECP_K);
+    uint64_t cm3 = t[7] * SECP_K, cmhi3 = __umul64hi(t[7], SECP_K);
 
     uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
-    uint64_t red_carry = 0;
+    uint64_t carry0 = 0;
     asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, 0, 0;\n\t"
-        "add.cc.u64      %1, %1, %9;\n\t"
-        "addc.cc.u64     %2, %2, %10;\n\t"
-        "addc.cc.u64     %3, %3, %11;\n\t"
-        "addc.u64        %4, %4, %12;\n\t"
-        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(red_carry)
-        : "l"(m0), "l"(m1), "l"(m2), "l"(m3),
-          "l"(mhi0), "l"(mhi1), "l"(mhi2), "l"(mhi3)
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %9, %9;
+	"
+        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
+        : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
+    );
+    asm volatile (
+        "add.cc.u64      %0, %0, %5;
+	"
+        "addc.cc.u64     %1, %1, %6;
+	"
+        "addc.cc.u64     %2, %2, %7;
+	"
+        "addc.cc.u64     %3, %3, %8;
+	"
+        "addc.u64        %4, %4, %9;
+	"
+        : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
+        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3), "l"(z64)
     );
 
-    if (red_carry) {
-        uint64_t cm0 = red_carry * k;
-        uint64_t cmhi0 = __umul64hi(red_carry, k);
+    if (carry0) {
+        cm0 = carry0 * SECP_K;
+        cmhi0 = __umul64hi(carry0, SECP_K);
         uint32_t extra = 0;
         asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, %5;\n\t"
-            "addc.cc.u64     %2, %2, 0;\n\t"
-            "addc.cc.u64     %3, %3, 0;\n\t"
-            "addc.u32        %6, 0, 0;\n\t"
+            "add.cc.u64      %0, %0, %4;
+	"
+            "addc.cc.u64     %1, %1, %5;
+	"
+            "addc.cc.u64     %2, %2, %7;
+	"
+            "addc.cc.u64     %3, %3, %7;
+	"
+            "addc.u32        %6, %8, 0;
+	"
             : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "+l"(cm0), "+l"(cmhi0), "=r"(extra)
+            : "l"(z64), "r"(z32)
         );
         if (extra) {
             asm volatile (
-                "add.cc.u64      %0, %0, %4;\n\t"
-                "addc.cc.u64     %1, %1, 0;\n\t"
-                "addc.cc.u64     %2, %2, 0;\n\t"
-                "addc.u64        %3, %3, 0;\n\t"
+                "add.cc.u64      %0, %0, %4;
+	"
+                "addc.cc.u64     %1, %1, %5;
+	"
+                "addc.cc.u64     %2, %2, %5;
+	"
+                "addc.u64        %3, %3, %5;
+	"
                 : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
-                : "l"(k)
+                : "l"(SECP_K), "l"(z64)
             );
         }
     }
@@ -955,6 +1105,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     return r;
 }
 #endif
+
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
@@ -2048,6 +2199,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--fast" || arg == "--max") threads = (hw > 0) ? (int)hw : 4;
 #endif
         else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") no_limit = true;
+        else if (arg == "--test-probe" || arg == "-h" || arg == "--help") return 0;
     }
 
 #if defined(__CUDACC__)
