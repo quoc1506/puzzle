@@ -1196,7 +1196,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, sigint_handler);
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    std::string api_base = "https://btcpuzzle.info/api.php";
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     int current_puzzle = 70;
     std::string current_user = "guest";
     int requested_multiple = 1;
