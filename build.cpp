@@ -790,79 +790,11 @@ CUDA_HOSTDEV CUDA_INLINE AffinePoint scalar_mul_G(const uint64_t scalar[4]) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_dev(uint32_t x, int n) {
-#if defined(__CUDA_ARCH__)
-    return __funnelshift_r(x, x, n);
-#else
     return (x >> n) | (x << (32 - n));
-#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_dev(uint32_t x, int n) {
-#if defined(__CUDA_ARCH__)
-    return __funnelshift_l(x, x, n);
-#else
     return (x << n) | (x >> (32 - n));
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_xor3(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return a ^ b ^ c;
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_ch(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0xca;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return (a & b) ^ ((~a) & c);
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0xe8;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return (a & b) ^ (a & c) ^ (b & c);
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_ripemd_r0_right(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0x2d;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return a ^ (b | ~c);
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_ripemd_r1_right(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0xe4;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return (a & c) | (b & ~c);
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_ripemd_r2(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(res) : "r"(a), "r"(b), "r"(c));
-    return res;
-#else
-    return (a | ~b) ^ c;
-#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
@@ -910,7 +842,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t get_sha256_k(int i) {
 #endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
+CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
     uint32_t w[16];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
     w[1] = (uint32_t)(x.d[3] >> 8);
@@ -929,11 +861,11 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
 
     #pragma unroll
     for (int i = 0; i < 16; ++i) {
-        uint32_t S1 = lop3_xor3(ror32_dev(e, 6), ror32_dev(e, 11), ror32_dev(e, 25));
-        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
         uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + w[i];
-        uint32_t S0 = lop3_xor3(ror32_dev(a, 2), ror32_dev(a, 13), ror32_dev(a, 22));
-        uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -942,16 +874,16 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
 
     #pragma unroll
     for (int i = 16; i < 64; ++i) {
-        uint32_t s0 = lop3_xor3(ror32_dev(w[(i - 15) & 15], 7), ror32_dev(w[(i - 15) & 15], 18), (w[(i - 15) & 15] >> 3));
-        uint32_t s1 = lop3_xor3(ror32_dev(w[(i - 2) & 15], 17), ror32_dev(w[(i - 2) & 15], 19), (w[(i - 2) & 15] >> 10));
+        uint32_t s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
+        uint32_t s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
         uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
         w[i & 15] = wi;
 
-        uint32_t S1 = lop3_xor3(ror32_dev(e, 6), ror32_dev(e, 11), ror32_dev(e, 25));
-        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
         uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + wi;
-        uint32_t S0 = lop3_xor3(ror32_dev(a, 2), ror32_dev(a, 13), ror32_dev(a, 22));
-        uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -966,33 +898,65 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     X[5] = bswap32_dev(0x9b05688c + f);
     X[6] = bswap32_dev(0x1f83d9ab + g);
     X[7] = bswap32_dev(0x5be0cd19 + h);
+    X[8] = 0x00000080U;
+    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
+    X[14] = 256;
+    X[15] = 0;
 }
 
-static constexpr uint8_t ripemd_rl_tab[80] = {
+#ifdef __CUDACC__
+__constant__ uint8_t dev_rl_tab[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
     1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
-
-static constexpr uint8_t ripemd_sl_tab[80] = {
+__constant__ uint8_t dev_sl_tab[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
     11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
-
-static constexpr uint8_t ripemd_rr_tab[80] = {
+__constant__ uint8_t dev_rr_tab[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
     8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
+__constant__ uint8_t dev_sr_tab[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+};
+#endif
 
-static constexpr uint8_t ripemd_sr_tab[80] = {
+[[maybe_unused]] static constexpr uint8_t host_rl_tab[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+};
+[[maybe_unused]] static constexpr uint8_t host_sl_tab[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+};
+[[maybe_unused]] static constexpr uint8_t host_rr_tab[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+};
+[[maybe_unused]] static constexpr uint8_t host_sr_tab[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -1000,64 +964,89 @@ static constexpr uint8_t ripemd_sr_tab[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_x(uint8_t idx, const uint32_t X[8]) {
-    if (idx < 8) return X[idx];
-    if (idx == 8) return 0x00000080U;
-    if (idx == 14) return 256;
-    return 0;
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_rl_tab[j];
+#else
+    return host_rl_tab[j];
+#endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t out_h[5]) {
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_sl_tab[j];
+#else
+    return host_sl_tab[j];
+#endif
+}
+
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_rr_tab[j];
+#else
+    return host_rr_tab[j];
+#endif
+}
+
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_sr_tab[j];
+#else
+    return host_sr_tab[j];
+#endif
+}
+
+CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
     uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
     #pragma unroll
     for (int j = 0; j < 16; ++j) {
-        uint32_t f = lop3_xor3(B, C, D);
-        uint32_t fp = lop3_ripemd_r0_right(Bp, Cp, Dp);
-        uint32_t T = rol32_dev(A + f + get_ripemd_x(ripemd_rl_tab[j], X), ripemd_sl_tab[j]) + E;
+        uint32_t f = B ^ C ^ D;
+        uint32_t fp = Bp ^ (Cp | ~Dp);
+        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)], get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_x(ripemd_rr_tab[j], X) + 0x50A28BE6U, ripemd_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 16; j < 32; ++j) {
-        uint32_t f = lop3_ch(B, C, D);
-        uint32_t fp = lop3_ripemd_r1_right(Bp, Cp, Dp);
-        uint32_t T = rol32_dev(A + f + get_ripemd_x(ripemd_rl_tab[j], X) + 0x5A827999U, ripemd_sl_tab[j]) + E;
+        uint32_t f = (B & C) | (~B & D);
+        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
+        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x5A827999U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_x(ripemd_rr_tab[j], X) + 0x5C4DD124U, ripemd_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 32; j < 48; ++j) {
-        uint32_t f = lop3_ripemd_r2(B, C, D);
-        uint32_t fp = lop3_ripemd_r2(Bp, Cp, Dp);
-        uint32_t T = rol32_dev(A + f + get_ripemd_x(ripemd_rl_tab[j], X) + 0x6ED9EBA1U, ripemd_sl_tab[j]) + E;
+        uint32_t f = (B | ~C) ^ D;
+        uint32_t fp = (Bp | ~Cp) ^ Dp;
+        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_x(ripemd_rr_tab[j], X) + 0x6D703EF3U, ripemd_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 48; j < 64; ++j) {
-        uint32_t f = lop3_ripemd_r1_right(B, C, D);
-        uint32_t fp = lop3_ch(Bp, Cp, Dp);
-        uint32_t T = rol32_dev(A + f + get_ripemd_x(ripemd_rl_tab[j], X) + 0x8F1BBCDCU, ripemd_sl_tab[j]) + E;
+        uint32_t f = C ^ (D & (B ^ C));
+        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
+        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_x(ripemd_rr_tab[j], X) + 0x7A6D76E9U, ripemd_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 64; j < 80; ++j) {
-        uint32_t f = lop3_ripemd_r0_right(B, C, D);
-        uint32_t fp = lop3_xor3(Bp, Cp, Dp);
-        uint32_t T = rol32_dev(A + f + get_ripemd_x(ripemd_rl_tab[j], X) + 0xA953FD4EU, ripemd_sl_tab[j]) + E;
+        uint32_t f = B ^ (C | ~D);
+        uint32_t fp = Bp ^ Cp ^ Dp;
+        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0xA953FD4EU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_x(ripemd_rr_tab[j], X), ripemd_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)], get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1386,7 +1375,7 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __constant__ uint32_t dev_target_w[5];
 __constant__ uint64_t dev_target_h64;
-__constant__ AffinePoint dev_batch_G[16];
+__constant__ AffinePoint dev_batch_G[8];
 
 CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
@@ -1520,7 +1509,7 @@ CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4])
 
 CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64) {
     uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[8];
+    uint32_t X[16];
     fast_sha256_into_ripemd_X(prefix, P.x, X);
     uint32_t out[5];
     fast_ripemd160_32(X, out);
@@ -1528,7 +1517,7 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
     return (out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]);
 }
 
-CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
+CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
     uint32_t grid_threads,
@@ -1548,7 +1537,7 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
     for (uint32_t b = 0; b < num_batches; ++b) {
         if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
 
-        uint64_t base_offset = tid + (uint64_t)b * 16 * grid_threads;
+        uint64_t base_offset = tid + (uint64_t)b * 8 * grid_threads;
 
         if (base_offset < total_keys) {
             if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
@@ -1558,22 +1547,22 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             }
         }
 
-        Fe dx[16];
-        Fe cum[16];
+        Fe dx[8];
+        Fe cum[8];
         dx[0] = fe_sub(dev_batch_G[0].x, P.x);
         cum[0] = dx[0];
         #pragma unroll
-        for (int i = 1; i < 16; ++i) {
+        for (int i = 1; i < 8; ++i) {
             dx[i] = fe_sub(dev_batch_G[i].x, P.x);
             cum[i] = fe_mul(cum[i - 1], dx[i]);
         }
 
         // Lockstep parallel inversion across all 32 lanes in warp
-        Fe u = fe_inv(cum[15]);
+        Fe u = fe_inv(cum[7]);
 
         AffinePoint next_P;
         #pragma unroll
-        for (int i = 15; i >= 0; --i) {
+        for (int i = 7; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
             if (i > 0) u = fe_mul(u, dx[i]);
 
@@ -1583,12 +1572,12 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             Fe xi = fe_sub(fe_sub(lambda2, P.x), dev_batch_G[i].x);
             Fe yi = fe_sub(fe_mul(lambda, fe_sub(P.x, xi)), P.y);
 
-            if (i == 15) {
+            if (i == 7) {
                 next_P.x = xi;
                 next_P.y = yi;
             }
 
-            if (i < 15 || b + 1 == num_batches) {
+            if (i < 7 || b + 1 == num_batches) {
                 uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
                 if (pt_offset < total_keys) {
                     AffinePoint cur_pt;
@@ -1742,7 +1731,7 @@ void scan_worker_montgomery(
             }
             // Only check remainder elements not covered by 8-lane AVX2
             for (; i < cur_batch; ++i) {
-                uint32_t X[8];
+                uint32_t X[16];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
@@ -1758,7 +1747,7 @@ void scan_worker_montgomery(
             }
 #else
             for (uint32_t i = 0; i < cur_batch; ++i) {
-                uint32_t X[8];
+                uint32_t X[16];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
@@ -2045,8 +2034,8 @@ int main(int argc, char* argv[]) {
             uint32_t steps_per_launch = is_fast ? 2048 : 1024;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-            AffinePoint h_batch_G[16];
-            for (int i = 0; i < 16; ++i) {
+            AffinePoint h_batch_G[8];
+            for (int i = 0; i < 8; ++i) {
                 uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
                 uint64_t s[4] = { step_mult, 0, 0, 0 };
                 h_batch_G[i] = scalar_mul_G(s);
@@ -2057,7 +2046,7 @@ int main(int argc, char* argv[]) {
             while (actual_checked < total_keys_count && g_running.load() && !hit) {
                 uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
                 uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-                uint32_t cur_batches = (cur_steps + 15) / 16;
+                uint32_t cur_batches = (cur_steps + 7) / 8;
                 u256 cur_start = start_k + actual_checked;
 
                 cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
