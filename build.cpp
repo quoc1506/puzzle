@@ -2036,13 +2036,8 @@ int main(int argc, char* argv[]) {
 
             AffinePoint h_batch_G[8];
             for (int i = 0; i < 8; ++i) {
-                u256 mult = u256(grid_threads) * u256(i + 1);
-                uint64_t s[4] = {
-                    (uint64_t)mult.low,
-                    (uint64_t)(mult.low >> 64),
-                    (uint64_t)mult.high,
-                    (uint64_t)(mult.high >> 64)
-                };
+                uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
+                uint64_t s[4] = { step_mult, 0, 0, 0 };
                 h_batch_G[i] = scalar_mul_G(s);
             }
             cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
