@@ -268,6 +268,38 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
+#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+    Fe r;
+    u128 c = (u128)a.d[0] + b.d[0];
+    r.d[0] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[1] + b.d[1];
+    r.d[1] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[2] + b.d[2];
+    r.d[2] = (uint64_t)c; c >>= 64;
+    c += (u128)a.d[3] + b.d[3];
+    r.d[3] = (uint64_t)c;
+    uint64_t carry = (uint64_t)(c >> 64);
+
+    if (carry) {
+        const uint64_t K = 0x1000003D1ULL;
+        u128 c2 = (u128)r.d[0] + K;
+        r.d[0] = (uint64_t)c2; c2 >>= 64;
+        c2 += r.d[1]; r.d[1] = (uint64_t)c2; c2 >>= 64;
+        c2 += r.d[2]; r.d[2] = (uint64_t)c2; c2 >>= 64;
+        r.d[3] += (uint64_t)c2;
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+#else
     Fe r;
     uint64_t c = 0;
     #pragma unroll
@@ -302,9 +334,33 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         }
     }
     return r;
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
+#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+    Fe r;
+    u128 c = (u128)a.d[0] - b.d[0];
+    r.d[0] = (uint64_t)c;
+    c = (u128)a.d[1] - b.d[1] - ((c >> 64) & 1);
+    r.d[1] = (uint64_t)c;
+    c = (u128)a.d[2] - b.d[2] - ((c >> 64) & 1);
+    r.d[2] = (uint64_t)c;
+    c = (u128)a.d[3] - b.d[3] - ((c >> 64) & 1);
+    r.d[3] = (uint64_t)c;
+
+    if ((c >> 64) & 1) {
+        const uint64_t K = 0x1000003D1ULL;
+        c = (u128)r.d[0] - K;
+        r.d[0] = (uint64_t)c;
+        c = (u128)r.d[1] - ((c >> 64) & 1);
+        r.d[1] = (uint64_t)c;
+        c = (u128)r.d[2] - ((c >> 64) & 1);
+        r.d[2] = (uint64_t)c;
+        r.d[3] -= (uint64_t)((c >> 64) & 1);
+    }
+    return r;
+#else
     Fe r;
     uint64_t borrow = 0;
     #pragma unroll
@@ -329,6 +385,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
         }
     }
     return r;
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
@@ -400,6 +457,67 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
+#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+    uint64_t t[8] = {0};
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
+
+    u128 c;
+    c = a0 * b0; t[0] = (uint64_t)c; c >>= 64;
+    c += a0 * b1; t[1] = (uint64_t)c; c >>= 64;
+    c += a0 * b2; t[2] = (uint64_t)c; c >>= 64;
+    c += a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+
+    c = (u128)t[1] + a1 * b0; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + a1 * b1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + a1 * b2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+
+    c = (u128)t[2] + a2 * b0; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + a2 * b1; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a2 * b2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+
+    c = (u128)t[3] + a3 * b0; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a3 * b1; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + a3 * b2; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
+
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    u128 carry = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
+        t[i] = (uint64_t)prod;
+        carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
+#else
     uint64_t t[8] = {0};
     #pragma unroll
     for (int i = 0; i < 4; ++i) {
@@ -424,10 +542,76 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         t[i + 4] = carry;
     }
     return fe_reduce(t);
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
+#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+    uint64_t t[8] = {0};
+    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+
+    u128 c = a0 * a1; t[1] = (uint64_t)c; c >>= 64;
+    c += a0 * a2; t[2] = (uint64_t)c; c >>= 64;
+    c += a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+
+    c = (u128)t[3] + a1 * a2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+
+    c = (u128)t[5] + a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+
+    uint64_t carry = 0;
+    for (int i = 1; i < 7; ++i) {
+        uint64_t v = (t[i] << 1) | carry;
+        carry = t[i] >> 63;
+        t[i] = v;
+    }
+    t[7] = carry;
+
+    c = (u128)t[0] + a0 * a0; t[0] = (uint64_t)c; c >>= 64;
+    c += (u128)t[1]; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3]; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5]; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
+    t[7] += (uint64_t)c;
+
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    u128 red_carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + red_carry;
+        t[i] = (uint64_t)prod;
+        red_carry = prod >> 64;
+    }
+    u128 c2 = (u128)t[0] + (u128)red_carry * SECP_K;
+    t[0] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
+    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    uint64_t extra = (uint64_t)c2;
+    if (extra) {
+        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
+        t[0] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
+        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
+        t[3] += (uint64_t)c3;
+    }
+
+    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
+#else
     return fe_mul(a, a);
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
@@ -1085,59 +1269,88 @@ void scan_worker_montgomery(
     std::atomic<uint64_t>& checked_counter
 ) {
     const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe inv_dx[1024];
     alignas(64) Fe cur_x[1024];
     alignas(64) uint8_t cur_prefix[1024];
-    alignas(64) Fe dx_arr[1024];
-    alignas(64) Fe prefix_prod[1024];
 
-    while (g_running.load() && !found_flag.load()) {
-        uint64_t offset = work_offset.fetch_add(slice_size);
+    uint64_t local_counter = 0;
+
+    while (g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+        uint64_t offset = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
         if (offset >= total_keys) break;
         uint64_t cur_slice = host_min(slice_size, total_keys - offset);
 
-        for (uint64_t idx = 0; idx < cur_slice; idx += BATCH_SIZE) {
-            if (!g_running.load() || found_flag.load()) break;
-            uint32_t cur_batch = (uint32_t)host_min((uint64_t)BATCH_SIZE, cur_slice - idx);
+        u256 slice_start = base_start + offset;
+        u256 cur_k = slice_start;
+        uint64_t remaining_in_slice = cur_slice;
 
-            u256 k0 = base_start + (offset + idx);
-            uint64_t limbs[4] = {
-                (uint64_t)k0.low,
-                (uint64_t)(k0.low >> 64),
-                (uint64_t)k0.high,
-                (uint64_t)(k0.high >> 64)
-            };
-            AffinePoint P0 = scalar_mul_G(limbs);
-            cur_x[0] = P0.x;
-            cur_prefix[0] = (P0.y.d[0] & 1) ? 0x03 : 0x02;
-
-            for (uint32_t i = 1; i < cur_batch; ++i) {
-                dx_arr[i] = fe_sub(G_TABLE[i - 1].x, P0.x);
+        // Base point is (cur_k - 1) * G, computed only ONCE at the start of the slice!
+        AffinePoint cur_base;
+        bool cur_base_valid = false;
+        if (!cur_k.is_zero()) {
+            u256 base_k = cur_k - 1;
+            if (!base_k.is_zero()) {
+                uint64_t limbs[4] = {
+                    (uint64_t)base_k.low,
+                    (uint64_t)(base_k.low >> 64),
+                    (uint64_t)base_k.high,
+                    (uint64_t)(base_k.high >> 64)
+                };
+                cur_base = scalar_mul_G(limbs);
+                cur_base_valid = true;
             }
+        }
 
-            prefix_prod[1] = dx_arr[1];
-            for (uint32_t i = 2; i < cur_batch; ++i) {
-                prefix_prod[i] = fe_mul(prefix_prod[i - 1], dx_arr[i]);
-            }
+        while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+            uint32_t cur_batch = (uint32_t)host_min((uint64_t)BATCH_SIZE, remaining_in_slice);
 
-            Fe all_inv = fe_inv(prefix_prod[cur_batch - 1]);
-
-            for (int i = cur_batch - 1; i >= 1; --i) {
-                Fe inv_dxi;
-                if (i == 1) {
-                    inv_dxi = all_inv;
-                } else {
-                    inv_dxi = fe_mul(all_inv, prefix_prod[i - 1]);
-                    all_inv = fe_mul(all_inv, dx_arr[i]);
+            if (cur_base_valid) {
+                // Batch addition of cur_base + G_TABLE[i] for i = 0 .. cur_batch - 1
+                // G_TABLE[i] = (i + 1) * G
+                // Result point i is (cur_k - 1 + i + 1) * G = (cur_k + i) * G
+                cum[0] = {{1, 0, 0, 0}};
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
+                    cum[i + 1] = fe_mul(cum[i], dx[i]);
                 }
-                Fe dy = fe_sub(G_TABLE[i - 1].y, P0.y);
-                Fe lambda = fe_mul(dy, inv_dxi);
-                Fe lambda2 = fe_sqr(lambda);
-                Fe x3 = fe_sub(fe_sub(lambda2, P0.x), G_TABLE[i - 1].x);
-                Fe y3 = fe_sub(fe_mul(lambda, fe_sub(P0.x, x3)), P0.y);
-                cur_x[i] = x3;
-                cur_prefix[i] = (y3.d[0] & 1) ? 0x03 : 0x02;
+
+                Fe u = fe_inv(cum[cur_batch]);
+
+                for (int i = (int)cur_batch - 1; i >= 0; --i) {
+                    inv_dx[i] = fe_mul(u, cum[i]);
+                    u = fe_mul(u, dx[i]);
+                }
+
+                AffinePoint next_base;
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
+                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
+                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
+
+                    cur_x[i] = xi;
+                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+
+                    if (i == cur_batch - 1) {
+                        next_base.x = xi;
+                        next_base.y = yi;
+                    }
+                }
+                // Seamlessly advance cur_base to the next batch with ZERO scalar_mul_G!
+                cur_base = next_base;
+            } else {
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    cur_x[i] = G_TABLE[i].x;
+                    cur_prefix[i] = (G_TABLE[i].y.d[0] & 1) ? 0x03 : 0x02;
+                }
+                cur_base = G_TABLE[cur_batch - 1];
+                cur_base_valid = true;
             }
 
+            // High-speed SHA256 + RIPEMD160 hash checks
             for (uint32_t i = 0; i < cur_batch; ++i) {
                 uint32_t X[16];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
@@ -1147,14 +1360,25 @@ void scan_worker_montgomery(
                 uint64_t cur_h64 = (uint64_t)out[0] | ((uint64_t)out[1] << 32);
                 if (cur_h64 == target_h64 && out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]) {
                     std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true);
-                    found_key = k0 + i;
-                    checked_counter.fetch_add(i + 1);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + i;
+                    checked_counter.fetch_add(local_counter + i + 1, std::memory_order_relaxed);
                     return;
                 }
             }
-            checked_counter.fetch_add(cur_batch);
+
+            cur_k = cur_k + (uint64_t)cur_batch;
+            remaining_in_slice -= cur_batch;
+            local_counter += cur_batch;
+            if (local_counter >= 65536) {
+                checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+                local_counter = 0;
+            }
         }
+    }
+
+    if (local_counter > 0) {
+        checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
     }
 }
 
@@ -1231,6 +1455,8 @@ int main(int argc, char* argv[]) {
 
     unsigned int hw = std::thread::hardware_concurrency();
     int threads = 1;
+    bool threads_specified = false;
+    int custom_threads = 1;
     bool force_cpu = false;
     bool is_fast = false;
 
@@ -1252,13 +1478,21 @@ int main(int argc, char* argv[]) {
         } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::max(1, std::atoi(argv[++i]));
         } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
-            threads = std::max(1, std::atoi(argv[++i]));
+            custom_threads = std::max(1, std::atoi(argv[++i]));
+            threads_specified = true;
         } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
             is_fast = true;
-            threads = (hw > 0) ? (int)hw : 1;
         } else if (arg == "-cpu" || arg == "--cpu" || arg == "-c") {
             force_cpu = true;
         }
+    }
+
+    if (threads_specified) {
+        threads = custom_threads;
+    } else if (is_fast) {
+        threads = (hw > 0) ? (int)hw : 1;
+    } else {
+        threads = 1;
     }
 
 #ifdef __CUDACC__
