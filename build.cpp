@@ -84,9 +84,9 @@ struct u256 {
     __uint128_t low;
     __uint128_t high;
 
-    CUDA_HOSTDEV u256() : low(0), high(0) {}
-    CUDA_HOSTDEV u256(uint64_t v) : low(v), high(0) {}
-    CUDA_HOSTDEV u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
+    CUDA_HOSTDEV constexpr u256() : low(0), high(0) {}
+    CUDA_HOSTDEV constexpr u256(uint64_t v) : low(v), high(0) {}
+    CUDA_HOSTDEV constexpr u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
 
     CUDA_HOSTDEV inline bool is_zero() const { return (low | high) == 0; }
 };
@@ -1467,12 +1467,6 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __device__ uint32_t dev_target_w[5];
 __device__ uint64_t dev_target_h64;
-__device__ volatile int dev_work_flag = 0;
-__device__ u256 dev_work_base = {0, 0};
-__device__ uint64_t dev_work_count = 0;
-__device__ uint64_t dev_work_grid_threads = 0;
-__device__ uint32_t dev_work_steps = 0;
-__device__ int dev_work_active_blocks = 0;
 
 __device__ __forceinline__ uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
@@ -1637,71 +1631,6 @@ __device__ __forceinline__ bool check_point_hash160(
 #if defined(__CUDACC__)
 __launch_bounds__(128, 8)
 #endif
-CUDA_GLOBAL void cuda_persistent_scan_kernel(
-    u256 base_start,
-    uint64_t total_keys,
-    AffinePoint delta_G,
-    uint32_t grid_threads,
-    uint32_t steps_per_chunk
-) {
-    uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;
-
-    while (true) {
-        while (dev_work_flag == 0) {
-        }
-        if (dev_work_flag == -1) break;
-
-        u256 chunk_start = dev_work_base;
-        uint64_t work_count = dev_work_count;
-        uint64_t gthreads = dev_work_grid_threads;
-        uint32_t local_steps = dev_work_steps;
-
-        if (tid >= work_count) {
-            if (threadIdx.x == 0) {
-                int prev = atomicSub((int*)&dev_work_active_blocks, 1);
-                if (prev == 1) dev_work_flag = 0;
-            }
-            __syncthreads();
-            continue;
-        }
-
-        u256 start_k = chunk_start + tid;
-        uint64_t limbs[4] = {
-            (uint64_t)start_k.low,
-            (uint64_t)(start_k.low >> 64),
-            (uint64_t)start_k.high,
-            (uint64_t)(start_k.high >> 64)
-        };
-        AffinePoint P = scalar_mul_G_windowed(limbs);
-
-        for (uint32_t s = 0; s < local_steps; ++s) {
-            uint64_t offset = tid + (uint64_t)s * gthreads;
-            if (offset >= work_count || dev_found_flag != 0) break;
-
-            if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
-                if (atomicExch((int*)&dev_found_flag, 1) == 0) {
-                    dev_found_offset = offset;
-                }
-                break;
-            }
-
-            if (s + 1 < local_steps && offset + gthreads < work_count) {
-                P = warp_montgomery_add_affine(P, delta_G, lane);
-            }
-        }
-
-        if (threadIdx.x == 0) {
-            int prev = atomicSub((int*)&dev_work_active_blocks, 1);
-            if (prev == 1) dev_work_flag = 0;
-        }
-        __syncthreads();
-    }
-}
-
-#if defined(__CUDACC__)
-__launch_bounds__(128, 8)
-#endif
 CUDA_GLOBAL void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
@@ -1714,7 +1643,13 @@ CUDA_GLOBAL void cuda_scan_kernel(
 
     int lane = threadIdx.x & 31;
     u256 start_k = base_start + tid;
-    AffinePoint P = scalar_mul_G(start_k);
+    uint64_t limbs[4] = {
+        (uint64_t)start_k.low,
+        (uint64_t)(start_k.low >> 64),
+        (uint64_t)start_k.high,
+        (uint64_t)(start_k.high >> 64)
+    };
+    AffinePoint P = scalar_mul_G_windowed(limbs);
 
     for (uint32_t s = 0; s < steps; ++s) {
         uint64_t offset = tid + (uint64_t)s * grid_threads;
@@ -1901,7 +1836,7 @@ static AffinePoint G_TABLE[BATCH_SIZE];
 
 void init_generator_table() {
     for (int i = 1; i <= BATCH_SIZE; ++i) {
-        G_TABLE[i - 1] = scalar_mul_G(u256(i));
+        G_TABLE[i - 1] = scalar_mul_G(u256{(uint64_t)i, 0});
     }
 }
 
@@ -2325,57 +2260,38 @@ int main(int argc, char* argv[]) {
 
         const uint32_t threadsPerBlock = 128;
         int num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-        // Launch 16 blocks per SM (each 128 threads = 4 warps) for 64 warps/SM on Turing T4
-        const uint32_t numBlocks = (uint32_t)(num_sms * 16); 
+        const uint32_t numBlocks = (uint32_t)(num_sms * 16);
         const uint32_t grid_threads = threadsPerBlock * numBlocks;
-        const uint32_t steps_per_chunk = 1024;
-        const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_chunk;
+        const uint32_t steps_per_launch = 1024;
+        const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
         AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
 
-        cuda_persistent_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-            start_k, total_keys_count, delta_G, grid_threads, steps_per_chunk
-        );
-
         while (actual_checked < total_keys_count && g_running.load() && !found) {
             uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
-            if (cur_chunk == 0) break;
             u256 cur_start = start_k + actual_checked;
+
             uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
             if (cur_steps == 0) cur_steps = 1;
 
-            cudaMemcpyToSymbol(dev_work_base, &cur_start, sizeof(u256));
-            cudaMemcpyToSymbol(dev_work_count, &cur_chunk, sizeof(uint64_t));
-            cudaMemcpyToSymbol(dev_work_grid_threads, &grid_threads, sizeof(uint64_t));
-            cudaMemcpyToSymbol(dev_work_steps, &cur_steps, sizeof(uint32_t));
-            int active_blocks = (int)numBlocks;
-            cudaMemcpyToSymbol(dev_work_active_blocks, &active_blocks, sizeof(int));
-            int work_flag = 1;
-            cudaMemcpyToSymbol(dev_work_flag, &work_flag, sizeof(int));
+            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
+                cur_start, cur_chunk, delta_G, grid_threads, cur_steps
+            );
+            cudaDeviceSynchronize();
 
-            int host_work_flag = 1;
-            while (host_work_flag != 0) {
-                cudaMemcpyFromSymbol(&host_work_flag, dev_work_flag, sizeof(int));
-                int h_found = 0;
-                cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
-                if (h_found != 0) {
-                    uint64_t h_offset = 0;
-                    cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
-                    found = true;
-                    found_key = cur_start + h_offset;
-                    actual_checked += h_offset + 1;
-                    break;
-                }
-                portable_sleep_ms(1);
+            int h_found = 0;
+            cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
+            if (h_found != 0) {
+                uint64_t h_offset = 0;
+                cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
+                found = true;
+                found_key = cur_start + h_offset;
+                actual_checked += h_offset + 1;
+                break;
             }
 
-            if (found) break;
             actual_checked += cur_chunk;
         }
-
-        int shutdown_flag = -1;
-        cudaMemcpyToSymbol(dev_work_flag, &shutdown_flag, sizeof(int));
-        cudaDeviceSynchronize();
 #else
         std::atomic<uint64_t> work_offset(0);
         std::atomic<uint64_t> checked_counter(0);
