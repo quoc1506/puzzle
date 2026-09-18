@@ -25,9 +25,7 @@ TARGET_BIN=""
 FORCE_CPU=0
 for arg in "$@"; do
     case "$arg" in
-        -cpu|--cpu|--cpu-only|-c|cpu|--device=cpu|-device=cpu)
-            FORCE_CPU=1
-            ;;
+        -cpu|--cpu|-c) FORCE_CPU=1 ;;
     esac
 done
 

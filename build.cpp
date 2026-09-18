@@ -709,59 +709,28 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     X[15] = 0;
 }
 
-#ifdef __CUDACC__
-__constant__ uint8_t dev_rl_tab[80] = {
+constexpr uint8_t ripemd_rl_tab[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
     1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
-__constant__ uint8_t dev_sl_tab[80] = {
+constexpr uint8_t ripemd_sl_tab[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
     11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
-__constant__ uint8_t dev_rr_tab[80] = {
+constexpr uint8_t ripemd_rr_tab[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
     8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
-__constant__ uint8_t dev_sr_tab[80] = {
-    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
-    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
-    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
-    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
-    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
-};
-#endif
-
-static const uint8_t host_rl_tab[80] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
-    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
-    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
-    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
-};
-static const uint8_t host_sl_tab[80] = {
-    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
-    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
-    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
-    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
-    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
-};
-static const uint8_t host_rr_tab[80] = {
-    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
-    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
-    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
-    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
-    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
-};
-static const uint8_t host_sr_tab[80] = {
+constexpr uint8_t ripemd_sr_tab[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -769,37 +738,10 @@ static const uint8_t host_sr_tab[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_rl_tab[j];
-#else
-    return host_rl_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_sl_tab[j];
-#else
-    return host_sl_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_rr_tab[j];
-#else
-    return host_rr_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_sr_tab[j];
-#else
-    return host_sr_tab[j];
-#endif
-}
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) { return ripemd_rl_tab[j]; }
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) { return ripemd_sl_tab[j]; }
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) { return ripemd_rr_tab[j]; }
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) { return ripemd_sr_tab[j]; }
 
 CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
@@ -1085,10 +1027,10 @@ void scan_worker_montgomery(
     std::atomic<uint64_t>& checked_counter
 ) {
     const uint32_t BATCH_SIZE = 1024;
-    Fe cur_x[1024];
-    uint8_t cur_prefix[1024];
-    Fe dx_arr[1024];
-    Fe prefix_prod[1024];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
+    alignas(64) Fe dx_arr[1024];
+    alignas(64) Fe prefix_prod[1024];
 
     while (g_running.load() && !found_flag.load()) {
         uint64_t offset = work_offset.fetch_add(slice_size);
@@ -1230,29 +1172,17 @@ int main(int argc, char* argv[]) {
     int requested_multiple = 1;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    int threads = (hw > 0) ? (int)hw : 4;
+    int threads = 1;
     bool force_cpu = false;
+    bool is_fast = false;
 
-    // Dedicated Pre-Pass for CPU mode detection (-cpu, --cpu, -c, etc.)
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        std::string alow = a;
-        std::transform(alow.begin(), alow.end(), alow.begin(), ::tolower);
-        if (alow == "-cpu" || alow == "--cpu" || alow == "-cpu-only" || alow == "--cpu-only" ||
-            alow == "-c" || alow == "cpu" || alow == "--device=cpu" || alow == "-device=cpu") {
-            force_cpu = true;
-        }
-        if ((alow == "-mode" || alow == "--mode" || alow == "-device" || alow == "--device") && i + 1 < argc) {
-            std::string nxt = argv[i + 1];
-            std::transform(nxt.begin(), nxt.end(), nxt.begin(), ::tolower);
-            if (nxt == "cpu") force_cpu = true;
-        }
-    }
+    // Check environment variable
     const char* env_cpu = std::getenv("FORCE_CPU");
     if (env_cpu && (std::string(env_cpu) == "1" || std::string(env_cpu) == "true" || std::string(env_cpu) == "cpu")) {
         force_cpu = true;
     }
 
+    // Unified single-pass command-line argument parsing
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
@@ -1265,16 +1195,11 @@ int main(int argc, char* argv[]) {
             requested_multiple = std::max(1, std::atoi(argv[++i]));
         } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
             threads = std::max(1, std::atoi(argv[++i]));
-        } else if (arg == "-cpu" || arg == "--cpu" || arg == "-c" || arg == "--cpu-only") {
+        } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
+            is_fast = true;
+            threads = (hw > 0) ? (int)hw : 1;
+        } else if (arg == "-cpu" || arg == "--cpu" || arg == "-c") {
             force_cpu = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                char* endp = NULL;
-                long th = std::strtol(argv[i + 1], &endp, 10);
-                if (endp != argv[i + 1] && th > 0) {
-                    threads = (int)th;
-                    ++i;
-                }
-            }
         }
     }
 
@@ -1394,9 +1319,9 @@ int main(int argc, char* argv[]) {
             cudaGetDeviceProperties(&prop, 0);
             uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
             uint32_t threadsPerBlock = 256;
-            uint32_t numBlocks = num_sms * 16;
+            uint32_t numBlocks = num_sms * (is_fast ? 32 : 16);
             uint32_t grid_threads = numBlocks * threadsPerBlock;
-            uint32_t steps_per_launch = 1024;
+            uint32_t steps_per_launch = is_fast ? 2048 : 1024;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
             uint64_t delta_scalar[4] = { grid_threads, 0, 0, 0 };
@@ -1431,7 +1356,7 @@ int main(int argc, char* argv[]) {
 #endif
         {
             std::atomic<uint64_t> work_offset(0);
-            uint64_t slice_size = 524288;
+            uint64_t slice_size = is_fast ? 1048576 : 524288;
             std::atomic<bool> found_flag(false);
             std::mutex found_mtx;
             std::atomic<uint64_t> checked_counter(0);
