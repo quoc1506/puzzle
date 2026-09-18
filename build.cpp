@@ -843,7 +843,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t get_sha256_k(int i) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
-    uint32_t w[64];
+    uint32_t w[16];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
     w[1] = (uint32_t)(x.d[3] >> 8);
     w[2] = ((uint32_t)x.d[3] << 24) | (uint32_t)(x.d[2] >> 40);
@@ -856,21 +856,32 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
     w[15] = 264;
 
-    #pragma unroll
-    for (int i = 16; i < 64; ++i) {
-        uint32_t s0 = ror32_dev(w[i - 15], 7) ^ ror32_dev(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        uint32_t s1 = ror32_dev(w[i - 2], 17) ^ ror32_dev(w[i - 2], 19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
     #pragma unroll
-    for (int i = 0; i < 64; ++i) {
+    for (int i = 0; i < 16; ++i) {
         uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
         uint32_t ch = (e & f) ^ ((~e) & g);
         uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + w[i];
+        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    #pragma unroll
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
+        uint32_t s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
+        uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+        w[i & 15] = wi;
+
+        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + wi;
         uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
         uint32_t temp2 = S0 + maj;
@@ -1364,7 +1375,7 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __constant__ uint32_t dev_target_w[5];
 __constant__ uint64_t dev_target_h64;
-__constant__ AffinePoint dev_delta_G;
+__constant__ AffinePoint dev_batch_G[8];
 
 CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
@@ -1502,19 +1513,17 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
     fast_sha256_into_ripemd_X(prefix, P.x, X);
     uint32_t out[5];
     fast_ripemd160_32(X, out);
-    uint64_t hash64 = (uint64_t)out[0] | ((uint64_t)out[1] << 32);
-    if (hash64 != target_h64) return false;
+    if (out[0] != target_w[0] || out[1] != target_w[1]) return false;
     return (out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]);
 }
 
-CUDA_GLOBAL void cuda_scan_kernel(
+CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
     uint32_t grid_threads,
-    uint32_t steps
+    uint32_t num_batches
 ) {
     uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;
 
     u256 start_k = base_start + tid;
     uint64_t limbs[4] = {
@@ -1525,22 +1534,64 @@ CUDA_GLOBAL void cuda_scan_kernel(
     };
     AffinePoint P = scalar_mul_G_windowed(limbs);
 
-    for (uint32_t s = 0; s < steps; ++s) {
-        uint64_t offset = tid + (uint64_t)s * grid_threads;
-
+    for (uint32_t b = 0; b < num_batches; ++b) {
         if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
 
-        if (offset < total_keys) {
+        uint64_t base_offset = tid + (uint64_t)b * 8 * grid_threads;
+
+        if (base_offset < total_keys) {
             if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
                 if (atomicExch(&dev_found_flag, 1) == 0) {
-                    dev_found_offset = offset;
+                    dev_found_offset = base_offset;
                 }
             }
         }
 
-        if (s + 1 < steps) {
-            P = warp_montgomery_add_affine(P, dev_delta_G, lane);
+        Fe dx[8];
+        Fe cum[8];
+        dx[0] = fe_sub(dev_batch_G[0].x, P.x);
+        cum[0] = dx[0];
+        #pragma unroll
+        for (int i = 1; i < 8; ++i) {
+            dx[i] = fe_sub(dev_batch_G[i].x, P.x);
+            cum[i] = fe_mul(cum[i - 1], dx[i]);
         }
+
+        // Lockstep parallel inversion across all 32 lanes in warp
+        Fe u = fe_inv(cum[7]);
+
+        AffinePoint next_P;
+        #pragma unroll
+        for (int i = 7; i >= 0; --i) {
+            Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
+            if (i > 0) u = fe_mul(u, dx[i]);
+
+            Fe dy = fe_sub(dev_batch_G[i].y, P.y);
+            Fe lambda = fe_mul(dy, inv_dx);
+            Fe lambda2 = fe_sqr(lambda);
+            Fe xi = fe_sub(fe_sub(lambda2, P.x), dev_batch_G[i].x);
+            Fe yi = fe_sub(fe_mul(lambda, fe_sub(P.x, xi)), P.y);
+
+            if (i == 7) {
+                next_P.x = xi;
+                next_P.y = yi;
+            }
+
+            if (i < 7 || b + 1 == num_batches) {
+                uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
+                if (pt_offset < total_keys) {
+                    AffinePoint cur_pt;
+                    cur_pt.x = xi;
+                    cur_pt.y = yi;
+                    if (check_point_hash160(cur_pt, dev_target_w, dev_target_h64)) {
+                        if (atomicExch(&dev_found_flag, 1) == 0) {
+                            dev_found_offset = pt_offset;
+                        }
+                    }
+                }
+            }
+        }
+        P = next_P;
     }
 }
 #endif
@@ -1829,6 +1880,20 @@ int main(int argc, char* argv[]) {
             is_fast = true;
         } else if (arg == "-cpu" || arg == "--cpu" || arg == "-c") {
             force_cpu = true;
+        } else if (arg == "-gpu" || arg == "--gpu" || arg == "-g" || arg == "--cuda") {
+            force_cpu = false;
+        } else if (arg == "-h" || arg == "--help" || arg == "-help") {
+            std::cout << "Usage: " << argv[0] << " [options]\n"
+                      << "  -s, --server <url>     Server API URL\n"
+                      << "  -p, --puzzle <num>     Puzzle number (e.g. 71)\n"
+                      << "  -u, -w, --user <name>  Worker/User name\n"
+                      << "  -m, -b, --multiple <n> Multiple chunks batch size\n"
+                      << "  -t, --threads <n>      Number of CPU threads\n"
+                      << "  -f, --fast             Fast high-performance mode\n"
+                      << "  -gpu, --gpu, --cuda    Prioritize NVIDIA CUDA GPU\n"
+                      << "  -cpu, --cpu, -c        Force CPU mode\n"
+                      << "  -h, --help             Show this help\n";
+            return 0;
         }
     }
 
@@ -1846,7 +1911,15 @@ int main(int argc, char* argv[]) {
         int deviceCount = 0;
         cudaError_t err = cudaGetDeviceCount(&deviceCount);
         if (err != cudaSuccess || deviceCount == 0) {
+            std::cerr << "[WARN] CUDA initialization error or no GPU found. Running in CPU mode.\n";
             use_cuda = false;
+        } else {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, 0);
+            std::cout << "[CUDA] Detected GPU: " << prop.name
+                      << " (SMs: " << prop.multiProcessorCount
+                      << ", Compute: " << prop.major << "." << prop.minor
+                      << ") -> Running High-Speed GPU Worker\n";
         }
     }
 #endif
@@ -1955,26 +2028,43 @@ int main(int argc, char* argv[]) {
             cudaDeviceProp prop;
             cudaGetDeviceProperties(&prop, 0);
             uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-            uint32_t threadsPerBlock = 256;
-            uint32_t numBlocks = num_sms * (is_fast ? 32 : 16);
+            uint32_t threadsPerBlock = 128;
+            uint32_t numBlocks = num_sms * (is_fast ? 64 : 32);
             uint32_t grid_threads = numBlocks * threadsPerBlock;
             uint32_t steps_per_launch = is_fast ? 2048 : 1024;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-            uint64_t delta_scalar[4] = { grid_threads, 0, 0, 0 };
-            AffinePoint delta_G = scalar_mul_G(delta_scalar);
-            cudaMemcpyToSymbol(dev_delta_G, &delta_G, sizeof(AffinePoint));
+            AffinePoint h_batch_G[8];
+            for (int i = 0; i < 8; ++i) {
+                u256 mult = u256(grid_threads) * u256(i + 1);
+                uint64_t s[4] = {
+                    (uint64_t)mult.low,
+                    (uint64_t)(mult.low >> 64),
+                    (uint64_t)mult.high,
+                    (uint64_t)(mult.high >> 64)
+                };
+                h_batch_G[i] = scalar_mul_G(s);
+            }
+            cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
 
             uint64_t actual_checked = 0;
             while (actual_checked < total_keys_count && g_running.load() && !hit) {
                 uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
                 uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
+                uint32_t cur_batches = (cur_steps + 7) / 8;
                 u256 cur_start = start_k + actual_checked;
 
                 cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                    cur_start, cur_chunk, grid_threads, cur_steps
+                    cur_start, cur_chunk, grid_threads, cur_batches
                 );
-                cudaDeviceSynchronize();
+                cudaError_t k_err = cudaGetLastError();
+                if (k_err != cudaSuccess) {
+                    std::cerr << "[CUDA ERROR] Kernel launch failed: " << cudaGetErrorString(k_err) << "\n";
+                }
+                cudaError_t s_err = cudaDeviceSynchronize();
+                if (s_err != cudaSuccess) {
+                    std::cerr << "[CUDA ERROR] Kernel execution failed: " << cudaGetErrorString(s_err) << "\n";
+                }
 
                 int h_found = 0;
                 cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));

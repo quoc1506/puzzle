@@ -41,21 +41,19 @@ jobs:
           echo "Using host compiler flag: ${CCBIN_ARG}"
 
           GENCODES=""
-          LAST_ARCH=""
-          for arch in 60 61 70 75 80 86 89 90; do
+          # Ensure compute 75 (Tesla T4) is always supported as base architecture
+          for arch in 75 80 86 89 90; do
             if nvcc ${CCBIN_ARG} -gencode arch=compute_${arch},code=sm_${arch} -E -x cu /dev/null -o /dev/null 2>/dev/null; then
               GENCODES="${GENCODES} -gencode arch=compute_${arch},code=sm_${arch}"
-              LAST_ARCH=${arch}
             fi
           done
 
-          if [ -n "${LAST_ARCH}" ]; then
-            GENCODES="${GENCODES} -gencode arch=compute_${LAST_ARCH},code=compute_${LAST_ARCH}"
-          fi
+          # Always include PTX JIT for forward compatibility starting from compute 75 (Turing / Colab T4)
+          GENCODES="${GENCODES} -gencode arch=compute_75,code=compute_75"
 
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
-          nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math -Xptxas -O3,-v ${GENCODES} \
+          nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 64 -Xptxas -O3,-v ${GENCODES} \
             -x cu build.cpp -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda
           chmod +x bin/build_cuda
