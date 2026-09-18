@@ -13,22 +13,23 @@ can_run() {
     chmod +x "$1" 2>/dev/null || true
     if command -v ldd >/dev/null 2>&1; then
         LDD_OUT="$(ldd "$1" 2>&1)"
-        if echo "$LDD_OUT" | grep -q -E '(not found| version `GLIBC_)'; then
+        if echo "$LDD_OUT" | grep -q -E '(not found|version `GLIBC_)'; then
             return 1
         fi
-    fi
-    if ! "$1" --test-probe >/dev/null 2>&1; then
-        return 1
     fi
     return 0
 }
 
 TARGET_BIN=""
 
-if [ "$1" = "--cpu" ] || [ "$1" = "--cpu-only" ]; then
-    FORCE_CPU=1
-    shift
-fi
+FORCE_CPU=0
+for arg in "$@"; do
+    case "$arg" in
+        -cpu|--cpu|--cpu-only|-t|--threads)
+            FORCE_CPU=1
+            ;;
+    esac
+done
 
 case "$OS" in
     linux*)
@@ -62,6 +63,8 @@ case "$OS" in
                             echo "[WARN] NVIDIA GPU detected, but bin/build_cuda not found in bin/. Falling back to CPU..."
                         fi
                     fi
+                else
+                    echo "[INFO] CPU mode forced via -cpu flag. Skipping CUDA GPU..."
                 fi
 
                 if [ -z "$TARGET_BIN" ]; then
@@ -99,7 +102,7 @@ case "$OS" in
                         if [ "$HAS_AVX2" = "1" ]; then
                             CANDIDATES="bin/build-linux-musl-x86_64 bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-u22-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64 bin/build-linux-x86_64-compat"
                         else
-                            CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat bin/build-linux-x86_64"
+                            CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64-compat bin/build-linux-u22-x86_64 bin/build-linux-x86_64-compat bin/build-linux-x86_64"
                         fi
                     fi
 
@@ -141,7 +144,7 @@ case "$OS" in
         ;;
     msys*|mingw*|cygwin*)
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
-            if can_run "$f"; then
+            if [ -f "$f" ]; then
                 TARGET_BIN="$f"
                 break
             fi

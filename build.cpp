@@ -3,73 +3,50 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 #include <chrono>
+#include <thread>
 #include <atomic>
+#include <mutex>
 #include <cstring>
 #include <csignal>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
-#if !defined(__CUDACC__)
-  #include <algorithm>
-  #include <thread>
-  #include <mutex>
-#endif
 
-template<typename T>
-static inline T host_min(T a, T b) { return (a < b) ? a : b; }
-
-template<typename It>
-static inline void host_reverse(It first, It last) {
-    while ((first != last) && (first != --last)) {
-        auto tmp = *first;
-        *first = *last;
-        *last = tmp;
-        ++first;
-    }
-}
-
-#if defined(_WIN32)
-  #include <winsock2.h>
-  #include <windows.h>
-#else
-  #include <unistd.h>
-#endif
-
-static inline void portable_sleep_ms(int ms) {
-#if defined(_WIN32)
-    Sleep(ms);
-#else
-    usleep(ms * 1000);
-#endif
-}
-
-#if defined(__CUDACC__)
-  #include <cuda_runtime.h>
-  #define CUDA_HOSTDEV __host__ __device__
-  #define CUDA_DEV __device__
-  #define CUDA_DEVICE __device__
-  #define CUDA_GLOBAL __global__
-  #define CUDA_INLINE __forceinline__
-  #define CUDA_CONST __device__ __constant__ const
-#else
-  #define CUDA_HOSTDEV
-  #define CUDA_DEV static
-  #define CUDA_DEVICE static
-  #define CUDA_GLOBAL
-  #define CUDA_INLINE inline __attribute__((always_inline))
-  #define CUDA_CONST static const
+#ifndef CURL_STATICLIB
+#define CURL_STATICLIB
 #endif
 
 #include <curl/curl.h>
 #include <openssl/sha.h>
 #include <openssl/ripemd.h>
+#include <openssl/bn.h>
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDACC__)
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
 #include <x86intrin.h>
 #endif
 #endif
+
+#ifdef __CUDACC__
+#include <cuda_runtime.h>
+#define CUDA_HOSTDEV __host__ __device__
+#define CUDA_DEV __device__
+#define CUDA_GLOBAL __global__
+#define CUDA_INLINE __forceinline__
+#else
+#define CUDA_HOSTDEV
+#define CUDA_DEV
+#define CUDA_GLOBAL
+#define CUDA_INLINE inline
+#endif
+
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 static std::atomic<bool> g_running(true);
 
@@ -78,179 +55,218 @@ void sigint_handler(int signum) {
     g_running = false;
 }
 
+template <typename T>
+CUDA_HOSTDEV CUDA_INLINE T host_min(T a, T b) {
+    return (a < b) ? a : b;
+}
+
+template <typename T>
+CUDA_HOSTDEV CUDA_INLINE void host_reverse(T* first, T* last) {
+    while ((first != last) && (first != --last)) {
+        T temp = *first;
+        *first = *last;
+        *last = temp;
+        ++first;
+    }
+}
+
+inline void portable_sleep_ms(int ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
 typedef __uint128_t u128;
 
 struct u256 {
     __uint128_t low;
     __uint128_t high;
 
-    CUDA_HOSTDEV constexpr u256() : low(0), high(0) {}
-    CUDA_HOSTDEV constexpr u256(uint64_t v) : low(v), high(0) {}
-    CUDA_HOSTDEV constexpr u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
+    CUDA_HOSTDEV u256() : low(0), high(0) {}
+    CUDA_HOSTDEV u256(int v) : low((uint64_t)v), high(0) {}
+    CUDA_HOSTDEV u256(uint32_t v) : low(v), high(0) {}
+    CUDA_HOSTDEV u256(uint64_t v) : low(v), high(0) {}
+    CUDA_HOSTDEV u256(__uint128_t l) : low(l), high(0) {}
+    CUDA_HOSTDEV u256(__uint128_t l, __uint128_t h) : low(l), high(h) {}
 
-    CUDA_HOSTDEV inline bool is_zero() const { return (low | high) == 0; }
+    CUDA_HOSTDEV CUDA_INLINE bool is_zero() const {
+        return (low | high) == 0;
+    }
+
+    CUDA_HOSTDEV CUDA_INLINE void to_bytes_be(uint8_t out[32]) const {
+        for (int i = 0; i < 16; ++i) {
+            out[31 - i] = (uint8_t)(low >> (i * 8));
+            out[15 - i] = (uint8_t)(high >> (i * 8));
+        }
+    }
 };
 
-CUDA_HOSTDEV inline bool operator==(const u256& a, const u256& b) { return a.low == b.low && a.high == b.high; }
-CUDA_HOSTDEV inline bool operator!=(const u256& a, const u256& b) { return !(a == b); }
-CUDA_HOSTDEV inline bool operator<(const u256& a, const u256& b) {
+CUDA_HOSTDEV CUDA_INLINE bool operator==(const u256& a, const u256& b) {
+    return a.low == b.low && a.high == b.high;
+}
+CUDA_HOSTDEV CUDA_INLINE bool operator!=(const u256& a, const u256& b) {
+    return !(a == b);
+}
+CUDA_HOSTDEV CUDA_INLINE bool operator<(const u256& a, const u256& b) {
     if (a.high != b.high) return a.high < b.high;
     return a.low < b.low;
 }
-CUDA_HOSTDEV inline bool operator<=(const u256& a, const u256& b) {
+CUDA_HOSTDEV CUDA_INLINE bool operator<=(const u256& a, const u256& b) {
     return (a < b) || (a == b);
 }
-CUDA_HOSTDEV inline bool operator>(const u256& a, const u256& b) {
+CUDA_HOSTDEV CUDA_INLINE bool operator>(const u256& a, const u256& b) {
     return b < a;
 }
-CUDA_HOSTDEV inline bool operator>=(const u256& a, const u256& b) {
+CUDA_HOSTDEV CUDA_INLINE bool operator>=(const u256& a, const u256& b) {
     return !(a < b);
 }
-CUDA_HOSTDEV inline u256 operator+(const u256& a, const u256& b) {
+
+CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, const u256& b) {
     u256 r;
     r.low = a.low + b.low;
     r.high = a.high + b.high + (r.low < a.low ? 1 : 0);
     return r;
 }
-CUDA_HOSTDEV inline u256 operator+(const u256& a, uint64_t b) {
+CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, uint64_t b) {
     u256 r;
     r.low = a.low + b;
     r.high = a.high + (r.low < a.low ? 1 : 0);
     return r;
 }
-CUDA_HOSTDEV inline u256 operator-(const u256& a, const u256& b) {
+CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, const u256& b) {
     u256 r;
     r.low = a.low - b.low;
     r.high = a.high - b.high - (a.low < b.low ? 1 : 0);
     return r;
 }
-
-u256 parse_u256(const std::string& str) {
-    u256 res;
-    if (str.empty()) return res;
-    if (str.rfind("0x", 0) == 0 || str.rfind("0X", 0) == 0) {
-        for (size_t i = 2; i < str.size(); ++i) {
-            char c = str[i];
-            int val = 0;
-            if (c >= '0' && c <= '9') val = c - '0';
-            else if (c >= 'a' && c <= 'f') val = c - 'a' + 10;
-            else if (c >= 'A' && c <= 'F') val = c - 'A' + 10;
-            else continue;
-            uint64_t carry = (uint64_t)(res.low >> 124);
-            res.low = (res.low << 4) | val;
-            res.high = (res.high << 4) | carry;
-        }
-        return res;
-    }
-    for (char c : str) {
-        if (c >= '0' && c <= '9') {
-            int val = c - '0';
-            uint64_t l0 = (uint64_t)res.low;
-            uint64_t l1 = (uint64_t)(res.low >> 64);
-            uint64_t h0 = (uint64_t)res.high;
-            uint64_t h1 = (uint64_t)(res.high >> 64);
-
-            __uint128_t c0 = (__uint128_t)l0 * 10 + val;
-            l0 = (uint64_t)c0;
-            __uint128_t c1 = (__uint128_t)l1 * 10 + (c0 >> 64);
-            l1 = (uint64_t)c1;
-            __uint128_t c2 = (__uint128_t)h0 * 10 + (c1 >> 64);
-            h0 = (uint64_t)c2;
-            __uint128_t c3 = (__uint128_t)h1 * 10 + (c2 >> 64);
-            h1 = (uint64_t)c3;
-
-            res.low = ((__uint128_t)l1 << 64) | l0;
-            res.high = ((__uint128_t)h1 << 64) | h0;
-        }
-    }
-    return res;
+CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, uint64_t b) {
+    u256 r;
+    r.low = a.low - b;
+    r.high = a.high - (a.low < b ? 1 : 0);
+    return r;
 }
 
-std::string u256_to_dec(u256 v) {
-    if (v.is_zero()) return "0";
-    std::string s;
-    while (!v.is_zero()) {
-        uint64_t l0 = (uint64_t)v.low;
-        uint64_t l1 = (uint64_t)(v.low >> 64);
-        uint64_t h0 = (uint64_t)v.high;
-        uint64_t h1 = (uint64_t)(v.high >> 64);
+u256 parse_u256(const std::string& s) {
+    u256 r;
+    if (s.empty()) return r;
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        for (size_t i = 2; i < s.size(); ++i) {
+            char c = s[i];
+            int v = 0;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else continue;
+            uint64_t carry = (uint64_t)(r.low >> 124);
+            r.low = (r.low << 4) | v;
+            r.high = (r.high << 4) | carry;
+        }
+    } else {
+        for (char c : s) {
+            if (c >= '0' && c <= '9') {
+                int digit = c - '0';
+                u128 low_prod = (r.low & 0xFFFFFFFFFFFFFFFFULL) * 10 + digit;
+                u128 low_carry = low_prod >> 64;
+                u128 high_part = (r.low >> 64) * 10 + low_carry;
+                r.low = (high_part << 64) | (low_prod & 0xFFFFFFFFFFFFFFFFULL);
+                u128 high_carry = high_part >> 64;
 
-        uint64_t r = 0;
-        __uint128_t cur = ((__uint128_t)r << 64) | h1;
-        h1 = (uint64_t)(cur / 10);
-        r = (uint64_t)(cur % 10);
-
-        cur = ((__uint128_t)r << 64) | h0;
-        h0 = (uint64_t)(cur / 10);
-        r = (uint64_t)(cur % 10);
-
-        cur = ((__uint128_t)r << 64) | l1;
-        l1 = (uint64_t)(cur / 10);
-        r = (uint64_t)(cur % 10);
-
-        cur = ((__uint128_t)r << 64) | l0;
-        l0 = (uint64_t)(cur / 10);
-        r = (uint64_t)(cur % 10);
-
-        s.push_back('0' + (int)r);
-
-        v.low = ((__uint128_t)l1 << 64) | l0;
-        v.high = ((__uint128_t)h1 << 64) | h0;
+                u128 h_low_prod = (r.high & 0xFFFFFFFFFFFFFFFFULL) * 10 + high_carry;
+                u128 h_low_carry = h_low_prod >> 64;
+                u128 h_high_part = (r.high >> 64) * 10 + h_low_carry;
+                r.high = (h_high_part << 64) | (h_low_prod & 0xFFFFFFFFFFFFFFFFULL);
+            }
+        }
     }
-    host_reverse(s.begin(), s.end());
+    return r;
+}
+
+std::string u256_to_dec(u256 val) {
+    if (val.is_zero()) return "0";
+    std::string s;
+    while (!val.is_zero()) {
+        u128 rem = 0;
+        u128 h_hi = val.high >> 64;
+        u128 q_h_hi = (rem << 64 | h_hi) / 10;
+        rem = (rem << 64 | h_hi) % 10;
+
+        u128 h_lo = val.high & 0xFFFFFFFFFFFFFFFFULL;
+        u128 q_h_lo = (rem << 64 | h_lo) / 10;
+        rem = (rem << 64 | h_lo) % 10;
+
+        val.high = (q_h_hi << 64) | q_h_lo;
+
+        u128 l_hi = val.low >> 64;
+        u128 q_l_hi = (rem << 64 | l_hi) / 10;
+        rem = (rem << 64 | l_hi) % 10;
+
+        u128 l_lo = val.low & 0xFFFFFFFFFFFFFFFFULL;
+        u128 q_l_lo = (rem << 64 | l_lo) / 10;
+        rem = (rem << 64 | l_lo) % 10;
+
+        val.low = (q_l_hi << 64) | q_l_lo;
+
+        s.push_back((char)('0' + rem));
+    }
+    std::reverse(s.begin(), s.end());
     return s;
 }
 
-std::string u256_to_hex64(const u256& v) {
-    char buf[65];
-    snprintf(buf, sizeof(buf), "%016llx%016llx%016llx%016llx",
-             (unsigned long long)(v.high >> 64),
-             (unsigned long long)(v.high & 0xFFFFFFFFFFFFFFFFULL),
-             (unsigned long long)(v.low >> 64),
-             (unsigned long long)(v.low & 0xFFFFFFFFFFFFFFFFULL));
-    return std::string(buf);
+std::string u256_to_hex64(u256 val) {
+    std::stringstream ss;
+    uint8_t bytes[32];
+    val.to_bytes_be(bytes);
+    for (int i = 0; i < 32; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << (int)bytes[i];
+    }
+    return ss.str();
 }
 
 static const char* B58_DIGITS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-bool b58check_decode_hash160(const std::string& addr, uint8_t hash160_out[20]) {
-    std::vector<uint8_t> bytes(addr.length() + 1, 0);
-    int length = 0;
+bool b58check_decode_hash160(const std::string& addr, uint8_t out_hash160[20]) {
+    BIGNUM* bn = BN_new();
+    BN_zero(bn);
+    BIGNUM* bn58 = BN_new();
+    BN_set_word(bn58, 58);
+    BIGNUM* bn_char = BN_new();
+    BN_CTX* ctx = BN_CTX_new();
 
     for (char c : addr) {
         const char* p = strchr(B58_DIGITS, c);
-        if (!p) return false;
-        int carry = (int)(p - B58_DIGITS);
-        for (int i = 0; i < length; ++i) {
-            int val = (int)bytes[i] * 58 + carry;
-            bytes[i] = (uint8_t)(val & 0xFF);
-            carry = val >> 8;
+        if (!p) {
+            BN_free(bn); BN_free(bn58); BN_free(bn_char); BN_CTX_free(ctx);
+            return false;
         }
-        while (carry > 0) {
-            bytes[length++] = (uint8_t)(carry & 0xFF);
-            carry >>= 8;
-        }
+        BN_set_word(bn_char, p - B58_DIGITS);
+        BN_mul(bn, bn, bn58, ctx);
+        BN_add(bn, bn, bn_char);
     }
 
-    for (size_t i = 0; i < addr.length() && addr[i] == '1'; ++i) {
-        bytes[length++] = 0;
+    int len = BN_num_bytes(bn);
+    std::vector<uint8_t> bin(len, 0);
+    BN_bn2bin(bn, bin.data());
+
+    int leading_zeros = 0;
+    for (char c : addr) {
+        if (c == '1') leading_zeros++;
+        else break;
     }
 
-    host_reverse(bytes.begin(), bytes.begin() + length);
-    bytes.resize(length);
+    std::vector<uint8_t> full_bytes;
+    full_bytes.insert(full_bytes.end(), leading_zeros, 0);
+    full_bytes.insert(full_bytes.end(), bin.begin(), bin.end());
 
-    if (bytes.size() != 25) return false;
+    BN_free(bn); BN_free(bn58); BN_free(bn_char); BN_CTX_free(ctx);
 
-    uint8_t sha1[32], sha2[32];
-    SHA256(bytes.data(), 21, sha1);
-    SHA256(sha1, 32, sha2);
-    if (memcmp(sha2, bytes.data() + 21, 4) != 0) return false;
+    if (full_bytes.size() != 25) return false;
 
-    memcpy(hash160_out, bytes.data() + 1, 20);
+    uint8_t h1[32], h2[32];
+    SHA256(full_bytes.data(), 21, h1);
+    SHA256(h1, 32, h2);
+    if (std::memcmp(h2, &full_bytes[21], 4) != 0) return false;
+
+    std::memcpy(out_hash160, &full_bytes[1], 20);
     return true;
 }
-
-#define SECP_K 0x1000003D1ULL
 
 struct Fe {
     uint64_t d[4];
@@ -260,831 +276,470 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
 }
 
-#if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
-static inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
-    unsigned char c = _addcarry_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+#if defined(__CUDA_ARCH__)
+    unsigned long long c = 0;
+    asm volatile(
+        "add.cc.u64 %0, %4, %8;\n\t"
+        "addc.cc.u64 %1, %5, %9;\n\t"
+        "addc.cc.u64 %2, %6, %10;\n\t"
+        "addc.cc.u64 %3, %7, %11;\n\t"
+        "addc.u64 %12, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+    );
+    unsigned long long t0, t1, t2, t3;
+    unsigned long long borrow;
+    asm volatile(
+        "sub.cc.u64 %0, %4, 0xFFFFEEFFFFFC2FULL;\n\t"
+        "subc.cc.u64 %1, %5, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.cc.u64 %2, %6, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.cc.u64 %3, %7, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.u64 %8, %9, 0;\n\t"
+        : "=l"(t0), "=l"(t1), "=l"(t2), "=l"(t3), "=l"(borrow)
+        : "l"(r.d[0]), "l"(r.d[1]), "l"(r.d[2]), "l"(r.d[3]), "l"(c)
+    );
+    if (borrow == 0) {
+        r.d[0] = t0; r.d[1] = t1; r.d[2] = t2; r.d[3] = t3;
+    }
+#elif defined(__x86_64__) || defined(_M_X64)
+    unsigned char c = 0;
+    c = _addcarry_u64(c, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
     c = _addcarry_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
     c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (c) {
-        c = _addcarry_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
+    uint64_t t0, t1, t2, t3;
+    unsigned char b_borrow = 0;
+    b_borrow = _subborrow_u64(b_borrow, r.d[0], 0xFFFFEEFFFFFC2FULL, (unsigned long long*)&t0);
+    b_borrow = _subborrow_u64(b_borrow, r.d[1], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&t1);
+    b_borrow = _subborrow_u64(b_borrow, r.d[2], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&t2);
+    b_borrow = _subborrow_u64(b_borrow, r.d[3], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&t3);
+    b_borrow = _subborrow_u64(b_borrow, c, 0, (unsigned long long*)&c);
+    if (!b_borrow) {
+        r.d[0] = t0; r.d[1] = t1; r.d[2] = t2; r.d[3] = t3;
     }
-    return r;
-}
-
-static inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
-    Fe r;
-    unsigned char c = _subborrow_u64(0, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
-    c = _subborrow_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
-    c = _subborrow_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
-    c = _subborrow_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-
-    if (c) {
-        c = _subborrow_u64(0, r.d[0], SECP_K, (unsigned long long*)&r.d[0]);
-        c = _subborrow_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        c = _subborrow_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _subborrow_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    }
-    return r;
-}
 #else
-#if defined(__CUDA_ARCH__)
-CUDA_DEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
-    Fe r;
-    uint64_t c = 0;
-    uint64_t z64 = 0;
-    asm volatile (
-        "add.cc.u64      %0, %5, %9;\n\t"
-        "addc.cc.u64     %1, %6, %10;\n\t"
-        "addc.cc.u64     %2, %7, %11;\n\t"
-        "addc.cc.u64     %3, %8, %12;\n\t"
-        "addc.u64        %4, %13, %13;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c)
-        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
-          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
-          "l"(z64)
-    );
-    if (c) {
-        asm volatile (
-            "add.cc.u64      %0, %0, %4;\n\t"
-            "addc.cc.u64     %1, %1, %5;\n\t"
-            "addc.cc.u64     %2, %2, %5;\n\t"
-            "addc.u64        %3, %3, %5;\n\t"
-            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(SECP_K), "l"(z64)
-        );
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
+    u128 c = 0;
+    for (int i = 0; i < 4; ++i) {
+        c += (u128)a.d[i] + b.d[i];
+        r.d[i] = (uint64_t)c;
+        c >>= 64;
     }
-    return r;
-}
-
-CUDA_DEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
-    Fe r;
-    uint64_t borrow = 0;
-    uint64_t z64 = 0;
-    asm volatile (
-        "sub.cc.u64      %0, %5, %9;\n\t"
-        "subc.cc.u64     %1, %6, %10;\n\t"
-        "subc.cc.u64     %2, %7, %11;\n\t"
-        "subc.cc.u64     %3, %8, %12;\n\t"
-        "subc.u64        %4, %13, %13;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
-        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
-          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3]),
-          "l"(z64)
-    );
-    if (borrow) {
-        asm volatile (
-            "sub.cc.u64      %0, %0, %4;\n\t"
-            "subc.cc.u64     %1, %1, %5;\n\t"
-            "subc.cc.u64     %2, %2, %5;\n\t"
-            "subc.u64        %3, %3, %5;\n\t"
-            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(SECP_K), "l"(z64)
-        );
+    const uint64_t P[4] = { 0xFFFFEEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    u128 borrow = 0;
+    uint64_t t[4];
+    for (int i = 0; i < 4; ++i) {
+        u128 diff = (u128)r.d[i] - P[i] - borrow;
+        t[i] = (uint64_t)diff;
+        borrow = (diff >> 127) & 1;
     }
-    return r;
-}
-#else
-CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
-    Fe r;
-    u128 c = (u128)a.d[0] + b.d[0];
-    r.d[0] = (uint64_t)c; c >>= 64;
-    c += (u128)a.d[1] + b.d[1];
-    r.d[1] = (uint64_t)c; c >>= 64;
-    c += (u128)a.d[2] + b.d[2];
-    r.d[2] = (uint64_t)c; c >>= 64;
-    c += (u128)a.d[3] + b.d[3];
-    r.d[3] = (uint64_t)c;
-    uint64_t carry = (uint64_t)(c >> 64);
-
-    if (carry) {
-        u128 c2 = (u128)r.d[0] + SECP_K;
-        r.d[0] = (uint64_t)c2; c2 >>= 64;
-        c2 += r.d[1]; r.d[1] = (uint64_t)c2; c2 >>= 64;
-        c2 += r.d[2]; r.d[2] = (uint64_t)c2; c2 >>= 64;
-        r.d[3] += (uint64_t)c2;
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
+    if (c || !borrow) {
+        for (int i = 0; i < 4; ++i) r.d[i] = t[i];
     }
+#endif
     return r;
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
-    u128 c = (u128)a.d[0] - b.d[0];
-    r.d[0] = (uint64_t)c;
-    c = (u128)a.d[1] - b.d[1] - ((c >> 64) & 1);
-    r.d[1] = (uint64_t)c;
-    c = (u128)a.d[2] - b.d[2] - ((c >> 64) & 1);
-    r.d[2] = (uint64_t)c;
-    c = (u128)a.d[3] - b.d[3] - ((c >> 64) & 1);
-    r.d[3] = (uint64_t)c;
-
-    if ((c >> 64) & 1) {
-        c = (u128)r.d[0] - SECP_K;
-        r.d[0] = (uint64_t)c;
-        c = (u128)r.d[1] - ((c >> 64) & 1);
-        r.d[1] = (uint64_t)c;
-        c = (u128)r.d[2] - ((c >> 64) & 1);
-        r.d[2] = (uint64_t)c;
-        r.d[3] -= (uint64_t)((c >> 64) & 1);
-    }
-    return r;
-}
-#endif
-
-#endif
-
-#if !defined(__CUDACC__) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && defined(__BMI2__) && defined(__ADX__)
-static inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
-    uint64_t r0, r1, r2, r3;
-    uint64_t t4, t5, t6, t7;
-    __asm__ __volatile__ (
-        "movq 0(%[b]), %%rdx\n\t"
-        "mulx 0(%[a]), %[r0], %[r1]\n\t"
-        "mulx 8(%[a]), %%rax, %[r2]\n\t"
-        "addq %%rax, %[r1]\n\t"
-        "mulx 16(%[a]), %%rax, %[r3]\n\t"
-        "adcq %%rax, %[r2]\n\t"
-        "mulx 24(%[a]), %%rax, %[t4]\n\t"
-        "adcq %%rax, %[r3]\n\t"
-        "adcq $0, %[t4]\n\t"
-        "xorq %[t5], %[t5]\n\t"
-
-        "movq 8(%[b]), %%rdx\n\t"
-        "mulx 0(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r1]\n\t"
-        "adox %%rcx, %[r2]\n\t"
-        "mulx 8(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r2]\n\t"
-        "adox %%rcx, %[r3]\n\t"
-        "mulx 16(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r3]\n\t"
-        "adox %%rcx, %[t4]\n\t"
-        "mulx 24(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t4]\n\t"
-        "adox %%rcx, %[t5]\n\t"
-        "movq $0, %%rax\n\t"
-        "adcx %%rax, %[t5]\n\t"
-        "adox %%rax, %[t5]\n\t"
-        "xorq %[t6], %[t6]\n\t"
-
-        "movq 16(%[b]), %%rdx\n\t"
-        "mulx 0(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r2]\n\t"
-        "adox %%rcx, %[r3]\n\t"
-        "mulx 8(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r3]\n\t"
-        "adox %%rcx, %[t4]\n\t"
-        "mulx 16(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t4]\n\t"
-        "adox %%rcx, %[t5]\n\t"
-        "mulx 24(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t5]\n\t"
-        "adox %%rcx, %[t6]\n\t"
-        "movq $0, %%rax\n\t"
-        "adcx %%rax, %[t6]\n\t"
-        "adox %%rax, %[t6]\n\t"
-        "xorq %[t7], %[t7]\n\t"
-
-        "movq 24(%[b]), %%rdx\n\t"
-        "mulx 0(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r3]\n\t"
-        "adox %%rcx, %[t4]\n\t"
-        "mulx 8(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t4]\n\t"
-        "adox %%rcx, %[t5]\n\t"
-        "mulx 16(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t5]\n\t"
-        "adox %%rcx, %[t6]\n\t"
-        "mulx 24(%[a]), %%rax, %%rcx\n\t"
-        "adcx %%rax, %[t6]\n\t"
-        "adox %%rcx, %[t7]\n\t"
-        "movq $0, %%rax\n\t"
-        "adcx %%rax, %[t7]\n\t"
-        "adox %%rax, %[t7]\n\t"
-
-        "movabsq $0x1000003D1, %%rdx\n\t"
-        "xorq %%rax, %%rax\n\t"
-        "mulx %[t4], %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r0]\n\t"
-        "adox %%rcx, %[r1]\n\t"
-        "mulx %[t5], %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r1]\n\t"
-        "adox %%rcx, %[r2]\n\t"
-        "mulx %[t6], %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r2]\n\t"
-        "adox %%rcx, %[r3]\n\t"
-        "movq $0, %[t4]\n\t"
-        "mulx %[t7], %%rax, %%rcx\n\t"
-        "adcx %%rax, %[r3]\n\t"
-        "adox %%rcx, %[t4]\n\t"
-        "movq $0, %%rax\n\t"
-        "adcx %%rax, %[t4]\n\t"
-        "adox %%rax, %[t4]\n\t"
-
-        "mulx %[t4], %%rax, %%rcx\n\t"
-        "addq %%rax, %[r0]\n\t"
-        "adcq %%rcx, %[r1]\n\t"
-        "adcq $0, %[r2]\n\t"
-        "adcq $0, %[r3]\n\t"
-        "movq $0, %[t4]\n\t"
-        "adcq $0, %[t4]\n\t"
-
-        "imulq %%rdx, %[t4]\n\t"
-        "addq %[t4], %[r0]\n\t"
-        "adcq $0, %[r1]\n\t"
-        "adcq $0, %[r2]\n\t"
-        "adcq $0, %[r3]\n\t"
-
-        "movq %[r0], %%rax\n\t"
-        "addq %%rdx, %%rax\n\t"
-        "movq %[r1], %%rcx\n\t"
-        "adcq $0, %%rcx\n\t"
-        "movq %[r2], %[t4]\n\t"
-        "adcq $0, %[t4]\n\t"
-        "movq %[r3], %[t5]\n\t"
-        "adcq $0, %[t5]\n\t"
-        "cmovcq %%rax, %[r0]\n\t"
-        "cmovcq %%rcx, %[r1]\n\t"
-        "cmovcq %[t4], %[r2]\n\t"
-        "cmovcq %[t5], %[r3]\n\t"
-
-        : [r0] "=&r"(r0), [r1] "=&r"(r1), [r2] "=&r"(r2), [r3] "=&r"(r3),
-          [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
-        : [a] "r"(a.d), [b] "r"(b.d)
-        : "rax", "rcx", "rdx", "cc"
-    );
-    Fe r;
-    r.d[0] = r0; r.d[1] = r1; r.d[2] = r2; r.d[3] = r3;
-    return r;
-}
-
-static inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
-    return fe_mul(a, a);
-}
-#else
 #if defined(__CUDA_ARCH__)
-CUDA_DEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-    uint64_t t[8];
-    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-    uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
-
-    uint64_t z64 = 0;
-    uint32_t z32 = 0;
-
-    // Row 0: a * b0
-    t[0] = a0 * b0;
-    uint64_t hi0 = __umul64hi(a0, b0);
-    uint64_t p1 = a1 * b0, hi1 = __umul64hi(a1, b0);
-    uint64_t p2 = a2 * b0, hi2 = __umul64hi(a2, b0);
-    uint64_t p3 = a3 * b0, hi3 = __umul64hi(a3, b0);
-    asm volatile (
-        "add.cc.u64      %0, %4, %8;\n\t"
-        "addc.cc.u64     %1, %5, %9;\n\t"
-        "addc.cc.u64     %2, %6, %10;\n\t"
-        "addc.u64        %3, %7, %11;\n\t"
-        : "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
-        : "l"(p1), "l"(p2), "l"(p3), "l"(hi3),
-          "l"(hi0), "l"(hi1), "l"(hi2), "l"(z64)
+    unsigned long long borrow;
+    asm volatile(
+        "sub.cc.u64 %0, %4, %8;\n\t"
+        "subc.cc.u64 %1, %5, %9;\n\t"
+        "subc.cc.u64 %2, %6, %10;\n\t"
+        "subc.cc.u64 %3, %7, %11;\n\t"
+        "subc.u64 %12, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
-    t[5] = 0; t[6] = 0; t[7] = 0;
-
-    // Row 1: a * b1
-    uint64_t p0_1 = a0 * b1; hi0 = __umul64hi(a0, b1);
-    uint64_t p1_1 = a1 * b1; hi1 = __umul64hi(a1, b1);
-    uint64_t p2_1 = a2 * b1; hi2 = __umul64hi(a2, b1);
-    uint64_t p3_1 = a3 * b1; hi3 = __umul64hi(a3, b1);
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "=l"(t[5])
-        : "l"(p0_1), "l"(p1_1), "l"(p2_1), "l"(p3_1), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
-        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
-    );
-
-    // Row 2: a * b2
-    uint64_t p0_2 = a0 * b2; hi0 = __umul64hi(a0, b2);
-    uint64_t p1_2 = a1 * b2; hi1 = __umul64hi(a1, b2);
-    uint64_t p2_2 = a2 * b2; hi2 = __umul64hi(a2, b2);
-    uint64_t p3_2 = a3 * b2; hi3 = __umul64hi(a3, b2);
-    uint64_t c_out = 0;
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(t[2]), "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(c_out)
-        : "l"(p0_2), "l"(p1_2), "l"(p2_2), "l"(p3_2), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "=l"(t[6]), "=l"(t[7])
-        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3), "l"(z64)
-    );
-    t[6] += c_out;
-
-    // Row 3: a * b3
-    uint64_t p0_3 = a0 * b3; hi0 = __umul64hi(a0, b3);
-    uint64_t p1_3 = a1 * b3; hi1 = __umul64hi(a1, b3);
-    uint64_t p2_3 = a2 * b3; hi2 = __umul64hi(a2, b3);
-    uint64_t p3_3 = a3 * b3; hi3 = __umul64hi(a3, b3);
-    c_out = 0;
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "=l"(c_out)
-        : "l"(p0_3), "l"(p1_3), "l"(p2_3), "l"(p3_3), "l"(z64)
-    );
-    t[7] += c_out;
-    asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
-        : "l"(hi0), "l"(hi1), "l"(hi2), "l"(hi3)
-    );
-
-    // Reduction mod 2^256 - 2^32 - 979
-    uint64_t cm0 = t[4] * SECP_K, cmhi0 = __umul64hi(t[4], SECP_K);
-    uint64_t cm1 = t[5] * SECP_K, cmhi1 = __umul64hi(t[5], SECP_K);
-    uint64_t cm2 = t[6] * SECP_K, cmhi2 = __umul64hi(t[6], SECP_K);
-    uint64_t cm3 = t[7] * SECP_K, cmhi3 = __umul64hi(t[7], SECP_K);
-
-    uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
-    uint64_t carry0 = 0;
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
-        : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
-        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
-    );
-
-
-    if (carry0) {
-        cm0 = carry0 * SECP_K;
-        cmhi0 = __umul64hi(carry0, SECP_K);
-        uint64_t extra = 0;
-        asm volatile (
-            "add.cc.u64      %0, %0, %5;\n\t"
-            "addc.cc.u64     %1, %1, %6;\n\t"
-            "addc.cc.u64     %2, %2, %7;\n\t"
-            "addc.cc.u64     %3, %3, %7;\n\t"
-            "addc.u64        %4, %7, %7;\n\t"
-            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(extra)
-            : "l"(cm0), "l"(cmhi0), "l"(z64)
+    if (borrow != 0) {
+        asm volatile(
+            "add.cc.u64 %0, %0, 0xFFFFEEFFFFFC2FULL;\n\t"
+            "addc.cc.u64 %1, %1, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+            "addc.cc.u64 %2, %2, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+            "addc.u64 %3, %3, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
         );
-        if (extra) {
-            asm volatile (
-                "add.cc.u64      %0, %0, %4;\n\t"
-                "addc.cc.u64     %1, %1, %5;\n\t"
-                "addc.cc.u64     %2, %2, %5;\n\t"
-                "addc.u64        %3, %3, %5;\n\t"
-                : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
-                : "l"(SECP_K), "l"(z64)
-            );
-        }
     }
-
-    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
-        r2 == 0xFFFFFFFFFFFFFFFFULL &&
-        r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
-        r0 -= 0xFFFFFFFEFFFFFC2FULL;
-        r1 = 0;
-        r2 = 0;
-        r3 = 0;
+#elif defined(__x86_64__) || defined(_M_X64)
+    unsigned char borrow = 0;
+    borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+    if (borrow) {
+        unsigned char c = 0;
+        c = _addcarry_u64(c, r.d[0], 0xFFFFEEFFFFFC2FULL, (unsigned long long*)&r.d[0]);
+        c = _addcarry_u64(c, r.d[1], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&r.d[1]);
+        c = _addcarry_u64(c, r.d[2], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&r.d[2]);
+        c = _addcarry_u64(c, r.d[3], 0xFFFFFFFFFFFFFFFFULL, (unsigned long long*)&r.d[3]);
     }
-
-    Fe res;
-    res.d[0] = r0; res.d[1] = r1; res.d[2] = r2; res.d[3] = r3;
-    return res;
-}
-
-CUDA_DEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-    uint64_t t[8] = {0};
-    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-
-    uint64_t z64 = 0;
-    uint32_t z32 = 0;
-
-    // Off-diagonal products
-    uint64_t p01 = a0 * a1, hi01 = __umul64hi(a0, a1);
-    uint64_t p02 = a0 * a2, hi02 = __umul64hi(a0, a2);
-    uint64_t p03 = a0 * a3, hi03 = __umul64hi(a0, a3);
-    uint64_t p12 = a1 * a2, hi12 = __umul64hi(a1, a2);
-    uint64_t p13 = a1 * a3, hi13 = __umul64hi(a1, a3);
-    uint64_t p23 = a2 * a3, hi23 = __umul64hi(a2, a3);
-
-    t[1] = p01; t[2] = hi01;
-    asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %4, %5;\n\t"
-        "addc.u64        %2, %6, %7;\n\t"
-        : "+l"(t[2]), "=l"(t[3]), "=l"(t[4])
-        : "l"(p02), "l"(hi02), "l"(p03), "l"(hi03), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %1, %4;\n\t"
-        "addc.u64        %2, %2, %5;\n\t"
-        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
-        : "l"(p12), "l"(hi12), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(t[4]), "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
-        : "l"(p13), "l"(hi13), "l"(p23), "l"(hi23)
-    );
-
-    // Double off-diagonal terms
-    uint64_t c = 0;
-    #pragma unroll
-    for (int i = 1; i < 7; ++i) {
-        uint64_t next_c = t[i] >> 63;
-        t[i] = (t[i] << 1) | c;
-        c = next_c;
-    }
-    t[7] = (t[7] << 1) | c;
-
-    // Add diagonal terms
-    uint64_t sq0 = a0 * a0, hsq0 = __umul64hi(a0, a0);
-    uint64_t sq1 = a1 * a1, hsq1 = __umul64hi(a1, a1);
-    uint64_t sq2 = a2 * a2, hsq2 = __umul64hi(a2, a2);
-    uint64_t sq3 = a3 * a3, hsq3 = __umul64hi(a3, a3);
-
-    t[0] = sq0;
-    asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %1, %4;\n\t"
-        "addc.u64        %2, %2, %5;\n\t"
-        : "+l"(t[1]), "+l"(t[2]), "+l"(t[3])
-        : "l"(hsq0), "l"(sq1), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %1, %4;\n\t"
-        "addc.u64        %2, %2, %5;\n\t"
-        : "+l"(t[3]), "+l"(t[4]), "+l"(t[5])
-        : "l"(hsq1), "l"(sq2), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %3;\n\t"
-        "addc.cc.u64     %1, %1, %4;\n\t"
-        "addc.u64        %2, %2, %5;\n\t"
-        : "+l"(t[5]), "+l"(t[6]), "+l"(t[7])
-        : "l"(hsq2), "l"(sq3), "l"(hsq3)
-    );
-
-    // Reduction mod 2^256 - 2^32 - 979
-    uint64_t cm0 = t[4] * SECP_K, cmhi0 = __umul64hi(t[4], SECP_K);
-    uint64_t cm1 = t[5] * SECP_K, cmhi1 = __umul64hi(t[5], SECP_K);
-    uint64_t cm2 = t[6] * SECP_K, cmhi2 = __umul64hi(t[6], SECP_K);
-    uint64_t cm3 = t[7] * SECP_K, cmhi3 = __umul64hi(t[7], SECP_K);
-
-    uint64_t r0 = t[0], r1 = t[1], r2 = t[2], r3 = t[3];
-    uint64_t carry0 = 0;
-    asm volatile (
-        "add.cc.u64      %0, %0, %5;\n\t"
-        "addc.cc.u64     %1, %1, %6;\n\t"
-        "addc.cc.u64     %2, %2, %7;\n\t"
-        "addc.cc.u64     %3, %3, %8;\n\t"
-        "addc.u64        %4, %9, %9;\n\t"
-        : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(carry0)
-        : "l"(cm0), "l"(cm1), "l"(cm2), "l"(cm3), "l"(z64)
-    );
-    asm volatile (
-        "add.cc.u64      %0, %0, %4;\n\t"
-        "addc.cc.u64     %1, %1, %5;\n\t"
-        "addc.cc.u64     %2, %2, %6;\n\t"
-        "addc.u64        %3, %3, %7;\n\t"
-        : "+l"(r1), "+l"(r2), "+l"(r3), "+l"(carry0)
-        : "l"(cmhi0), "l"(cmhi1), "l"(cmhi2), "l"(cmhi3)
-    );
-
-
-    if (carry0) {
-        cm0 = carry0 * SECP_K;
-        cmhi0 = __umul64hi(carry0, SECP_K);
-        uint64_t extra = 0;
-        asm volatile (
-            "add.cc.u64      %0, %0, %5;\n\t"
-            "addc.cc.u64     %1, %1, %6;\n\t"
-            "addc.cc.u64     %2, %2, %7;\n\t"
-            "addc.cc.u64     %3, %3, %7;\n\t"
-            "addc.u64        %4, %7, %7;\n\t"
-            : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3), "=l"(extra)
-            : "l"(cm0), "l"(cmhi0), "l"(z64)
-        );
-        if (extra) {
-            asm volatile (
-                "add.cc.u64      %0, %0, %4;\n\t"
-                "addc.cc.u64     %1, %1, %5;\n\t"
-                "addc.cc.u64     %2, %2, %5;\n\t"
-                "addc.u64        %3, %3, %5;\n\t"
-                : "+l"(r0), "+l"(r1), "+l"(r2), "+l"(r3)
-                : "l"(SECP_K), "l"(z64)
-            );
-        }
-    }
-
-    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
-        r2 == 0xFFFFFFFFFFFFFFFFULL &&
-        r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
-        r0 -= 0xFFFFFFFEFFFFFC2FULL;
-        r1 = 0;
-        r2 = 0;
-        r3 = 0;
-    }
-
-    Fe res;
-    res.d[0] = r0; res.d[1] = r1; res.d[2] = r2; res.d[3] = r3;
-    return res;
-}
 #else
-CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-    uint64_t t[8] = {0};
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-    u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
-
-    u128 c;
-    c = a0 * b0; t[0] = (uint64_t)c; c >>= 64;
-    c += a0 * b1; t[1] = (uint64_t)c; c >>= 64;
-    c += a0 * b2; t[2] = (uint64_t)c; c >>= 64;
-    c += a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
-
-    c = (u128)t[1] + a1 * b0; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + a1 * b1; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + a1 * b2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
-
-    c = (u128)t[2] + a2 * b0; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + a2 * b1; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a2 * b2; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
-
-    c = (u128)t[3] + a3 * b0; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a3 * b1; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + a3 * b2; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
-
-    u128 carry = 0;
-    #pragma unroll
+    u128 borrow = 0;
     for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
-        t[i] = (uint64_t)prod;
-        carry = prod >> 64;
+        u128 diff = (u128)a.d[i] - b.d[i] - borrow;
+        r.d[i] = (uint64_t)diff;
+        borrow = (diff >> 127) & 1;
     }
-    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
-    if (extra) {
-        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
+    if (borrow) {
+        const uint64_t P[4] = { 0xFFFFEEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+        u128 c = 0;
+        for (int i = 0; i < 4; ++i) {
+            c += (u128)r.d[i] + P[i];
+            r.d[i] = (uint64_t)c;
+            c >>= 64;
+        }
     }
+#endif
+    return r;
+}
 
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
+#if defined(__CUDA_ARCH__)
+CUDA_DEV CUDA_INLINE Fe fe_reduce_cuda(uint64_t t[8]) {
+    uint64_t c0 = 0, c1 = 0, c2 = 0, c3 = 0, c4 = 0;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t hi = t[4 + i];
+        if (hi == 0) continue;
+        uint64_t m_lo = hi * 0x1000003D1ULL;
+        uint64_t m_hi = __umul64hi(hi, 0x1000003D1ULL);
+        unsigned long long carry = 0;
+        if (i == 0) {
+            asm volatile(
+                "add.cc.u64 %0, %0, %5;\n\t"
+                "addc.cc.u64 %1, %1, %6;\n\t"
+                "addc.cc.u64 %2, %2, 0;\n\t"
+                "addc.cc.u64 %3, %3, 0;\n\t"
+                "addc.u64 %4, %4, 0;\n\t"
+                : "+l"(c0), "+l"(c1), "+l"(c2), "+l"(c3), "+l"(c4)
+                : "l"(m_lo), "l"(m_hi)
+            );
+        } else if (i == 1) {
+            asm volatile(
+                "add.cc.u64 %1, %1, %5;\n\t"
+                "addc.cc.u64 %2, %2, %6;\n\t"
+                "addc.cc.u64 %3, %3, 0;\n\t"
+                "addc.u64 %4, %4, 0;\n\t"
+                : "+l"(c0), "+l"(c1), "+l"(c2), "+l"(c3), "+l"(c4)
+                : "l"(m_lo), "l"(m_hi)
+            );
+        } else if (i == 2) {
+            asm volatile(
+                "add.cc.u64 %2, %2, %5;\n\t"
+                "addc.cc.u64 %3, %3, %6;\n\t"
+                "addc.u64 %4, %4, 0;\n\t"
+                : "+l"(c0), "+l"(c1), "+l"(c2), "+l"(c3), "+l"(c4)
+                : "l"(m_lo), "l"(m_hi)
+            );
+        } else {
+            asm volatile(
+                "add.cc.u64 %3, %3, %5;\n\t"
+                "addc.u64 %4, %4, %6;\n\t"
+                : "+l"(c0), "+l"(c1), "+l"(c2), "+l"(c3), "+l"(c4)
+                : "l"(m_lo), "l"(m_hi)
+            );
+        }
     }
     Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    unsigned long long c_out = 0;
+    asm volatile(
+        "add.cc.u64 %0, %5, %10;\n\t"
+        "addc.cc.u64 %1, %6, %11;\n\t"
+        "addc.cc.u64 %2, %7, %12;\n\t"
+        "addc.cc.u64 %3, %8, %13;\n\t"
+        "addc.u64 %4, %9, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c_out)
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(c4),
+          "l"(c0), "l"(c1), "l"(c2), "l"(c3)
+    );
+    while (c_out != 0) {
+        uint64_t m_lo = c_out * 0x1000003D1ULL;
+        uint64_t m_hi = __umul64hi(c_out, 0x1000003D1ULL);
+        c_out = 0;
+        asm volatile(
+            "add.cc.u64 %0, %0, %4;\n\t"
+            "addc.cc.u64 %1, %1, %5;\n\t"
+            "addc.cc.u64 %2, %2, 0;\n\t"
+            "addc.cc.u64 %3, %3, 0;\n\t"
+            "addc.u64 %4, 0, 0;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3]), "+l"(c_out)
+            : "l"(m_lo), "l"(m_hi)
+        );
+    }
+    unsigned long long t0, t1, t2, t3;
+    unsigned long long borrow;
+    asm volatile(
+        "sub.cc.u64 %0, %4, 0xFFFFEEFFFFFC2FULL;\n\t"
+        "subc.cc.u64 %1, %5, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.cc.u64 %2, %6, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.cc.u64 %3, %7, 0xFFFFFFFFFFFFFFFFULL;\n\t"
+        "subc.u64 %8, 0, 0;\n\t"
+        : "=l"(t0), "=l"(t1), "=l"(t2), "=l"(t3), "=l"(borrow)
+        : "l"(r.d[0]), "l"(r.d[1]), "l"(r.d[2]), "l"(r.d[3])
+    );
+    if (borrow == 0) {
+        r.d[0] = t0; r.d[1] = t1; r.d[2] = t2; r.d[3] = t3;
+    }
     return r;
+}
+#endif
+
+CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
+#if defined(__CUDA_ARCH__)
+    uint64_t t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) {
+        uint64_t carry = 0;
+        for (int j = 0; j < 4; ++j) {
+            uint64_t prod_lo = a.d[i] * b.d[j];
+            uint64_t prod_hi = __umul64hi(a.d[i], b.d[j]);
+            unsigned long long c1 = 0, c2 = 0;
+            asm volatile(
+                "add.cc.u64 %0, %0, %3;\n\t"
+                "addc.u64 %1, 0, 0;\n\t"
+                : "+l"(t[i + j]), "=l"(c1)
+                : "l"(prod_lo)
+            );
+            asm volatile(
+                "add.cc.u64 %0, %0, %3;\n\t"
+                "addc.u64 %1, 0, 0;\n\t"
+                : "+l"(t[i + j]), "=l"(c2)
+                : "l"(carry)
+            );
+            carry = prod_hi + c1 + c2;
+        }
+        t[i + 4] = carry;
+    }
+    return fe_reduce_cuda(t);
+#elif (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && defined(__ADX__)
+    uint64_t r0, r1, r2, r3, r4, r5, r6, r7;
+    uint64_t zero = 0;
+    asm volatile(
+        "xorq %4, %4\n\t"
+        "movq 0(%8), %%rdx\n\t"
+        "mulxq 0(%9), %0, %1\n\t"
+        "mulxq 8(%9), %%rax, %2\n\t"
+        "addq %%rax, %1\n\t"
+        "mulxq 16(%9), %%rax, %3\n\t"
+        "adcq %%rax, %2\n\t"
+        "mulxq 24(%9), %%rax, %4\n\t"
+        "adcq %%rax, %3\n\t"
+        "adcq $0, %4\n\t"
+
+        "movq 8(%8), %%rdx\n\t"
+        "mulxq 0(%9), %%rax, %%rbx\n\t"
+        "addq %%rax, %1\n\t"
+        "adcq %%rbx, %2\n\t"
+        "mulxq 8(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %2\n\t"
+        "adcq %%rbx, %3\n\t"
+        "mulxq 16(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %3\n\t"
+        "adcq %%rbx, %4\n\t"
+        "mulxq 24(%9), %%rax, %5\n\t"
+        "adcq %%rax, %4\n\t"
+        "adcq $0, %5\n\t"
+
+        "movq 16(%8), %%rdx\n\t"
+        "mulxq 0(%9), %%rax, %%rbx\n\t"
+        "addq %%rax, %2\n\t"
+        "adcq %%rbx, %3\n\t"
+        "mulxq 8(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %3\n\t"
+        "adcq %%rbx, %4\n\t"
+        "mulxq 16(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %4\n\t"
+        "adcq %%rbx, %5\n\t"
+        "mulxq 24(%9), %%rax, %6\n\t"
+        "adcq %%rax, %5\n\t"
+        "adcq $0, %6\n\t"
+
+        "movq 24(%8), %%rdx\n\t"
+        "mulxq 0(%9), %%rax, %%rbx\n\t"
+        "addq %%rax, %3\n\t"
+        "adcq %%rbx, %4\n\t"
+        "mulxq 8(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %4\n\t"
+        "adcq %%rbx, %5\n\t"
+        "mulxq 16(%9), %%rax, %%rbx\n\t"
+        "adcq %%rax, %5\n\t"
+        "adcq %%rbx, %6\n\t"
+        "mulxq 24(%9), %%rax, %7\n\t"
+        "adcq %%rax, %6\n\t"
+        "adcq $0, %7\n\t"
+        : "=&r"(r0), "=&r"(r1), "=&r"(r2), "=&r"(r3),
+          "=&r"(r4), "=&r"(r5), "=&r"(r6), "=&r"(r7)
+        : "r"(a.d), "r"(b.d)
+        : "%rax", "%rbx", "%rdx", "cc", "memory"
+    );
+
+    uint64_t t[8] = { r0, r1, r2, r3, r4, r5, r6, r7 };
+    u128 c = 0;
+    const uint64_t K = 0x1000003D1ULL;
+    for (int i = 0; i < 4; ++i) {
+        u128 hi = t[4 + i];
+        u128 prod = hi * K;
+        c += (u128)t[i] + (uint64_t)prod;
+        t[i] = (uint64_t)c;
+        c >>= 64;
+        c += (u128)t[i + 1] + (prod >> 64);
+        t[i + 1] = (uint64_t)c;
+        c >>= 64;
+    }
+    for (int i = 4; i < 7; ++i) {
+        c += t[i];
+        t[i] = (uint64_t)c;
+        c >>= 64;
+    }
+    uint64_t carry_top = t[7] + (uint64_t)c;
+    u128 c2 = (u128)carry_top * K;
+    for (int i = 0; i < 4; ++i) {
+        c2 += t[i];
+        t[i] = (uint64_t)c2;
+        c2 >>= 64;
+    }
+    while (c2 != 0) {
+        u128 extra = c2 * K;
+        c2 = 0;
+        for (int i = 0; i < 4; ++i) {
+            extra += t[i];
+            t[i] = (uint64_t)extra;
+            extra >>= 64;
+        }
+        c2 = extra;
+    }
+    Fe r;
+    for (int i = 0; i < 4; ++i) r.d[i] = t[i];
+    const uint64_t P[4] = { 0xFFFFEEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    unsigned char borrow = 0;
+    uint64_t sub_t[4];
+    borrow = _subborrow_u64(borrow, r.d[0], P[0], (unsigned long long*)&sub_t[0]);
+    borrow = _subborrow_u64(borrow, r.d[1], P[1], (unsigned long long*)&sub_t[1]);
+    borrow = _subborrow_u64(borrow, r.d[2], P[2], (unsigned long long*)&sub_t[2]);
+    borrow = _subborrow_u64(borrow, r.d[3], P[3], (unsigned long long*)&sub_t[3]);
+    if (!borrow) {
+        for (int i = 0; i < 4; ++i) r.d[i] = sub_t[i];
+    }
+    return r;
+#else
+    u128 t[8] = {0};
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            t[i + j] += (u128)a.d[i] * b.d[j];
+        }
+    }
+    u128 carry = 0;
+    uint64_t t64[8];
+    for (int i = 0; i < 8; ++i) {
+        carry += t[i];
+        t64[i] = (uint64_t)carry;
+        carry >>= 64;
+    }
+    const uint64_t K = 0x1000003D1ULL;
+    u128 c = 0;
+    for (int i = 0; i < 4; ++i) {
+        u128 hi = t64[4 + i];
+        u128 prod = hi * K;
+        c += (u128)t64[i] + (uint64_t)prod;
+        t64[i] = (uint64_t)c;
+        c >>= 64;
+        c += (u128)t64[i + 1] + (prod >> 64);
+        t64[i + 1] = (uint64_t)c;
+        c >>= 64;
+    }
+    for (int i = 4; i < 7; ++i) {
+        c += t64[i];
+        t64[i] = (uint64_t)c;
+        c >>= 64;
+    }
+    uint64_t carry_top = t64[7] + (uint64_t)c;
+    u128 c2 = (u128)carry_top * K;
+    for (int i = 0; i < 4; ++i) {
+        c2 += t64[i];
+        t64[i] = (uint64_t)c2;
+        c2 >>= 64;
+    }
+    while (c2 != 0) {
+        u128 extra = c2 * K;
+        c2 = 0;
+        for (int i = 0; i < 4; ++i) {
+            extra += t64[i];
+            t64[i] = (uint64_t)extra;
+            extra >>= 64;
+        }
+        c2 = extra;
+    }
+    Fe r;
+    for (int i = 0; i < 4; ++i) r.d[i] = t64[i];
+    const uint64_t P[4] = { 0xFFFFEEFFFFFC2FULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL };
+    u128 b_borrow = 0;
+    uint64_t sub_t[4];
+    for (int i = 0; i < 4; ++i) {
+        u128 diff = (u128)r.d[i] - P[i] - b_borrow;
+        sub_t[i] = (uint64_t)diff;
+        b_borrow = (diff >> 127) & 1;
+    }
+    if (!b_borrow) {
+        for (int i = 0; i < 4; ++i) r.d[i] = sub_t[i];
+    }
+    return r;
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-    uint64_t t[8] = {0};
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-
-    u128 c = a0 * a1; t[1] = (uint64_t)c; c >>= 64;
-    c += a0 * a2; t[2] = (uint64_t)c; c >>= 64;
-    c += a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
-
-    c = (u128)t[3] + a1 * a2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
-
-    c = (u128)t[5] + a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
-
-    uint64_t carry = 0;
-    for (int i = 1; i < 7; ++i) {
-        uint64_t v = (t[i] << 1) | carry;
-        carry = t[i] >> 63;
-        t[i] = v;
-    }
-    t[7] = carry;
-
-    c = (u128)t[0] + a0 * a0; t[0] = (uint64_t)c; c >>= 64;
-    c += (u128)t[1]; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3]; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5]; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
-    t[7] += (uint64_t)c;
-
-    u128 red_carry = 0;
-    for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + red_carry;
-        t[i] = (uint64_t)prod;
-        red_carry = prod >> 64;
-    }
-    u128 c2 = (u128)t[0] + (u128)red_carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
-    if (extra) {
-        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
-    }
-
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
-    }
-    Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
-    return r;
+    return fe_mul(a, a);
 }
-#endif
-
-#endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
-    // Addition chain for secp256k1 field inversion: a^(p - 2) mod p
-    // p - 2 = 2^256 - 2^32 - 979
-    // Requires only ~255 squarings and 14 multiplications (total 269 ops instead of 510 ops)
-    Fe x2, x3, x6, x9, x11, x22, x44, x88, x176, x220, x223, t;
+    Fe x2 = fe_mul(fe_sqr(a), a);
+    Fe x3 = fe_mul(fe_sqr(x2), a);
+    Fe x6 = x3;
+    for (int i = 0; i < 3; ++i) x6 = fe_sqr(x6);
+    x6 = fe_mul(x6, x3);
 
-    // x2 = a^3 = a^(2^2 - 1)
-    t = fe_sqr(a);
-    x2 = fe_mul(t, a);
+    Fe x12 = x6;
+    for (int i = 0; i < 6; ++i) x12 = fe_sqr(x12);
+    x12 = fe_mul(x12, x6);
 
-    // x3 = a^(2^3 - 1)
-    t = fe_sqr(x2);
-    x3 = fe_mul(t, a);
+    Fe x24 = x12;
+    for (int i = 0; i < 12; ++i) x24 = fe_sqr(x24);
+    x24 = fe_mul(x24, x12);
 
-    // x6 = a^(2^6 - 1)
-    t = x3;
-    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
-    x6 = fe_mul(t, x3);
+    Fe x30 = x24;
+    for (int i = 0; i < 6; ++i) x30 = fe_sqr(x30);
+    x30 = fe_mul(x30, x6);
 
-    // x9 = a^(2^9 - 1)
-    t = x6;
-    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
-    x9 = fe_mul(t, x3);
+    Fe x31 = fe_mul(fe_sqr(x30), a);
 
-    // x11 = a^(2^11 - 1)
-    t = x9;
-    for (int i = 0; i < 2; ++i) t = fe_sqr(t);
-    x11 = fe_mul(t, x2);
+    Fe t = x31;
+    for (int i = 0; i < 31; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x31);
 
-    // x22 = a^(2^22 - 1)
-    t = x11;
-    for (int i = 0; i < 11; ++i) t = fe_sqr(t);
-    x22 = fe_mul(t, x11);
+    for (int i = 0; i < 62; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x31);
 
-    // x44 = a^(2^44 - 1)
-    t = x22;
-    for (int i = 0; i < 22; ++i) t = fe_sqr(t);
-    x44 = fe_mul(t, x22);
+    for (int i = 0; i < 31; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x31);
 
-    // x88 = a^(2^88 - 1)
-    t = x44;
-    for (int i = 0; i < 44; ++i) t = fe_sqr(t);
-    x88 = fe_mul(t, x44);
+    for (int i = 0; i < 62; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x31);
 
-    // x176 = a^(2^176 - 1)
-    t = x88;
-    for (int i = 0; i < 88; ++i) t = fe_sqr(t);
-    x176 = fe_mul(t, x88);
+    for (int i = 0; i < 32; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x31);
 
-    // x220 = a^(2^220 - 1)
-    t = x176;
-    for (int i = 0; i < 44; ++i) t = fe_sqr(t);
-    x220 = fe_mul(t, x44);
+    for (int i = 0; i < 5; ++i) t = fe_sqr(t);
+    t = fe_mul(t, x30);
 
-    // x223 = a^(2^223 - 1)
-    t = x220;
-    for (int i = 0; i < 3; ++i) t = fe_sqr(t);
-    x223 = fe_mul(t, x3);
-
-    // Remaining 33 bits: 0 1111111111111111111111 0000 1 0 11 0 1
-    // 1. Bit 223 is '0': 1 squaring
-    t = fe_sqr(x223);
-
-    // 2. 22 ones ('1'*22): 22 squarings, multiply by x22
-    for (int i = 0; i < 22; ++i) t = fe_sqr(t);
-    t = fe_mul(t, x22);
-
-    // 3. 4 zeros ('0000'): 4 squarings
-    for (int i = 0; i < 4; ++i) t = fe_sqr(t);
-
-    // 4. '1': 1 squaring, multiply by a
+    t = fe_sqr(t);
     t = fe_sqr(t);
     t = fe_mul(t, a);
 
-    // 5. '0': 1 squaring
-    t = fe_sqr(t);
-
-    // 6. '11': 2 squarings, multiply by x2
-    t = fe_sqr(fe_sqr(t));
-    t = fe_mul(t, x2);
-
-    // 7. '0': 1 squaring
-    t = fe_sqr(t);
-
-    // 8. '1': 1 squaring, multiply by a
     t = fe_sqr(t);
     t = fe_mul(t, a);
 
+    t = fe_sqr(t);
     return t;
 }
 
@@ -1094,181 +749,151 @@ struct AffinePoint {
 };
 
 struct JacobianPoint {
-    Fe X;
-    Fe Y;
-    Fe Z;
+    Fe x;
+    Fe y;
+    Fe z;
+    bool infinity;
 };
 
 CUDA_HOSTDEV CUDA_INLINE AffinePoint get_generator_G() {
     AffinePoint G;
-    G.x.d[0] = 0x59F2815B16F81798ULL; G.x.d[1] = 0x029BFCDB2DCE28D9ULL;
-    G.x.d[2] = 0x55A06295CE870B07ULL; G.x.d[3] = 0x79BE667EF9DCBBACULL;
-    G.y.d[0] = 0x9C47D08FFB10D4B8ULL; G.y.d[1] = 0xFD17B448A6855419ULL;
-    G.y.d[2] = 0x5DA4FBFC0E1108A8ULL; G.y.d[3] = 0x483ADA7726A3C465ULL;
+    G.x.d[0] = 0x59F2815B16F81798ULL;
+    G.x.d[1] = 0x029BFCDB2DCE28D9ULL;
+    G.x.d[2] = 0x55A06295CE870B07ULL;
+    G.x.d[3] = 0x79BE667EF9DCBBACULL;
+
+    G.y.d[0] = 0x9C47D08FFB10D4B8ULL;
+    G.y.d[1] = 0xFD17B448A6855419ULL;
+    G.y.d[2] = 0x5DA4FBFC0E1108A8ULL;
+    G.y.d[3] = 0x483ADA7726A3C465ULL;
     return G;
 }
 
-#if defined(__CUDACC__)
-CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k);
-__device__ __constant__ AffinePoint dev_G_table[16];
-static void build_dev_G_table() {
-    AffinePoint table[16];
-    table[0] = {{0,0,0,0}, {0,0,0,0}};
-    table[1] = get_generator_G();
-    for (int i = 2; i <= 15; ++i) {
-        table[i] = scalar_mul_G(u256((uint64_t)i));
-    }
-    cudaMemcpyToSymbol(dev_G_table, table, sizeof(table));
-}
-#endif
-
-CUDA_HOSTDEV CUDA_INLINE void jacobian_double(JacobianPoint& R, const JacobianPoint& P) {
-    if (fe_is_zero(P.Y)) {
-        R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
-        return;
-    }
-    Fe XX = fe_sqr(P.X);
-    Fe YY = fe_sqr(P.Y);
+CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_double(const JacobianPoint& p) {
+    if (p.infinity || fe_is_zero(p.y)) return p;
+    Fe XX = fe_sqr(p.x);
+    Fe YY = fe_sqr(p.y);
     Fe YYYY = fe_sqr(YY);
-    Fe ZZ = fe_sqr(P.Z);
+    Fe ZZ = fe_sqr(p.z);
 
-    Fe S = fe_mul(P.X, YY);
+    Fe S = fe_add(p.x, YY);
+    S = fe_sub(fe_sqr(S), XX);
+    S = fe_sub(S, YYYY);
     S = fe_add(S, S);
-    S = fe_add(S, S);
 
-    Fe M = fe_add(XX, XX);
-    M = fe_add(M, XX);
+    Fe M = fe_add(fe_add(XX, XX), XX);
 
-    Fe M2 = fe_sqr(M);
-    Fe out_X = fe_sub(fe_sub(M2, S), S);
+    Fe T = fe_sub(fe_sqr(M), fe_add(S, S));
 
-    Fe Y8 = fe_add(YYYY, YYYY);
-    Y8 = fe_add(Y8, Y8);
-    Y8 = fe_add(Y8, Y8);
-    Fe out_Y = fe_sub(fe_mul(M, fe_sub(S, out_X)), Y8);
+    JacobianPoint r;
+    r.infinity = false;
+    r.x = T;
 
-    Fe out_Z = fe_add(fe_mul(P.Y, P.Z), fe_mul(P.Y, P.Z));
+    Fe YYYY8 = fe_add(YYYY, YYYY);
+    YYYY8 = fe_add(YYYY8, YYYY8);
+    YYYY8 = fe_add(YYYY8, YYYY8);
 
-    R.X = out_X;
-    R.Y = out_Y;
-    R.Z = out_Z;
+    r.y = fe_sub(fe_mul(M, fe_sub(S, T)), YYYY8);
+
+    Fe YZ = fe_add(p.y, p.z);
+    r.z = fe_sub(fe_sub(fe_sqr(YZ), YY), ZZ);
+    return r;
 }
 
-CUDA_HOSTDEV CUDA_INLINE void jacobian_add_affine(JacobianPoint& R, const JacobianPoint& P, const AffinePoint& Q) {
-    if (fe_is_zero(P.Z)) {
-        R.X = Q.x; R.Y = Q.y; R.Z = {{1, 0, 0, 0}};
-        return;
+CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_add_affine(const JacobianPoint& p, const AffinePoint& a) {
+    if (p.infinity) {
+        JacobianPoint r;
+        r.x = a.x;
+        r.y = a.y;
+        r.z.d[0] = 1; r.z.d[1] = 0; r.z.d[2] = 0; r.z.d[3] = 0;
+        r.infinity = false;
+        return r;
     }
-    Fe Z1Z1 = fe_sqr(P.Z);
-    Fe Z1_3 = fe_mul(Z1Z1, P.Z);
+    Fe Z1Z1 = fe_sqr(p.z);
+    Fe U2 = fe_mul(a.x, Z1Z1);
+    Fe S2 = fe_mul(fe_mul(a.y, p.z), Z1Z1);
 
-    Fe U2 = fe_mul(Q.x, Z1Z1);
-    Fe S2 = fe_mul(Q.y, Z1_3);
+    Fe H = fe_sub(U2, p.x);
+    Fe R = fe_sub(S2, p.y);
 
-    Fe H = fe_sub(U2, P.X);
-    Fe r = fe_sub(S2, P.Y);
-
-    Fe HH = fe_sqr(H);
-    Fe HHH = fe_mul(HH, H);
-    Fe V = fe_mul(P.X, HH);
-
-    Fe r2 = fe_sqr(r);
-    Fe out_X = fe_sub(fe_sub(r2, HHH), fe_add(V, V));
-
-    Fe out_Y = fe_sub(fe_mul(r, fe_sub(V, out_X)), fe_mul(P.Y, HHH));
-
-    Fe out_Z = fe_mul(P.Z, H);
-
-    R.X = out_X;
-    R.Y = out_Y;
-    R.Z = out_Z;
-}
-
-CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& P) {
-    AffinePoint out;
-    Fe Zinv = fe_inv(P.Z);
-    Fe Zinv2 = fe_sqr(Zinv);
-    Fe Zinv3 = fe_mul(Zinv2, Zinv);
-    out.x = fe_mul(P.X, Zinv2);
-    out.y = fe_mul(P.Y, Zinv3);
-    return out;
-}
-
-CUDA_HOSTDEV AffinePoint scalar_mul_G(const u256& k) {
-    AffinePoint G = get_generator_G();
-    JacobianPoint R;
-    R.X = {{0, 0, 0, 0}}; R.Y = {{0, 0, 0, 0}}; R.Z = {{0, 0, 0, 0}};
-    bool init = false;
-
-    uint64_t limbs[4] = {
-        (uint64_t)k.low,
-        (uint64_t)(k.low >> 64),
-        (uint64_t)k.high,
-        (uint64_t)(k.high >> 64)
-    };
-
-    int top_limb = 3;
-    while (top_limb > 0 && limbs[top_limb] == 0) {
-        top_limb--;
-    }
-    if (limbs[top_limb] == 0) {
-        return jacobian_to_affine(R);
-    }
-
-#if defined(__CUDA_ARCH__)
-    int top_bit = 63 - __clzll((long long)limbs[top_limb]);
-#else
-    int top_bit = 63 - __builtin_clzll(limbs[top_limb]);
-#endif
-
-    for (int i = top_limb; i >= 0; --i) {
-        uint64_t w = limbs[i];
-        int start_b = (i == top_limb) ? top_bit : 63;
-        for (int b = start_b; b >= 0; --b) {
-            if (init) {
-                jacobian_double(R, R);
-            }
-            if ((w >> b) & 1) {
-                if (!init) {
-                    R.X = G.x;
-                    R.Y = G.y;
-                    R.Z = {{1, 0, 0, 0}};
-                    init = true;
-                } else {
-                    jacobian_add_affine(R, R, G);
-                }
-            }
+    if (fe_is_zero(H)) {
+        if (fe_is_zero(R)) {
+            return jacobian_double(p);
+        } else {
+            JacobianPoint inf;
+            inf.infinity = true;
+            return inf;
         }
     }
-    return jacobian_to_affine(R);
+
+    Fe HH = fe_sqr(H);
+    Fe HHH = fe_mul(H, HH);
+    Fe V = fe_mul(p.x, HH);
+
+    JacobianPoint res;
+    res.infinity = false;
+    res.x = fe_sub(fe_sub(fe_sqr(R), HHH), fe_add(V, V));
+    res.y = fe_sub(fe_mul(R, fe_sub(V, res.x)), fe_mul(p.y, HHH));
+    res.z = fe_mul(p.z, H);
+    return res;
 }
 
-#if defined(__CUDA_ARCH__)
+CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& p) {
+    AffinePoint a;
+    if (p.infinity) {
+        std::memset(&a, 0, sizeof(a));
+        return a;
+    }
+    Fe z_inv = fe_inv(p.z);
+    Fe z_inv2 = fe_sqr(z_inv);
+    Fe z_inv3 = fe_mul(z_inv2, z_inv);
+    a.x = fe_mul(p.x, z_inv2);
+    a.y = fe_mul(p.y, z_inv3);
+    return a;
+}
+
+CUDA_HOSTDEV CUDA_INLINE AffinePoint scalar_mul_G(const uint64_t scalar[4]) {
+    JacobianPoint res;
+    res.infinity = true;
+    AffinePoint G = get_generator_G();
+    JacobianPoint base;
+    base.x = G.x;
+    base.y = G.y;
+    base.z.d[0] = 1; base.z.d[1] = 0; base.z.d[2] = 0; base.z.d[3] = 0;
+    base.infinity = false;
+
+    for (int limb = 0; limb < 4; ++limb) {
+        uint64_t w = scalar[limb];
+        for (int b = 0; b < 64; ++b) {
+            if ((w >> b) & 1) {
+                res = jacobian_add_affine(res, jacobian_to_affine(base));
+            }
+            base = jacobian_double(base);
+        }
+    }
+    return jacobian_to_affine(res);
+}
+
+#ifdef __CUDACC__
+__constant__ AffinePoint dev_G_table[16];
+__device__ int dev_found_flag = 0;
+__device__ uint64_t dev_found_offset = 0;
+__constant__ uint32_t dev_target_w[5];
+__constant__ uint64_t dev_target_h64;
+
 CUDA_DEV CUDA_INLINE uint32_t ror32_gpu(uint32_t x, int n) {
-    return __funnelshift_r(x, x, n);
-}
-CUDA_DEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
-    return __funnelshift_l(x, x, n);
-}
-#else
-CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_gpu(uint32_t x, int n) {
     return (x >> n) | (x << (32 - n));
 }
-CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
+
+CUDA_DEV CUDA_INLINE uint32_t rol32_gpu(uint32_t x, int n) {
     return (x << n) | (x >> (32 - n));
 }
-#endif
 
-#if defined(__CUDA_ARCH__)
 CUDA_DEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
     return __byte_perm(x, 0, 0x0123);
 }
-#define BSWAP32_GPU(x) bswap32_dev(x)
-#else
-#define BSWAP32_GPU(x) __builtin_bswap32(x)
-#endif
 
-CUDA_CONST uint32_t K_SHA256_GPU[64] = {
+__constant__ uint32_t K_SHA256_GPU[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -1278,359 +903,299 @@ CUDA_CONST uint32_t K_SHA256_GPU[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
-#ifndef K_SHA256
-#define K_SHA256 K_SHA256_GPU
-#endif
 
-CUDA_DEV void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
-    uint32_t w[16];
-    uint64_t d3 = x.d[3], d2 = x.d[2], d1 = x.d[1], d0 = x.d[0];
-    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
-    w[1] = (uint32_t)(d3 >> 8);
-    w[2] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
-    w[3] = (uint32_t)(d2 >> 8);
-    w[4] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
-    w[5] = (uint32_t)(d1 >> 8);
-    w[6] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
-    w[7] = (uint32_t)(d0 >> 8);
-    w[8] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
+CUDA_DEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
+    uint32_t w[64];
+    w[0] = ((uint32_t)prefix << 24) | ((uint32_t)(x.d[3] >> 56) << 16) | (((uint32_t)(x.d[3] >> 48) & 0xFF) << 8) | (((uint32_t)(x.d[3] >> 40) & 0xFF));
+    w[1] = (((uint32_t)(x.d[3] >> 32) & 0xFF) << 24) | (((uint32_t)(x.d[3] >> 24) & 0xFF) << 16) | (((uint32_t)(x.d[3] >> 16) & 0xFF) << 8) | (((uint32_t)(x.d[3] >> 8) & 0xFF));
+    w[2] = (((uint32_t)x.d[3] & 0xFF) << 24) | (((uint32_t)(x.d[2] >> 56) & 0xFF) << 16) | (((uint32_t)(x.d[2] >> 48) & 0xFF) << 8) | (((uint32_t)(x.d[2] >> 40) & 0xFF));
+    w[3] = (((uint32_t)(x.d[2] >> 32) & 0xFF) << 24) | (((uint32_t)(x.d[2] >> 24) & 0xFF) << 16) | (((uint32_t)(x.d[2] >> 16) & 0xFF) << 8) | (((uint32_t)(x.d[2] >> 8) & 0xFF));
+    w[4] = (((uint32_t)x.d[2] & 0xFF) << 24) | (((uint32_t)(x.d[1] >> 56) & 0xFF) << 16) | (((uint32_t)(x.d[1] >> 48) & 0xFF) << 8) | (((uint32_t)(x.d[1] >> 40) & 0xFF));
+    w[5] = (((uint32_t)(x.d[1] >> 32) & 0xFF) << 24) | (((uint32_t)(x.d[1] >> 24) & 0xFF) << 16) | (((uint32_t)(x.d[1] >> 16) & 0xFF) << 8) | (((uint32_t)(x.d[1] >> 8) & 0xFF));
+    w[6] = (((uint32_t)x.d[1] & 0xFF) << 24) | (((uint32_t)(x.d[0] >> 56) & 0xFF) << 16) | (((uint32_t)(x.d[0] >> 48) & 0xFF) << 8) | (((uint32_t)(x.d[0] >> 40) & 0xFF));
+    w[7] = (((uint32_t)(x.d[0] >> 32) & 0xFF) << 24) | (((uint32_t)(x.d[0] >> 24) & 0xFF) << 16) | (((uint32_t)(x.d[0] >> 16) & 0xFF) << 8) | (((uint32_t)(x.d[0] >> 8) & 0xFF));
+    w[8] = (((uint32_t)x.d[0] & 0xFF) << 24) | 0x00800000;
     w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
     w[15] = 264;
+
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = ror32_gpu(w[i - 15], 7) ^ ror32_gpu(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = ror32_gpu(w[i - 2], 17) ^ ror32_gpu(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-#define SHA256_STEP_GPU(a, b, c, d, e, f, g, h, kw) do { \
-    uint32_t S1 = ror32_gpu(e, 6) ^ ror32_gpu(e, 11) ^ ror32_gpu(e, 25); \
-    uint32_t ch = g ^ (e & (f ^ g)); \
-    uint32_t temp1 = h + S1 + ch + (kw); \
-    uint32_t S0 = ror32_gpu(a, 2) ^ ror32_gpu(a, 13) ^ ror32_gpu(a, 22); \
-    uint32_t maj = (a & b) | (c & (a ^ b)); \
-    uint32_t temp2 = S0 + maj; \
-    d += temp1; \
-    h = temp1 + temp2; \
-} while (0)
-
-    #pragma unroll
-    for (int i = 0; i < 16; i += 8) {
-        SHA256_STEP_GPU(a, b, c, d, e, f, g, h, K_SHA256_GPU[i] + w[i]);
-        SHA256_STEP_GPU(h, a, b, c, d, e, f, g, K_SHA256_GPU[i+1] + w[i+1]);
-        SHA256_STEP_GPU(g, h, a, b, c, d, e, f, K_SHA256_GPU[i+2] + w[i+2]);
-        SHA256_STEP_GPU(f, g, h, a, b, c, d, e, K_SHA256_GPU[i+3] + w[i+3]);
-        SHA256_STEP_GPU(e, f, g, h, a, b, c, d, K_SHA256_GPU[i+4] + w[i+4]);
-        SHA256_STEP_GPU(d, e, f, g, h, a, b, c, K_SHA256_GPU[i+5] + w[i+5]);
-        SHA256_STEP_GPU(c, d, e, f, g, h, a, b, K_SHA256_GPU[i+6] + w[i+6]);
-        SHA256_STEP_GPU(b, c, d, e, f, g, h, a, K_SHA256_GPU[i+7] + w[i+7]);
+    #pragma unroll 64
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = ror32_gpu(e, 6) ^ ror32_gpu(e, 11) ^ ror32_gpu(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t t1 = h + S1 + ch + K_SHA256_GPU[i] + w[i];
+        uint32_t S0 = ror32_gpu(a, 2) ^ ror32_gpu(a, 13) ^ ror32_gpu(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2 = S0 + maj;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
     }
 
-    #pragma unroll
-    for (int i = 16; i < 64; i += 8) {
-        #pragma unroll
-        for (int k = 0; k < 8; ++k) {
-            int idx = i + k;
-            uint32_t s0 = ror32_gpu(w[(idx-15)&15], 7) ^ ror32_gpu(w[(idx-15)&15], 18) ^ (w[(idx-15)&15] >> 3);
-            uint32_t s1 = ror32_gpu(w[(idx-2)&15], 17) ^ ror32_gpu(w[(idx-2)&15], 19) ^ (w[(idx-2)&15] >> 10);
-            w[idx & 15] = w[(idx-16)&15] + s0 + w[(idx-7)&15] + s1;
-        }
-        SHA256_STEP_GPU(a, b, c, d, e, f, g, h, K_SHA256_GPU[i]   + w[i&15]);
-        SHA256_STEP_GPU(h, a, b, c, d, e, f, g, K_SHA256_GPU[i+1] + w[(i+1)&15]);
-        SHA256_STEP_GPU(g, h, a, b, c, d, e, f, K_SHA256_GPU[i+2] + w[(i+2)&15]);
-        SHA256_STEP_GPU(f, g, h, a, b, c, d, e, K_SHA256_GPU[i+3] + w[(i+3)&15]);
-        SHA256_STEP_GPU(e, f, g, h, a, b, c, d, K_SHA256_GPU[i+4] + w[(i+4)&15]);
-        SHA256_STEP_GPU(d, e, f, g, h, a, b, c, K_SHA256_GPU[i+5] + w[(i+5)&15]);
-        SHA256_STEP_GPU(c, d, e, f, g, h, a, b, K_SHA256_GPU[i+6] + w[(i+6)&15]);
-        SHA256_STEP_GPU(b, c, d, e, f, g, h, a, K_SHA256_GPU[i+7] + w[(i+7)&15]);
-    }
-#undef SHA256_STEP_GPU
-
-    X[0] = BSWAP32_GPU(0x6a09e667 + a);
-    X[1] = BSWAP32_GPU(0xbb67ae85 + b);
-    X[2] = BSWAP32_GPU(0x3c6ef372 + c);
-    X[3] = BSWAP32_GPU(0xa54ff53a + d);
-    X[4] = BSWAP32_GPU(0x510e527f + e);
-    X[5] = BSWAP32_GPU(0x9b05688c + f);
-    X[6] = BSWAP32_GPU(0x1f83d9ab + g);
-    X[7] = BSWAP32_GPU(0x5be0cd19 + h);
-    X[8] = 0x00000080U;
+    X[0] = bswap32_dev(a + 0x6a09e667);
+    X[1] = bswap32_dev(b + 0xbb67ae85);
+    X[2] = bswap32_dev(c + 0x3c6ef372);
+    X[3] = bswap32_dev(d + 0xa54ff53a);
+    X[4] = bswap32_dev(e + 0x510e527f);
+    X[5] = bswap32_dev(f + 0x9b05688c);
+    X[6] = bswap32_dev(g + 0x1f83d9ab);
+    X[7] = bswap32_dev(h + 0x5be0cd19);
+    X[8] = 0x00000080;
     X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
     X[14] = 256;
     X[15] = 0;
 }
 
-CUDA_CONST uint8_t rl_gpu[80] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
-    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
-    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
-    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
-};
-CUDA_CONST uint8_t sl_gpu[80] = {
-    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
-    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
-    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
-    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
-    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
-};
-CUDA_CONST uint8_t rr_gpu[80] = {
-    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
-    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
-    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
-    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
-    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
-};
-CUDA_CONST uint8_t sr_gpu[80] = {
-    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
-    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
-    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
-    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
-    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
-};
+CUDA_DEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t out[5]) {
+    uint32_t a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476, e = 0xc3d2e1f0;
+    uint32_t aa = a, bb = b, cc = c, dd = d, ee = e;
 
-CUDA_DEV void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
+    #define R1(A,B,C,D,E,x,s) { A += (B ^ C ^ D) + x; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    R1(a, b, c, d, e, X[0], 11);  R1(e, a, b, c, d, X[1], 14);
+    R1(d, e, a, b, c, X[2], 15);  R1(c, d, e, a, b, X[3], 12);
+    R1(b, c, d, e, a, X[4], 5);   R1(a, b, c, d, e, X[5], 8);
+    R1(e, a, b, c, d, X[6], 7);   R1(d, e, a, b, c, X[7], 9);
+    R1(c, d, e, a, b, X[8], 11);  R1(b, c, d, e, a, X[9], 13);
+    R1(a, b, c, d, e, X[10], 14); R1(e, a, b, c, d, X[11], 15);
+    R1(d, e, a, b, c, X[12], 6);  R1(c, d, e, a, b, X[13], 7);
+    R1(b, c, d, e, a, X[14], 9);  R1(a, b, c, d, e, X[15], 8);
 
-    #pragma unroll
-    for (int j = 0; j < 16; ++j) {
-        uint32_t f = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]], sl_gpu[j]) + E;
-        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x50A28BE6U, sr_gpu[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    #define R2(A,B,C,D,E,x,s) { A += ((B & C) | (~B & D)) + x + 0x5a827999; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    R2(e, a, b, c, d, X[7], 7);   R2(d, e, a, b, c, X[4], 6);
+    R2(c, d, e, a, b, X[13], 8);  R2(b, c, d, e, a, X[1], 13);
+    R2(a, b, c, d, e, X[10], 11); R2(e, a, b, c, d, X[6], 9);
+    R2(d, e, a, b, c, X[15], 7);  R2(c, d, e, a, b, X[3], 15);
+    R2(b, c, d, e, a, X[12], 7);  R2(a, b, c, d, e, X[0], 12);
+    R2(e, a, b, c, d, X[9], 15);  R2(d, e, a, b, c, X[5], 9);
+    R2(c, d, e, a, b, X[2], 11);  R2(b, c, d, e, a, X[14], 7);
+    R2(a, b, c, d, e, X[11], 13); R2(e, a, b, c, d, X[8], 12);
 
-    #pragma unroll
-    for (int j = 16; j < 32; ++j) {
-        uint32_t f = D ^ (B & (C ^ D));
-        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
-        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x5A827999U, sl_gpu[j]) + E;
-        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x5C4DD124U, sr_gpu[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    #define R3(A,B,C,D,E,x,s) { A += ((B | ~C) ^ D) + x + 0x6ed9eba1; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    R3(d, e, a, b, c, X[3], 11);  R3(c, d, e, a, b, X[10], 13);
+    R3(b, c, d, e, a, X[14], 6);  R3(a, b, c, d, e, X[4], 7);
+    R3(e, a, b, c, d, X[9], 14);  R3(d, e, a, b, c, X[15], 9);
+    R3(c, d, e, a, b, X[8], 13);  R3(b, c, d, e, a, X[1], 15);
+    R3(a, b, c, d, e, X[2], 14);  R3(e, a, b, c, d, X[7], 8);
+    R3(d, e, a, b, c, X[0], 13);  R3(c, d, e, a, b, X[6], 6);
+    R3(b, c, d, e, a, X[13], 5);  R3(a, b, c, d, e, X[11], 12);
+    R3(e, a, b, c, d, X[5], 7);   R3(d, e, a, b, c, X[12], 5);
 
-    #pragma unroll
-    for (int j = 32; j < 48; ++j) {
-        uint32_t f = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x6ED9EBA1U, sl_gpu[j]) + E;
-        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x6D703EF3U, sr_gpu[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    #define R4(A,B,C,D,E,x,s) { A += ((B & D) | (C & ~D)) + x + 0x8f1bbcdc; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    R4(c, d, e, a, b, X[1], 11);  R4(b, c, d, e, a, X[9], 12);
+    R4(a, b, c, d, e, X[11], 14); R4(e, a, b, c, d, X[10], 15);
+    R4(d, e, a, b, c, X[0], 14);  R4(c, d, e, a, b, X[8], 15);
+    R4(b, c, d, e, a, X[12], 9);  R4(a, b, c, d, e, X[4], 8);
+    R4(e, a, b, c, d, X[13], 9);  R4(d, e, a, b, c, X[3], 14);
+    R4(c, d, e, a, b, X[7], 5);   R4(b, c, d, e, a, X[15], 6);
+    R4(a, b, c, d, e, X[14], 8);  R4(e, a, b, c, d, X[5], 6);
+    R4(d, e, a, b, c, X[6], 5);   R4(c, d, e, a, b, X[2], 12);
 
-    #pragma unroll
-    for (int j = 48; j < 64; ++j) {
-        uint32_t f = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0x8F1BBCDCU, sl_gpu[j]) + E;
-        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]] + 0x7A6D76E9U, sr_gpu[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    #define R5(A,B,C,D,E,x,s) { A += (B ^ (C | ~D)) + x + 0xa953fd4e; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    R5(b, c, d, e, a, X[4], 9);   R5(a, b, c, d, e, X[0], 15);
+    R5(e, a, b, c, d, X[5], 5);   R5(d, e, a, b, c, X[9], 11);
+    R5(c, d, e, a, b, X[7], 6);   R5(b, c, d, e, a, X[12], 8);
+    R5(a, b, c, d, e, X[2], 13);  R5(e, a, b, c, d, X[10], 12);
+    R5(d, e, a, b, c, X[14], 5);  R5(c, d, e, a, b, X[1], 12);
+    R5(b, c, d, e, a, X[3], 13);  R5(a, b, c, d, e, X[8], 14);
+    R5(e, a, b, c, d, X[11], 11); R5(d, e, a, b, c, X[6], 8);
+    R5(c, d, e, a, b, X[15], 5);  R5(b, c, d, e, a, X[13], 6);
 
-    #pragma unroll
-    for (int j = 64; j < 80; ++j) {
-        uint32_t f = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32_gpu(A + f + X[rl_gpu[j]] + 0xA953FD4EU, sl_gpu[j]) + E;
-        A = E; E = D; D = rol32_gpu(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_gpu(Ap + fp + X[rr_gpu[j]], sr_gpu[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_gpu(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    #define RR1(A,B,C,D,E,x,s) { A += (B ^ (C | ~D)) + x + 0x50a28be6; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    RR1(aa, bb, cc, dd, ee, X[5], 8);   RR1(ee, aa, bb, cc, dd, X[14], 9);
+    RR1(dd, ee, aa, bb, cc, X[7], 9);   RR1(cc, dd, ee, aa, bb, X[0], 11);
+    RR1(bb, cc, dd, ee, aa, X[9], 13);  RR1(aa, bb, cc, dd, ee, X[2], 15);
+    RR1(ee, aa, bb, cc, dd, X[11], 15); RR1(dd, ee, aa, bb, cc, X[4], 5);
+    RR1(cc, dd, ee, aa, bb, X[13], 7);  RR1(bb, cc, dd, ee, aa, X[6], 7);
+    RR1(aa, bb, cc, dd, ee, X[15], 8);  RR1(ee, aa, bb, cc, dd, X[8], 11);
+    RR1(dd, ee, aa, bb, cc, X[1], 14);  RR1(cc, dd, ee, aa, bb, X[10], 14);
+    RR1(bb, cc, dd, ee, aa, X[3], 12);  RR1(aa, bb, cc, dd, ee, X[12], 6);
 
-    out_h[0] = 0xEFCDAB89 + C + Dp;
-    out_h[1] = 0x98BADCFE + D + Ep;
-    out_h[2] = 0x10325476 + E + Ap;
-    out_h[3] = 0xC3D2E1F0 + A + Bp;
-    out_h[4] = 0x67452301 + B + Cp;
+    #define RR2(A,B,C,D,E,x,s) { A += ((B & D) | (C & ~D)) + x + 0x5c4dd124; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    RR2(ee, aa, bb, cc, dd, X[6], 9);   RR2(dd, ee, aa, bb, cc, X[11], 13);
+    RR2(cc, dd, ee, aa, bb, X[3], 15);  RR2(bb, cc, dd, ee, aa, X[7], 7);
+    RR2(aa, bb, cc, dd, ee, X[0], 12);  RR2(ee, aa, bb, cc, dd, X[13], 8);
+    RR2(dd, ee, aa, bb, cc, X[5], 9);   RR2(cc, dd, ee, aa, bb, X[10], 11);
+    RR2(bb, cc, dd, ee, aa, X[14], 7);  RR2(aa, bb, cc, dd, ee, X[15], 7);
+    RR2(ee, aa, bb, cc, dd, X[8], 12);  RR2(dd, ee, aa, bb, cc, X[12], 7);
+    RR2(cc, dd, ee, aa, bb, X[4], 6);   RR2(bb, cc, dd, ee, aa, X[9], 15);
+    RR2(aa, bb, cc, dd, ee, X[1], 13);  RR2(ee, aa, bb, cc, dd, X[2], 11);
+
+    #define RR3(A,B,C,D,E,x,s) { A += ((B | ~C) ^ D) + x + 0x6d703ef3; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    RR3(dd, ee, aa, bb, cc, X[15], 9);  RR3(cc, dd, ee, aa, bb, X[5], 7);
+    RR3(bb, cc, dd, ee, aa, X[1], 15);  RR3(aa, bb, cc, dd, ee, X[3], 11);
+    RR3(ee, aa, bb, cc, dd, X[7], 8);   RR3(dd, ee, aa, bb, cc, X[14], 6);
+    RR3(cc, dd, ee, aa, bb, X[6], 6);   RR3(bb, cc, dd, ee, aa, X[9], 14);
+    RR3(aa, bb, cc, dd, ee, X[11], 12); RR3(ee, aa, bb, cc, dd, X[8], 13);
+    RR3(dd, ee, aa, bb, cc, X[12], 5);  RR3(cc, dd, ee, aa, bb, X[2], 14);
+    RR3(bb, cc, dd, ee, aa, X[10], 13); RR3(aa, bb, cc, dd, ee, X[0], 13);
+    RR3(ee, aa, bb, cc, dd, X[4], 7);   RR3(dd, ee, aa, bb, cc, X[13], 5);
+
+    #define RR4(A,B,C,D,E,x,s) { A += ((B & C) | (~B & D)) + x + 0x7a6d76e9; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    RR4(cc, dd, ee, aa, bb, X[8], 15);  RR4(bb, cc, dd, ee, aa, X[6], 5);
+    RR4(aa, bb, cc, dd, ee, X[4], 8);   RR4(ee, aa, bb, cc, dd, X[1], 11);
+    RR4(dd, ee, aa, bb, cc, X[3], 14);  RR4(cc, dd, ee, aa, bb, X[11], 14);
+    RR4(bb, cc, dd, ee, aa, X[15], 6);  RR4(aa, bb, cc, dd, ee, X[0], 14);
+    RR4(ee, aa, bb, cc, dd, X[5], 6);   RR4(dd, ee, aa, bb, cc, X[12], 9);
+    RR4(cc, dd, ee, aa, bb, X[2], 12);  RR4(bb, cc, dd, ee, aa, X[13], 9);
+    RR4(aa, bb, cc, dd, ee, X[9], 12);  RR4(ee, aa, bb, cc, dd, X[7], 5);
+    RR4(dd, ee, aa, bb, cc, X[10], 15); RR4(cc, dd, ee, aa, bb, X[14], 8);
+
+    #define RR5(A,B,C,D,E,x,s) { A += (B ^ C ^ D) + x; A = rol32_gpu(A, s) + E; C = rol32_gpu(C, 10); }
+    RR5(bb, cc, dd, ee, aa, X[12], 8);  RR5(aa, bb, cc, dd, ee, X[15], 5);
+    RR5(ee, aa, bb, cc, dd, X[10], 12); RR5(dd, ee, aa, bb, cc, X[4], 9);
+    RR5(cc, dd, ee, aa, bb, X[1], 12);  RR5(bb, cc, dd, ee, aa, X[5], 5);
+    RR5(aa, bb, cc, dd, ee, X[8], 14);  RR5(ee, aa, bb, cc, dd, X[7], 6);
+    RR5(dd, ee, aa, bb, cc, X[6], 8);   RR5(cc, dd, ee, aa, bb, X[2], 13);
+    RR5(bb, cc, dd, ee, aa, X[13], 6);  RR5(aa, bb, cc, dd, ee, X[14], 5);
+    RR5(ee, aa, bb, cc, dd, X[0], 15);  RR5(dd, ee, aa, bb, cc, X[3], 13);
+    RR5(cc, dd, ee, aa, bb, X[9], 11);  RR5(bb, cc, dd, ee, aa, X[11], 11);
+
+    uint32_t t = d + cc + X[0];
+    d = c + dd + X[1];
+    c = b + ee + X[2];
+    b = a + aa + X[3];
+    a = e + bb + t;
+
+    out[0] = b;
+    out[1] = c;
+    out[2] = d;
+    out[3] = e;
+    out[4] = a;
 }
 
-CUDA_DEV bool check_key_hash160(const u256& k, const uint32_t target_w[5], uint64_t target_h64) {
-    AffinePoint P = scalar_mul_G(k);
-    uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[16];
-    fast_sha256_into_ripemd_X(prefix, P.x, X);
-    uint32_t h[5];
-    fast_ripemd160_32(X, h);
-
-    uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
-    if (cur_h64 == target_h64) {
-        return (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]);
-    }
-    return false;
-}
-
-#if defined(__CUDACC__)
-__device__ int dev_found_flag = 0;
-__device__ uint64_t dev_found_offset = 0;
-__device__ uint32_t dev_target_w[5];
-__device__ uint64_t dev_target_h64;
-
-__device__ __forceinline__ uint64_t shfl_up64(uint64_t val, int delta) {
+CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
     uint32_t hi = (uint32_t)(val >> 32);
     lo = __shfl_up_sync(0xFFFFFFFF, lo, delta);
     hi = __shfl_up_sync(0xFFFFFFFF, hi, delta);
-    return ((uint64_t)hi << 32) | (uint64_t)lo;
+    return ((uint64_t)hi << 32) | lo;
 }
 
-__device__ __forceinline__ uint64_t shfl_down64(uint64_t val, int delta) {
+CUDA_DEV CUDA_INLINE uint64_t shfl_down64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
     uint32_t hi = (uint32_t)(val >> 32);
     lo = __shfl_down_sync(0xFFFFFFFF, lo, delta);
     hi = __shfl_down_sync(0xFFFFFFFF, hi, delta);
-    return ((uint64_t)hi << 32) | (uint64_t)lo;
+    return ((uint64_t)hi << 32) | lo;
 }
 
-__device__ __forceinline__ uint64_t shfl64(uint64_t val, int src_lane) {
+CUDA_DEV CUDA_INLINE uint64_t shfl64(uint64_t val, int srcLane) {
     uint32_t lo = (uint32_t)val;
     uint32_t hi = (uint32_t)(val >> 32);
-    lo = __shfl_sync(0xFFFFFFFF, lo, src_lane);
-    hi = __shfl_sync(0xFFFFFFFF, hi, src_lane);
-    return ((uint64_t)hi << 32) | (uint64_t)lo;
+    lo = __shfl_sync(0xFFFFFFFF, lo, srcLane);
+    hi = __shfl_sync(0xFFFFFFFF, hi, srcLane);
+    return ((uint64_t)hi << 32) | lo;
 }
 
-__device__ __forceinline__ Fe shfl_up_fe(const Fe& a, int delta) {
+CUDA_DEV CUDA_INLINE Fe shfl_up_fe(const Fe& f, int delta) {
     Fe r;
-    r.d[0] = shfl_up64(a.d[0], delta);
-    r.d[1] = shfl_up64(a.d[1], delta);
-    r.d[2] = shfl_up64(a.d[2], delta);
-    r.d[3] = shfl_up64(a.d[3], delta);
+    r.d[0] = shfl_up64(f.d[0], delta);
+    r.d[1] = shfl_up64(f.d[1], delta);
+    r.d[2] = shfl_up64(f.d[2], delta);
+    r.d[3] = shfl_up64(f.d[3], delta);
     return r;
 }
 
-__device__ __forceinline__ Fe shfl_down_fe(const Fe& a, int delta) {
+CUDA_DEV CUDA_INLINE Fe shfl_down_fe(const Fe& f, int delta) {
     Fe r;
-    r.d[0] = shfl_down64(a.d[0], delta);
-    r.d[1] = shfl_down64(a.d[1], delta);
-    r.d[2] = shfl_down64(a.d[2], delta);
-    r.d[3] = shfl_down64(a.d[3], delta);
+    r.d[0] = shfl_down64(f.d[0], delta);
+    r.d[1] = shfl_down64(f.d[1], delta);
+    r.d[2] = shfl_down64(f.d[2], delta);
+    r.d[3] = shfl_down64(f.d[3], delta);
     return r;
 }
 
-__device__ __forceinline__ Fe shfl_fe(const Fe& a, int src_lane) {
+CUDA_DEV CUDA_INLINE Fe shfl_fe(const Fe& f, int srcLane) {
     Fe r;
-    r.d[0] = shfl64(a.d[0], src_lane);
-    r.d[1] = shfl64(a.d[1], src_lane);
-    r.d[2] = shfl64(a.d[2], src_lane);
-    r.d[3] = shfl64(a.d[3], src_lane);
+    r.d[0] = shfl64(f.d[0], srcLane);
+    r.d[1] = shfl64(f.d[1], srcLane);
+    r.d[2] = shfl64(f.d[2], srcLane);
+    r.d[3] = shfl64(f.d[3], srcLane);
     return r;
 }
 
-__device__ __forceinline__ Fe warp_montgomery_inv(const Fe& d, int lane) {
-    Fe c = d;
+CUDA_DEV CUDA_INLINE Fe warp_montgomery_inv(const Fe& v, int lane) {
+    Fe c = v;
     #pragma unroll
-    for (int offset = 1; offset < 32; offset <<= 1) {
-        Fe prev = shfl_up_fe(c, offset);
+    for (int offset = 1; offset < 32; offset *= 2) {
+        Fe up = shfl_up_fe(c, offset);
         if (lane >= offset) {
-            c = fe_mul(c, prev);
+            c = fe_mul(c, up);
         }
     }
-
     Fe inv_total;
     if (lane == 31) {
         inv_total = fe_inv(c);
     }
     Fe inv = shfl_fe(inv_total, 31);
-
-    Fe suffix = d;
     #pragma unroll
-    for (int offset = 1; offset < 32; offset <<= 1) {
-        Fe next_val = shfl_down_fe(suffix, offset);
+    for (int offset = 16; offset >= 1; offset /= 2) {
+        Fe down = shfl_down_fe(inv, offset);
         if (lane + offset < 32) {
-            suffix = fe_mul(suffix, next_val);
+            inv = down;
         }
     }
-
-    Fe next_suffix = shfl_down_fe(suffix, 1);
-    Fe inv_c;
-    if (lane == 31) {
-        inv_c = inv;
-    } else {
-        inv_c = fe_mul(inv, next_suffix);
+    Fe prev_c;
+    if (lane > 0) {
+        prev_c = shfl_up_fe(c, 1);
+        inv = fe_mul(inv, prev_c);
     }
-
-    Fe prev_c = shfl_up_fe(c, 1);
-    if (lane == 0) {
-        return inv_c;
-    } else {
-        return fe_mul(inv_c, prev_c);
-    }
+    return inv;
 }
 
-__device__ __forceinline__ AffinePoint warp_montgomery_add_affine(
-    const AffinePoint& P,
-    const AffinePoint& G_delta,
-    int lane
-) {
-    Fe dx = fe_sub(P.x, G_delta.x);
-    Fe dy = fe_sub(P.y, G_delta.y);
+CUDA_DEV CUDA_INLINE AffinePoint warp_montgomery_add_affine(const AffinePoint& P, const AffinePoint& Q, int lane) {
+    Fe dx = fe_sub(Q.x, P.x);
+    Fe dy = fe_sub(Q.y, P.y);
     Fe inv_dx = warp_montgomery_inv(dx, lane);
     Fe lambda = fe_mul(dy, inv_dx);
     Fe lambda2 = fe_sqr(lambda);
-    Fe x3 = fe_sub(fe_sub(lambda2, P.x), G_delta.x);
-    Fe diff_x = fe_sub(P.x, x3);
-    Fe y3 = fe_sub(fe_mul(lambda, diff_x), P.y);
-    AffinePoint R;
-    R.x = x3;
-    R.y = y3;
-    return R;
+    Fe x3 = fe_sub(fe_sub(lambda2, P.x), Q.x);
+    Fe y3 = fe_sub(fe_mul(lambda, fe_sub(P.x, x3)), P.y);
+    AffinePoint res;
+    res.x = x3;
+    res.y = y3;
+    return res;
 }
 
-__device__ __forceinline__ AffinePoint scalar_mul_G_windowed(const uint64_t limbs[4]) {
-    AffinePoint R;
-    R.x.d[0] = 0; R.x.d[1] = 0; R.x.d[2] = 0; R.x.d[3] = 0;
-    R.y.d[0] = 0; R.y.d[1] = 0; R.y.d[2] = 0; R.y.d[3] = 0;
-
-    JacobianPoint jR;
-    jR.X = {{0,0,0,0}}; jR.Y = {{0,0,0,0}}; jR.Z = {{1,0,0,0}};
-    bool init = false;
-
-    for (int i = 3; i >= 0; --i) {
-        uint64_t w = limbs[i];
+CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4]) {
+    JacobianPoint res;
+    res.infinity = true;
+    for (int limb = 3; limb >= 0; --limb) {
+        uint64_t w = scalar[limb];
         for (int b = 60; b >= 0; b -= 4) {
-            int window = (int)((w >> b) & 0xF);
-            for (int j = 0; j < 4; ++j) {
-                if (init) jacobian_double(jR, jR);
+            uint32_t window = (w >> b) & 0xF;
+            for (int i = 0; i < 4; ++i) {
+                if (!res.infinity) {
+                    res = jacobian_double(res);
+                }
             }
             if (window != 0) {
-                if (!init) {
-                    jR.X = dev_G_table[window].x;
-                    jR.Y = dev_G_table[window].y;
-                    jR.Z = {{1,0,0,0}};
-                    init = true;
-                } else {
-                    jacobian_add_affine(jR, jR, dev_G_table[window]);
-                }
+                AffinePoint pt = dev_G_table[window];
+                res = jacobian_add_affine(res, pt);
             }
         }
     }
-    return jacobian_to_affine(jR);
+    return jacobian_to_affine(res);
 }
 
-__device__ __forceinline__ bool check_point_hash160(
-    const AffinePoint& P,
-    const uint32_t target_w[5],
-    uint64_t target_h64
-) {
+CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64) {
     uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
     uint32_t X[16];
     fast_sha256_into_ripemd_X(prefix, P.x, X);
-    uint32_t h[5];
-    fast_ripemd160_32(X, h);
-
-    uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
-    if (cur_h64 == target_h64) {
-        return (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]);
-    }
-    return false;
+    uint32_t out[5];
+    fast_ripemd160_32(X, out);
+    uint64_t hash64 = ((uint64_t)out[0] << 32) | out[1];
+    if (hash64 != target_h64) return false;
+    return (out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]);
 }
 
-#if defined(__CUDACC__)
-__launch_bounds__(128, 8)
-#endif
 CUDA_GLOBAL void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
@@ -1639,9 +1204,8 @@ CUDA_GLOBAL void cuda_scan_kernel(
     uint32_t steps
 ) {
     uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total_keys || dev_found_flag != 0) return;
-
     int lane = threadIdx.x & 31;
+
     u256 start_k = base_start + tid;
     uint64_t limbs[4] = {
         (uint64_t)start_k.low,
@@ -1653,414 +1217,162 @@ CUDA_GLOBAL void cuda_scan_kernel(
 
     for (uint32_t s = 0; s < steps; ++s) {
         uint64_t offset = tid + (uint64_t)s * grid_threads;
-        if (offset >= total_keys || dev_found_flag != 0) break;
 
-        if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
-            if (atomicExch(&dev_found_flag, 1) == 0) {
-                dev_found_offset = offset;
+        if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
+
+        if (offset < total_keys) {
+            if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
+                if (atomicExch(&dev_found_flag, 1) == 0) {
+                    dev_found_offset = offset;
+                }
             }
-            break;
         }
 
-        if (s + 1 < steps && offset + grid_threads < total_keys) {
+        if (s + 1 < steps) {
             P = warp_montgomery_add_affine(P, delta_G, lane);
         }
     }
 }
-#else
-#if defined(__AVX2__)
-#define AVX2_ROR(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
-#define AVX2_ROL(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
-
-static inline __attribute__((always_inline)) void avx2_sha256_8way(
-    const __m256i W_in[16],
-    __m256i X_out[16]
-) {
-    __m256i W[64];
-    for (int i = 0; i < 16; ++i) W[i] = W_in[i];
-
-    #pragma GCC unroll 48
-    for (int i = 16; i < 64; ++i) {
-        __m256i s0 = _mm256_xor_si256(AVX2_ROR(W[i-15], 7), _mm256_xor_si256(AVX2_ROR(W[i-15], 18), _mm256_srli_epi32(W[i-15], 3)));
-        __m256i s1 = _mm256_xor_si256(AVX2_ROR(W[i-2], 17), _mm256_xor_si256(AVX2_ROR(W[i-2], 19), _mm256_srli_epi32(W[i-2], 10)));
-        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i-16], s0), _mm256_add_epi32(W[i-7], s1));
-    }
-
-    __m256i a = _mm256_set1_epi32(0x6a09e667);
-    __m256i b = _mm256_set1_epi32(0xbb67ae85);
-    __m256i c = _mm256_set1_epi32(0x3c6ef372);
-    __m256i d = _mm256_set1_epi32(0xa54ff53a);
-    __m256i e = _mm256_set1_epi32(0x510e527f);
-    __m256i f = _mm256_set1_epi32(0x9b05688c);
-    __m256i g = _mm256_set1_epi32(0x1f83d9ab);
-    __m256i h = _mm256_set1_epi32(0x5be0cd19);
-
-#define AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, kw) do { \
-    __m256i S1 = _mm256_xor_si256(AVX2_ROR(e, 6), _mm256_xor_si256(AVX2_ROR(e, 11), AVX2_ROR(e, 25))); \
-    __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g))); \
-    __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw)); \
-    __m256i S0 = _mm256_xor_si256(AVX2_ROR(a, 2), _mm256_xor_si256(AVX2_ROR(a, 13), AVX2_ROR(a, 22))); \
-    __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b))); \
-    __m256i temp2 = _mm256_add_epi32(S0, maj); \
-    d = _mm256_add_epi32(d, temp1); \
-    h = _mm256_add_epi32(temp1, temp2); \
-} while(0)
-
-    #pragma GCC unroll 64
-    for (int i = 0; i < 64; i += 8) {
-        AVX2_SHA256_STEP(a, b, c, d, e, f, g, h, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i]),   W[i]));
-        AVX2_SHA256_STEP(h, a, b, c, d, e, f, g, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+1]), W[i+1]));
-        AVX2_SHA256_STEP(g, h, a, b, c, d, e, f, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+2]), W[i+2]));
-        AVX2_SHA256_STEP(f, g, h, a, b, c, d, e, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+3]), W[i+3]));
-        AVX2_SHA256_STEP(e, f, g, h, a, b, c, d, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+4]), W[i+4]));
-        AVX2_SHA256_STEP(d, e, f, g, h, a, b, c, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+5]), W[i+5]));
-        AVX2_SHA256_STEP(c, d, e, f, g, h, a, b, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+6]), W[i+6]));
-        AVX2_SHA256_STEP(b, c, d, e, f, g, h, a, _mm256_add_epi32(_mm256_set1_epi32(K_SHA256_GPU[i+7]), W[i+7]));
-    }
-#undef AVX2_SHA256_STEP
-
-    __m256i h0 = _mm256_add_epi32(_mm256_set1_epi32(0x6a09e667), a);
-    __m256i h1 = _mm256_add_epi32(_mm256_set1_epi32(0xbb67ae85), b);
-    __m256i h2 = _mm256_add_epi32(_mm256_set1_epi32(0x3c6ef372), c);
-    __m256i h3 = _mm256_add_epi32(_mm256_set1_epi32(0xa54ff53a), d);
-    __m256i h4 = _mm256_add_epi32(_mm256_set1_epi32(0x510e527f), e);
-    __m256i h5 = _mm256_add_epi32(_mm256_set1_epi32(0x9b05688c), f);
-    __m256i h6 = _mm256_add_epi32(_mm256_set1_epi32(0x1f83d9ab), g);
-    __m256i h7 = _mm256_add_epi32(_mm256_set1_epi32(0x5be0cd19), h);
-
-    const __m256i shuf_mask = _mm256_set_epi8(
-        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3,
-        12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3
-    );
-
-    X_out[0] = _mm256_shuffle_epi8(h0, shuf_mask);
-    X_out[1] = _mm256_shuffle_epi8(h1, shuf_mask);
-    X_out[2] = _mm256_shuffle_epi8(h2, shuf_mask);
-    X_out[3] = _mm256_shuffle_epi8(h3, shuf_mask);
-    X_out[4] = _mm256_shuffle_epi8(h4, shuf_mask);
-    X_out[5] = _mm256_shuffle_epi8(h5, shuf_mask);
-    X_out[6] = _mm256_shuffle_epi8(h6, shuf_mask);
-    X_out[7] = _mm256_shuffle_epi8(h7, shuf_mask);
-    X_out[8] = _mm256_set1_epi32(0x00000080);
-    X_out[9] = _mm256_setzero_si256();
-    X_out[10] = _mm256_setzero_si256();
-    X_out[11] = _mm256_setzero_si256();
-    X_out[12] = _mm256_setzero_si256();
-    X_out[13] = _mm256_setzero_si256();
-    X_out[14] = _mm256_set1_epi32(256);
-    X_out[15] = _mm256_setzero_si256();
-}
-
-static inline __attribute__((always_inline)) void avx2_ripemd160_8way(
-    const __m256i X[16],
-    __m256i out_h[5]
-) {
-    __m256i A = _mm256_set1_epi32(0x67452301);
-    __m256i B = _mm256_set1_epi32(0xEFCDAB89);
-    __m256i C = _mm256_set1_epi32(0x98BADCFE);
-    __m256i D = _mm256_set1_epi32(0x10325476);
-    __m256i E = _mm256_set1_epi32(0xC3D2E1F0);
-
-    __m256i Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
-
-    #pragma GCC unroll 16
-    for (int j = 0; j < 16; ++j) {
-        __m256i f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
-        __m256i fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, _mm256_xor_si256(Dp, _mm256_set1_epi32(-1))));
-
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), X[rl_gpu[j]]), sl_gpu[j]), E);
-        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x50A28BE6U))), sr_gpu[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma GCC unroll 16
-    for (int j = 16; j < 32; ++j) {
-        __m256i f = _mm256_xor_si256(D, _mm256_and_si256(B, _mm256_xor_si256(C, D)));
-        __m256i fp = _mm256_xor_si256(Cp, _mm256_and_si256(Dp, _mm256_xor_si256(Bp, Cp)));
-
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x5A827999U))), sl_gpu[j]), E);
-        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x5C4DD124U))), sr_gpu[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma GCC unroll 16
-    for (int j = 32; j < 48; ++j) {
-        __m256i f = _mm256_xor_si256(_mm256_or_si256(B, _mm256_xor_si256(C, _mm256_set1_epi32(-1))), D);
-        __m256i fp = _mm256_xor_si256(_mm256_or_si256(Bp, _mm256_xor_si256(Cp, _mm256_set1_epi32(-1))), Dp);
-
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x6ED9EBA1U))), sl_gpu[j]), E);
-        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x6D703EF3U))), sr_gpu[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma GCC unroll 16
-    for (int j = 48; j < 64; ++j) {
-        __m256i f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
-        __m256i fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
-
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0x8F1BBCDCU))), sl_gpu[j]), E);
-        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), _mm256_add_epi32(X[rr_gpu[j]], _mm256_set1_epi32(0x7A6D76E9U))), sr_gpu[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma GCC unroll 16
-    for (int j = 64; j < 80; ++j) {
-        __m256i f = _mm256_xor_si256(B, _mm256_or_si256(C, _mm256_xor_si256(D, _mm256_set1_epi32(-1))));
-        __m256i fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
-
-        __m256i T = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(A, f), _mm256_add_epi32(X[rl_gpu[j]], _mm256_set1_epi32(0xA953FD4EU))), sl_gpu[j]), E);
-        A = E; E = D; D = AVX2_ROL(C, 10); C = B; B = T;
-
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL(_mm256_add_epi32(_mm256_add_epi32(Ap, fp), X[rr_gpu[j]]), sr_gpu[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    out_h[0] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0xEFCDAB89), C), Dp);
-    out_h[1] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x98BADCFE), D), Ep);
-    out_h[2] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x10325476), E), Ap);
-    out_h[3] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0xC3D2E1F0), A), Bp);
-    out_h[4] = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x67452301), B), Cp);
-}
 #endif
 
-static const int BATCH_SIZE = 1024;
-static AffinePoint G_TABLE[BATCH_SIZE];
+#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__AVX2__)
+inline void avx2_sha256_8way(const uint8_t in_chunks[8][33], uint8_t out_hashes[8][32]) {
+    for (int i = 0; i < 8; ++i) {
+        SHA256(in_chunks[i], 33, out_hashes[i]);
+    }
+}
+inline void avx2_ripemd160_8way(const uint8_t in_chunks[8][32], uint8_t out_hashes[8][20]) {
+    for (int i = 0; i < 8; ++i) {
+        RIPEMD160(in_chunks[i], 32, out_hashes[i]);
+    }
+}
+#endif
+#endif
+
+static AffinePoint G_TABLE[1024];
+static bool g_table_initialized = false;
+static std::mutex g_table_mtx;
 
 void init_generator_table() {
-    for (int i = 1; i <= BATCH_SIZE; ++i) {
-        G_TABLE[i - 1] = scalar_mul_G(u256{(uint64_t)i, 0});
+    std::lock_guard<std::mutex> lock(g_table_mtx);
+    if (g_table_initialized) return;
+    AffinePoint G = get_generator_G();
+    JacobianPoint cur;
+    cur.x = G.x; cur.y = G.y;
+    cur.z.d[0] = 1; cur.z.d[1] = 0; cur.z.d[2] = 0; cur.z.d[3] = 0;
+    cur.infinity = false;
+
+    G_TABLE[0] = G;
+    for (int i = 1; i < 1024; ++i) {
+        cur = jacobian_add_affine(cur, G);
+        G_TABLE[i] = jacobian_to_affine(cur);
     }
+    g_table_initialized = true;
 }
 
 void scan_worker_montgomery(
-    u256 range_start,
+    u256 base_start,
     std::atomic<uint64_t>& work_offset,
     uint64_t total_keys,
     uint64_t slice_size,
-    const uint8_t target_hash160[20],
-    const uint64_t target_h64_first,
+    const uint8_t target_h160[20],
+    uint64_t target_h64,
     std::atomic<bool>& found_flag,
     u256& found_key,
     std::mutex& found_mtx,
     std::atomic<uint64_t>& checked_counter
 ) {
-    Fe dx[BATCH_SIZE];
-    Fe cum[BATCH_SIZE + 1];
-    Fe inv_dx[BATCH_SIZE];
+    const uint32_t BATCH_SIZE = 1024;
+    AffinePoint cur_points[1024];
+    Fe dx_arr[1024];
+    Fe prefix_prod[1024];
 
-    uint32_t target_w[5];
-    for (int i = 0; i < 5; ++i) {
-        target_w[i] = (uint32_t)target_hash160[4*i] |
-                      ((uint32_t)target_hash160[4*i + 1] << 8) |
-                      ((uint32_t)target_hash160[4*i + 2] << 16) |
-                      ((uint32_t)target_hash160[4*i + 3] << 24);
-    }
+    while (g_running.load() && !found_flag.load()) {
+        uint64_t offset = work_offset.fetch_add(slice_size);
+        if (offset >= total_keys) break;
+        uint64_t cur_slice = host_min(slice_size, total_keys - offset);
 
-    uint64_t local_counter = 0;
-    bool has_cur_base = false;
-    AffinePoint cur_base;
-    u256 cur_k = 0;
+        for (uint64_t idx = 0; idx < cur_slice; idx += BATCH_SIZE) {
+            if (!g_running.load() || found_flag.load()) break;
+            uint32_t cur_batch = (uint32_t)host_min((uint64_t)BATCH_SIZE, cur_slice - idx);
 
-    while (!found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
-        uint64_t off = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
-        if (off >= total_keys) break;
-        uint64_t count_in_slice = host_min(slice_size, total_keys - off);
-        u256 slice_start = range_start + off;
-        u256 slice_end = slice_start + count_in_slice;
+            u256 k0 = base_start + (offset + idx);
+            uint64_t limbs[4] = {
+                (uint64_t)k0.low,
+                (uint64_t)(k0.low >> 64),
+                (uint64_t)k0.high,
+                (uint64_t)(k0.high >> 64)
+            };
+            AffinePoint P0 = scalar_mul_G(limbs);
+            cur_points[0] = P0;
 
-        u256 base_k = (!slice_start.is_zero()) ? (slice_start - 1) : u256(0);
-        if (!has_cur_base || cur_k != base_k) {
-            cur_base = scalar_mul_G(base_k);
-            has_cur_base = true;
-            cur_k = base_k;
+            for (uint32_t i = 1; i < cur_batch; ++i) {
+                dx_arr[i] = fe_sub(G_TABLE[i - 1].x, P0.x);
+            }
+
+            prefix_prod[1] = dx_arr[1];
+            for (uint32_t i = 2; i < cur_batch; ++i) {
+                prefix_prod[i] = fe_mul(prefix_prod[i - 1], dx_arr[i]);
+            }
+
+            Fe all_inv = fe_inv(prefix_prod[cur_batch - 1]);
+
+            for (int i = cur_batch - 1; i >= 1; --i) {
+                Fe inv_dxi;
+                if (i == 1) {
+                    inv_dxi = all_inv;
+                } else {
+                    inv_dxi = fe_mul(all_inv, prefix_prod[i - 1]);
+                    all_inv = fe_mul(all_inv, dx_arr[i]);
+                }
+                Fe dy = fe_sub(G_TABLE[i - 1].y, P0.y);
+                Fe lambda = fe_mul(dy, inv_dxi);
+                Fe lambda2 = fe_sqr(lambda);
+                Fe x3 = fe_sub(fe_sub(lambda2, P0.x), G_TABLE[i - 1].x);
+                Fe y3 = fe_sub(fe_mul(lambda, fe_sub(P0.x, x3)), P0.y);
+                cur_points[i].x = x3;
+                cur_points[i].y = y3;
+            }
+
+            for (uint32_t i = 0; i < cur_batch; ++i) {
+                uint8_t pub[33];
+                pub[0] = (cur_points[i].y.d[0] & 1) ? 0x03 : 0x02;
+                for (int b = 0; b < 4; ++b) {
+                    uint64_t w = cur_points[i].x.d[3 - b];
+                    for (int byte = 0; byte < 8; ++byte) {
+                        pub[1 + b * 8 + byte] = (uint8_t)(w >> ((7 - byte) * 8));
+                    }
+                }
+
+                uint8_t sha[32];
+                SHA256(pub, 33, sha);
+                uint8_t r160[20];
+                RIPEMD160(sha, 32, r160);
+
+                uint64_t h64 = 0;
+                for (int b = 0; b < 8; ++b) {
+                    h64 = (h64 << 8) | r160[b];
+                }
+
+                if (h64 == target_h64 && std::memcmp(r160, target_h160, 20) == 0) {
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true);
+                    found_key = k0 + i;
+                    checked_counter.fetch_add(i + 1);
+                    return;
+                }
+            }
+            checked_counter.fetch_add(cur_batch);
         }
-
-        while (cur_k < slice_end - 1 && !found_flag.load(std::memory_order_relaxed) && g_running.load(std::memory_order_relaxed)) {
-            u256 rem = (slice_end - 1 - cur_k);
-            uint64_t remaining = (rem.high == 0) ? (uint64_t)rem.low : 0xFFFFFFFFFFFFFFFFULL;
-            int current_batch = (int)host_min((uint64_t)BATCH_SIZE, remaining);
-
-            cum[0] = {{1, 0, 0, 0}};
-            for (int i = 0; i < current_batch; ++i) {
-                dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
-                cum[i + 1] = fe_mul(cum[i], dx[i]);
-            }
-
-            Fe u = fe_inv(cum[current_batch]);
-
-            for (int i = current_batch - 1; i >= 0; --i) {
-                inv_dx[i] = fe_mul(u, cum[i]);
-                u = fe_mul(u, dx[i]);
-            }
-
-            AffinePoint next_base;
-#if defined(__AVX2__)
-            int i = 0;
-            for (; i + 8 <= current_batch; i += 8) {
-                Fe xi[8], yi[8];
-                for (int k = 0; k < 8; ++k) {
-                    Fe dy_k = fe_sub(G_TABLE[i + k].y, cur_base.y);
-                    Fe slope = fe_mul(dy_k, inv_dx[i + k]);
-                    Fe slope_sqr = fe_sqr(slope);
-                    xi[k] = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i + k].x);
-                    yi[k] = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi[k])), cur_base.y);
-                }
-
-                if (i + 8 == current_batch) {
-                    next_base.x = xi[7];
-                    next_base.y = yi[7];
-                }
-
-                alignas(32) uint32_t w0[8], w1[8], w2[8], w3[8], w4[8], w5[8], w6[8], w7[8], w8[8];
-                for (int k = 0; k < 8; ++k) {
-                    uint8_t prefix = (yi[k].d[0] & 1) ? 0x03 : 0x02;
-                    uint64_t d3 = xi[k].d[3], d2 = xi[k].d[2], d1 = xi[k].d[1], d0 = xi[k].d[0];
-                    w0[k] = ((uint32_t)prefix << 24) | (uint32_t)(d3 >> 40);
-                    w1[k] = (uint32_t)(d3 >> 8);
-                    w2[k] = ((uint32_t)(d3 & 0xFF) << 24) | (uint32_t)(d2 >> 40);
-                    w3[k] = (uint32_t)(d2 >> 8);
-                    w4[k] = ((uint32_t)(d2 & 0xFF) << 24) | (uint32_t)(d1 >> 40);
-                    w5[k] = (uint32_t)(d1 >> 8);
-                    w6[k] = ((uint32_t)(d1 & 0xFF) << 24) | (uint32_t)(d0 >> 40);
-                    w7[k] = (uint32_t)(d0 >> 8);
-                    w8[k] = ((uint32_t)(d0 & 0xFF) << 24) | 0x00800000U;
-                }
-
-                __m256i W[16];
-                W[0] = _mm256_load_si256((const __m256i*)w0);
-                W[1] = _mm256_load_si256((const __m256i*)w1);
-                W[2] = _mm256_load_si256((const __m256i*)w2);
-                W[3] = _mm256_load_si256((const __m256i*)w3);
-                W[4] = _mm256_load_si256((const __m256i*)w4);
-                W[5] = _mm256_load_si256((const __m256i*)w5);
-                W[6] = _mm256_load_si256((const __m256i*)w6);
-                W[7] = _mm256_load_si256((const __m256i*)w7);
-                W[8] = _mm256_load_si256((const __m256i*)w8);
-                W[9] = _mm256_setzero_si256();
-                W[10] = _mm256_setzero_si256();
-                W[11] = _mm256_setzero_si256();
-                W[12] = _mm256_setzero_si256();
-                W[13] = _mm256_setzero_si256();
-                W[14] = _mm256_setzero_si256();
-                W[15] = _mm256_set1_epi32(264);
-
-                __m256i X[16];
-                avx2_sha256_8way(W, X);
-
-                __m256i H[5];
-                avx2_ripemd160_8way(X, H);
-
-                __m256i match0 = _mm256_cmpeq_epi32(H[0], _mm256_set1_epi32(target_w[0]));
-                __m256i match1 = _mm256_cmpeq_epi32(H[1], _mm256_set1_epi32(target_w[1]));
-                int mask = _mm256_movemask_epi8(_mm256_and_si256(match0, match1));
-                if (__builtin_expect(mask != 0, 0)) {
-                    alignas(32) uint32_t h_lanes[5][8];
-                    for (int m = 0; m < 5; ++m) {
-                        _mm256_store_si256((__m256i*)h_lanes[m], H[m]);
-                    }
-                    for (int k = 0; k < 8; ++k) {
-                        if (h_lanes[0][k] == target_w[0] && h_lanes[1][k] == target_w[1] &&
-                            h_lanes[2][k] == target_w[2] && h_lanes[3][k] == target_w[3] &&
-                            h_lanes[4][k] == target_w[4]) {
-                            std::lock_guard<std::mutex> lk(found_mtx);
-                            found_key = cur_k + (uint64_t)(i + k + 1);
-                            found_flag.store(true, std::memory_order_release);
-                            break;
-                        }
-                    }
-                    if (found_flag.load(std::memory_order_relaxed)) break;
-                }
-            }
-            for (; i < current_batch; ++i) {
-                Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                Fe slope = fe_mul(dy_i, inv_dx[i]);
-                Fe slope_sqr = fe_sqr(slope);
-                Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
-                Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
-
-                if (i == current_batch - 1) {
-                    next_base.x = xi;
-                    next_base.y = yi;
-                }
-
-                uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[16];
-                fast_sha256_into_ripemd_X(prefix, xi, X);
-
-                uint32_t h[5];
-                fast_ripemd160_32(X, h);
-
-                uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
-                if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
-                    if (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]) {
-                        std::lock_guard<std::mutex> lk(found_mtx);
-                        found_key = cur_k + (uint64_t)(i + 1);
-                        found_flag.store(true, std::memory_order_release);
-                        break;
-                    }
-                }
-            }
-#else
-            for (int i = 0; i < current_batch; ++i) {
-                Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                Fe slope = fe_mul(dy_i, inv_dx[i]);
-                Fe slope_sqr = fe_sqr(slope);
-                Fe xi = fe_sub(fe_sub(slope_sqr, cur_base.x), G_TABLE[i].x);
-                Fe yi = fe_sub(fe_mul(slope, fe_sub(cur_base.x, xi)), cur_base.y);
-
-                if (i == current_batch - 1) {
-                    next_base.x = xi;
-                    next_base.y = yi;
-                }
-
-                uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[16];
-                fast_sha256_into_ripemd_X(prefix, xi, X);
-
-                uint32_t h[5];
-                fast_ripemd160_32(X, h);
-
-                uint64_t cur_h64 = (uint64_t)h[0] | ((uint64_t)h[1] << 32);
-                if (__builtin_expect(cur_h64 == target_h64_first, 0)) {
-                    if (h[2] == target_w[2] && h[3] == target_w[3] && h[4] == target_w[4]) {
-                        std::lock_guard<std::mutex> lk(found_mtx);
-                        found_key = cur_k + (uint64_t)(i + 1);
-                        found_flag.store(true, std::memory_order_release);
-                        break;
-                    }
-                }
-            }
-#endif
-
-            if (found_flag.load(std::memory_order_relaxed)) break;
-
-            cur_base = next_base;
-            cur_k = cur_k + (uint64_t)current_batch;
-            local_counter += current_batch;
-            if (local_counter >= 65536) {
-                checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
-                local_counter = 0;
-            }
-        }
-    }
-
-    if (local_counter > 0) {
-        checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
     }
 }
-#endif
 
 static size_t curl_cb(void* contents, size_t size, size_t nmemb, void* userp) {
-    ((std::string*)userp)->append((char*)contents, size * nmemb);
-    return size * nmemb;
+    size_t total = size * nmemb;
+    std::string* s = (std::string*)userp;
+    s->append((char*)contents, total);
+    return total;
 }
 
 bool http_get(const std::string& url, std::string* out) {
@@ -2071,25 +1383,26 @@ bool http_get(const std::string& url, std::string* out) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     return (res == CURLE_OK);
 }
 
-bool http_post(const std::string& url, const std::string& data, std::string* out) {
+bool http_post(const std::string& url, const std::string& json_data, std::string* out) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
-    struct curl_slist* headers = nullptr;
+    struct curl_slist* headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -2097,277 +1410,286 @@ bool http_post(const std::string& url, const std::string& data, std::string* out
 }
 
 std::string json_get_string(const std::string& json, const std::string& key) {
-    std::string pattern = "\"" + key + "\":";
-    size_t pos = json.find(pattern);
+    std::string search = "\"" + key + "\":";
+    size_t pos = json.find(search);
     if (pos == std::string::npos) return "";
-    pos += pattern.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-    if (pos >= json.size()) return "";
-    if (json[pos] == '"') {
+    pos += search.length();
+    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n')) pos++;
+    if (pos >= json.length()) return "";
+
+    if (json[pos] == '\"') {
         pos++;
-        size_t end = json.find('"', pos);
+        size_t end = json.find('\"', pos);
         if (end == std::string::npos) return "";
         return json.substr(pos, end - pos);
     } else {
-        size_t end = pos;
-        while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != ' ' && json[end] != '\n' && json[end] != '\r') {
-            end++;
-        }
+        size_t end = json.find_first_of(",}\r\n \t", pos);
+        if (end == std::string::npos) end = json.length();
         return json.substr(pos, end - pos);
     }
 }
 
 int main(int argc, char* argv[]) {
-    signal(SIGINT, sigint_handler);
-    signal(SIGTERM, sigint_handler);
+    std::signal(SIGINT, sigint_handler);
+    std::signal(SIGTERM, sigint_handler);
+    curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    std::string api_base = "http://65.20.91.208/puzzle_server.php";
-    int req_puzzle = 71;
-    int multiple = 1;
-    std::string custom_user = "";
-    bool no_limit = false;
-#if !defined(__CUDACC__)
-    int threads = 1;
+    std::string api_base = "https://btcpuzzle.info/api.php";
+    int current_puzzle = 70;
+    std::string current_user = "guest";
+    int requested_multiple = 1;
+
     unsigned int hw = std::thread::hardware_concurrency();
-#if defined(_SC_NPROCESSORS_ONLN)
-    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-    if (nprocs > 0 && (unsigned int)nprocs > hw) hw = (unsigned int)nprocs;
-#endif
-#endif
+    int threads = (hw > 0) ? (int)hw : 4;
+    bool force_cpu = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-s" || arg == "--server") && i + 1 < argc) api_base = argv[++i];
-        else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) req_puzzle = std::atoi(argv[++i]);
-        else if ((arg == "-m" || arg == "--multiple" || arg == "--batch") && i + 1 < argc) multiple = std::atoi(argv[++i]);
-        else if ((arg == "-u" || arg == "--user") && i + 1 < argc) custom_user = argv[++i];
-#if !defined(__CUDACC__)
-        else if ((arg == "-t" || arg == "--threads" || arg == "--cpu") && i + 1 < argc) threads = std::atoi(argv[++i]);
-        else if (arg == "-d" || arg == "--double") threads = 2;
-        else if (arg == "--fast" || arg == "--max") threads = (hw > 0) ? (int)hw : 4;
-#endif
-        else if (arg == "--no-limit" || arg == "-nl" || arg == "--infinite") no_limit = true;
-        else if (arg == "--test-probe" || arg == "-h" || arg == "--help") return 0;
+        if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
+            api_base = argv[++i];
+        } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
+            current_puzzle = std::atoi(argv[++i]);
+        } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
+            current_user = argv[++i];
+        } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
+            requested_multiple = std::max(1, std::atoi(argv[++i]));
+        } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
+            threads = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "-cpu" || arg == "--cpu" || arg == "--cpu-only") {
+            force_cpu = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                threads = std::max(1, std::atoi(argv[++i]));
+            }
+        }
     }
 
-#if defined(__CUDACC__)
-    int device_count = 0;
-    cudaGetDeviceCount(&device_count);
-    if (device_count == 0) {
-        return 1;
-    }
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
-    build_dev_G_table();
-    if (custom_user.empty()) {
-        std::string dev_clean = "";
-        for (char c : std::string(prop.name)) {
-            if (isalnum(c) || c == '-' || c == '_') dev_clean += c;
-            else if (c == ' ') dev_clean += '_';
+    std::cout << "==========================================================" << std::endl;
+    std::cout << "  Bitcoin Puzzle Distributed Solver - Unified Engine      " << std::endl;
+    std::cout << "==========================================================" << std::endl;
+    std::cout << "[*] Target Server : " << api_base << std::endl;
+    std::cout << "[*] Puzzle ID     : " << current_puzzle << std::endl;
+    std::cout << "[*] Worker User   : " << current_user << std::endl;
+    std::cout << "[*] Batch Multiple: " << requested_multiple << std::endl;
+
+#ifdef __CUDACC__
+    bool use_cuda = !force_cpu;
+    if (use_cuda) {
+        int deviceCount = 0;
+        cudaError_t err = cudaGetDeviceCount(&deviceCount);
+        if (err != cudaSuccess || deviceCount == 0) {
+            std::cout << "[!] No CUDA GPU detected. Falling back to CPU mode..." << std::endl;
+            use_cuda = false;
+        } else {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, 0);
+            std::cout << "[+] CUDA Device   : " << prop.name << " (" << prop.multiProcessorCount << " SMs)" << std::endl;
         }
-        if (dev_clean.empty()) dev_clean = "device";
-        custom_user = "gpu-" + dev_clean;
+    } else {
+        std::cout << "[*] Mode          : Forced CPU mode (-cpu flag detected)" << std::endl;
+        std::cout << "[*] CPU Threads   : " << threads << std::endl;
     }
 #else
+    std::cout << "[*] Mode          : Native CPU mode" << std::endl;
+    std::cout << "[*] CPU Threads   : " << threads << std::endl;
+#endif
+
     init_generator_table();
-    if (custom_user.empty()) {
-        char hname[64] = {0};
-        gethostname(hname, sizeof(hname) - 1);
-        std::string host_s = (hname[0] != '\0') ? hname : "worker";
-        std::string clean_h = "";
-        for (char c : host_s) {
-            if (isalnum(c) || c == '-' || c == '_') clean_h += c;
+
+#ifdef __CUDACC__
+    if (use_cuda) {
+        AffinePoint h_table[16];
+        AffinePoint G = get_generator_G();
+        JacobianPoint cur;
+        cur.x = G.x; cur.y = G.y;
+        cur.z.d[0] = 1; cur.z.d[1] = 0; cur.z.d[2] = 0; cur.z.d[3] = 0;
+        cur.infinity = false;
+        h_table[0] = G;
+        h_table[1] = G;
+        for (int i = 2; i < 16; ++i) {
+            cur = jacobian_add_affine(cur, G);
+            h_table[i] = jacobian_to_affine(cur);
         }
-        if (clean_h.empty()) clean_h = "worker";
-        uint32_t r_suffix = (uint32_t)(time(nullptr) & 0xFFFF);
-        custom_user = "cpu-" + clean_h + "-" + std::to_string(r_suffix);
+        cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
     }
 #endif
 
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    const int MAX_RANGES = 5;
     int completed_ranges = 0;
 
-    while (g_running.load() && (no_limit || completed_ranges < MAX_RANGES)) {
-        std::stringstream ss;
-        ss << api_base << "?action=range&puzzle=" << req_puzzle;
-        if (multiple > 1) ss << "&multiple=" << multiple;
-        if (!custom_user.empty()) ss << "&user=" << custom_user;
+    while (g_running.load()) {
+        std::stringstream req_url;
+        req_url << api_base << "?action=get_work&puzzle=" << current_puzzle
+                << "&user=" << current_user << "&batch=" << requested_multiple;
 
         std::string resp;
-        if (!http_get(ss.str(), &resp)) {
+        if (!http_get(req_url.str(), &resp)) {
+            std::cerr << "[!] Network error fetching work. Retrying in 3s..." << std::endl;
             portable_sleep_ms(3000);
             continue;
         }
 
-        if (resp.empty() || resp.find("\"start\"") == std::string::npos) {
-            portable_sleep_ms(2000);
+        std::string status = json_get_string(resp, "status");
+        if (status == "solved") {
+            std::cout << "[+] Puzzle #" << current_puzzle << " is already solved! Exiting..." << std::endl;
+            break;
+        }
+        if (status != "ok" && status != "success") {
+            std::cout << "[*] Server message: " << resp << ". Retrying in 3s..." << std::endl;
+            portable_sleep_ms(3000);
             continue;
         }
 
-        std::string s_start = json_get_string(resp, "start");
-        std::string s_end   = json_get_string(resp, "end");
-        std::string target_addr = json_get_string(resp, "target_address");
-        std::string s_block = json_get_string(resp, "block");
-        int64_t block = s_block.empty() ? -1 : std::strtoll(s_block.c_str(), nullptr, 10);
-        if (block < 0 && !s_block.empty()) {
-            block = (int64_t)std::strtoull(s_block.c_str(), nullptr, 10);
+        std::string str_block = json_get_string(resp, "block");
+        std::string str_start = json_get_string(resp, "start");
+        std::string str_end = json_get_string(resp, "end");
+        std::string str_target = json_get_string(resp, "target");
+        std::string str_range_count = json_get_string(resp, "range_count");
+        if (str_range_count.empty()) str_range_count = json_get_string(resp, "multiple");
+
+        if (str_start.empty() || str_end.empty() || str_target.empty()) {
+            std::cerr << "[!] Invalid work payload: " << resp << std::endl;
+            portable_sleep_ms(3000);
+            continue;
         }
-        int range_idx = std::atoi(json_get_string(resp, "range_idx").c_str());
-        int range_count = std::atoi(json_get_string(resp, "range_count").c_str());
+
+        uint64_t block_idx = (uint64_t)std::strtoull(str_block.c_str(), NULL, 10);
+        int range_count = str_range_count.empty() ? requested_multiple : std::atoi(str_range_count.c_str());
         if (range_count <= 0) range_count = 1;
 
-        int current_puzzle = std::atoi(json_get_string(resp, "puzzle").c_str());
-        if (current_puzzle <= 0) current_puzzle = req_puzzle;
+        u256 start_k = parse_u256(str_start);
+        u256 end_k = parse_u256(str_end);
+        u256 total_keys = end_k - start_k;
+        uint64_t total_keys_count = (uint64_t)total_keys.low;
 
-        std::string current_user = !custom_user.empty() 
-            ? custom_user 
-            : json_get_string(resp, "user");
-        if (current_user.empty()) current_user = "user-" + std::to_string(block) + "-" + std::to_string(range_idx);
-        if (custom_user.empty()) custom_user = current_user;
-
-        u256 start_k = parse_u256(s_start);
-        u256 end_k   = parse_u256(s_end);
-        std::string s_sz = json_get_string(resp, "range_size");
-        uint64_t r_sz = s_sz.empty() ? 0 : std::stoull(s_sz);
-        if (end_k <= start_k && r_sz > 0) {
-            end_k = start_k + r_sz;
-        }
-        u256 total_k = end_k - start_k;
-        uint64_t total_keys_count = (uint64_t)total_k.low;
-
-        uint8_t h160[20];
-        if (!b58check_decode_hash160(target_addr, h160)) {
+        uint8_t target_h160[20];
+        if (!b58check_decode_hash160(str_target, target_h160)) {
+            std::cerr << "[!] Error decoding target address base58check: " << str_target << std::endl;
+            portable_sleep_ms(3000);
             continue;
         }
 
-        uint32_t target_w[5];
-        for (int i = 0; i < 5; ++i) {
-            target_w[i] = (uint32_t)h160[4*i] | ((uint32_t)h160[4*i+1]<<8) | ((uint32_t)h160[4*i+2]<<16) | ((uint32_t)h160[4*i+3]<<24);
+        uint64_t target_h64 = 0;
+        for (int b = 0; b < 8; ++b) {
+            target_h64 = (target_h64 << 8) | target_h160[b];
         }
-        uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
 
-        auto t_start = std::chrono::high_resolution_clock::now();
-        bool found = false;
+        std::cout << "[*] Block " << block_idx << " | Ranges: " << range_count
+                  << " | Keys: " << u256_to_dec(total_keys) << std::endl;
+
+        bool hit = false;
         u256 found_key = 0;
-        uint64_t actual_checked = 0;
+        uint64_t checked = 0;
+        auto t_start = std::chrono::high_resolution_clock::now();
 
-#if defined(__CUDACC__)
-        cudaMemcpyToSymbol(dev_target_w, target_w, 5 * sizeof(uint32_t));
-        cudaMemcpyToSymbol(dev_target_h64, &target_h64, sizeof(uint64_t));
-        int zero = 0;
-        cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
-
-        const uint32_t threadsPerBlock = 128;
-        int num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-        const uint32_t numBlocks = (uint32_t)(num_sms * 16);
-        const uint32_t grid_threads = threadsPerBlock * numBlocks;
-        const uint32_t steps_per_launch = 1024;
-        const uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
-
-        AffinePoint delta_G = scalar_mul_G(u256(grid_threads));
-
-        while (actual_checked < total_keys_count && g_running.load() && !found) {
-            uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
-            u256 cur_start = start_k + actual_checked;
-
-            uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-            if (cur_steps == 0) cur_steps = 1;
-
-            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                cur_start, cur_chunk, delta_G, grid_threads, cur_steps
-            );
-            cudaDeviceSynchronize();
-
-            int h_found = 0;
-            cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
-            if (h_found != 0) {
-                uint64_t h_offset = 0;
-                cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
-                found = true;
-                found_key = cur_start + h_offset;
-                actual_checked += h_offset + 1;
-                break;
+#ifdef __CUDACC__
+        if (use_cuda) {
+            uint32_t h_target_w[5];
+            for (int i = 0; i < 5; ++i) {
+                h_target_w[i] = ((uint32_t)target_h160[i * 4] << 24) |
+                                ((uint32_t)target_h160[i * 4 + 1] << 16) |
+                                ((uint32_t)target_h160[i * 4 + 2] << 8) |
+                                ((uint32_t)target_h160[i * 4 + 3]);
             }
+            cudaMemcpyToSymbol(dev_target_w, h_target_w, sizeof(h_target_w));
+            cudaMemcpyToSymbol(dev_target_h64, &target_h64, sizeof(uint64_t));
 
-            actual_checked += cur_chunk;
-        }
-#else
-        std::atomic<uint64_t> work_offset(0);
-        std::atomic<uint64_t> checked_counter(0);
-        std::atomic<bool> found_flag(false);
-        std::mutex found_mtx;
-        uint64_t slice_size = 2097152;
+            int zero = 0;
+            cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
-        std::vector<std::thread> workers;
-        workers.reserve(threads);
-        for (int t = 0; t < threads; ++t) {
-            workers.emplace_back(
-                scan_worker_montgomery,
-                start_k,
-                std::ref(work_offset),
-                total_keys_count,
-                slice_size,
-                h160,
-                target_h64,
-                std::ref(found_flag),
-                std::ref(found_key),
-                std::ref(found_mtx),
-                std::ref(checked_counter)
-            );
-        }
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, 0);
+            uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
+            uint32_t threadsPerBlock = 256;
+            uint32_t numBlocks = num_sms * 16;
+            uint32_t grid_threads = numBlocks * threadsPerBlock;
+            uint32_t steps_per_launch = 1024;
+            uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-        while (g_running.load() && !found_flag.load()) {
-            portable_sleep_ms(250);
-            uint64_t done = checked_counter.load(std::memory_order_relaxed);
-            if (done >= total_keys_count) {
-                break;
+            uint64_t delta_scalar[4] = { grid_threads, 0, 0, 0 };
+            AffinePoint delta_G = scalar_mul_G(delta_scalar);
+
+            uint64_t actual_checked = 0;
+            while (actual_checked < total_keys_count && g_running.load() && !hit) {
+                uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
+                uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
+                u256 cur_start = start_k + actual_checked;
+
+                cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
+                    cur_start, cur_chunk, delta_G, grid_threads, cur_steps
+                );
+                cudaDeviceSynchronize();
+
+                int h_found = 0;
+                cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
+                if (h_found != 0) {
+                    uint64_t h_offset = 0;
+                    cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
+                    hit = true;
+                    found_key = cur_start + h_offset;
+                    actual_checked += h_offset + 1;
+                    break;
+                }
+                actual_checked += cur_chunk;
             }
-        }
-
-        for (auto& w : workers) {
-            if (w.joinable()) w.join();
-        }
-
-        found = found_flag.load();
-        actual_checked = checked_counter.load();
+            checked = actual_checked;
+        } else
 #endif
+        {
+            std::atomic<uint64_t> work_offset(0);
+            uint64_t slice_size = 524288;
+            std::atomic<bool> found_flag(false);
+            std::mutex found_mtx;
+            std::atomic<uint64_t> checked_counter(0);
+
+            std::vector<std::thread> pool;
+            for (int i = 0; i < threads; ++i) {
+                pool.emplace_back(scan_worker_montgomery, start_k, std::ref(work_offset),
+                                  total_keys_count, slice_size, target_h160, target_h64,
+                                  std::ref(found_flag), std::ref(found_key),
+                                  std::ref(found_mtx), std::ref(checked_counter));
+            }
+            for (auto& th : pool) if (th.joinable()) th.join();
+
+            hit = found_flag.load();
+            checked = checked_counter.load();
+        }
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         if (elapsed <= 0.0) elapsed = 0.001;
-        double speed = (double)actual_checked / elapsed;
+        double speed = (double)checked / elapsed;
 
-        if (!found && !g_running.load()) {
-            break;
+        if (hit) {
+            std::cout << "\n========================================================" << std::endl;
+            std::cout << "[!!!] PRIVATE KEY FOUND: 0x" << u256_to_hex64(found_key) << std::endl;
+            std::cout << "========================================================\n" << std::endl;
+        } else {
+            std::cout << "[-] Range scan completed. Speed: " << std::fixed << std::setprecision(2)
+                      << (speed / 1e6) << " MKeys/s | Elapsed: " << elapsed << "s" << std::endl;
         }
+
+        if (!hit && !g_running.load()) break;
 
         std::stringstream json;
         json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
-             << ",\"block\":" << block
-             << ",\"range_idx\":" << range_idx
+             << ",\"block\":" << block_idx
+             << ",\"range_idx\":0"
              << ",\"range_count\":" << range_count
              << ",\"multiple\":" << range_count
-             << ",\"status\":\"" << (found ? "found" : "done") << "\""
-             << ",\"private_key\":\"" << (found ? u256_to_hex64(found_key) : "") << "\""
+             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
+             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
              << ",\"user\":\"" << current_user << "\""
              << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
-             << ",\"keys\":\"" << u256_to_dec(total_k) << "\""
-             << ",\"range_size\":\"" << u256_to_dec(total_k) << "\""
-             << ",\"count\":" << total_keys_count
+             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
+             << ",\"count\":" << checked
              << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
 
         std::string post_url = api_base + "?action=result&user=" + current_user;
         std::string ack;
-        bool post_ok = http_post(post_url, json.str(), &ack);
-        if (!post_ok || ack.find("\"status\":\"ok\"") == std::string::npos) {
-            std::cerr << "[WARN] Submit failed: " << (ack.empty() ? "network error" : ack) << ". Retrying..." << std::endl;
-            portable_sleep_ms(500);
-            http_post(post_url, json.str(), &ack);
-        }
+        http_post(post_url, json.str(), &ack);
 
         completed_ranges++;
-        if (found) break;
+        if (hit) break;
     }
 
     curl_global_cleanup();
