@@ -497,7 +497,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
     c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
-    if (extra) {
+    if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
         t[0] = (uint64_t)c3; c3 >>= 64;
         c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
@@ -505,10 +505,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         t[3] += (uint64_t)c3;
     }
 
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+    if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
         t[2] == 0xFFFFFFFFFFFFFFFFULL &&
         t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
         t[0] -= 0xFFFFFFFEFFFFFC2FULL;
         t[1] = 0;
         t[2] = 0;
@@ -589,7 +589,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
     c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
-    if (extra) {
+    if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
         t[0] = (uint64_t)c3; c3 >>= 64;
         c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
@@ -597,10 +597,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         t[3] += (uint64_t)c3;
     }
 
-    if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+    if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
         t[2] == 0xFFFFFFFFFFFFFFFFULL &&
         t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
         t[0] -= 0xFFFFFFFEFFFFFC2FULL;
         t[1] = 0;
         t[2] = 0;
@@ -823,7 +823,7 @@ __constant__ uint32_t dev_K_SHA256[64] = {
 };
 #endif
 
-[[maybe_unused]] static const uint32_t host_K_SHA256[64] = {
+[[maybe_unused]] static constexpr uint32_t host_K_SHA256[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -924,28 +924,28 @@ __constant__ uint8_t dev_sr_tab[80] = {
 };
 #endif
 
-[[maybe_unused]] static const uint8_t host_rl_tab[80] = {
+[[maybe_unused]] static constexpr uint8_t host_rl_tab[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
     1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
-[[maybe_unused]] static const uint8_t host_sl_tab[80] = {
+[[maybe_unused]] static constexpr uint8_t host_sl_tab[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
     11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
-[[maybe_unused]] static const uint8_t host_rr_tab[80] = {
+[[maybe_unused]] static constexpr uint8_t host_rr_tab[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
     8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
-[[maybe_unused]] static const uint8_t host_sr_tab[80] = {
+[[maybe_unused]] static constexpr uint8_t host_sr_tab[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -1050,34 +1050,112 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t o
 #if defined(__AVX2__)
 #define AVX2_ROL32_CONST(x, n) _mm256_or_si256(_mm256_slli_epi32((x), (n)), _mm256_srli_epi32((x), 32 - (n)))
 #define AVX2_ROR32_CONST(x, n) _mm256_or_si256(_mm256_srli_epi32((x), (n)), _mm256_slli_epi32((x), 32 - (n)))
-#define AVX2_ROL32_VAR(x, s, s_inv) _mm256_or_si256(_mm256_sllv_epi32((x), (s)), _mm256_srlv_epi32((x), (s_inv)))
 
-struct Avx2RipemdConsts {
-    __m256i sl[80];
-    __m256i sl_inv[80];
-    __m256i sr[80];
-    __m256i sr_inv[80];
-    __m256i K_sha[64];
-};
-static Avx2RipemdConsts g_avx2_consts;
-static std::atomic<bool> g_avx2_consts_initialized{false};
+CUDA_INLINE void init_avx2_consts() {}
 
-static void init_avx2_consts() {
-    if (g_avx2_consts_initialized.load(std::memory_order_acquire)) return;
-    static std::mutex mtx;
-    std::lock_guard<std::mutex> lock(mtx);
-    if (g_avx2_consts_initialized.load(std::memory_order_relaxed)) return;
+template<int r>
+CUDA_INLINE void sha256_round_avx2(
+    __m256i& a, __m256i& b, __m256i& c, __m256i& d,
+    __m256i& e, __m256i& f, __m256i& g, __m256i& h,
+    const __m256i& Wr
+) {
+    constexpr uint32_t K = host_K_SHA256[r];
+    __m256i S1 = _mm256_xor_si256(AVX2_ROR32_CONST(e, 6), _mm256_xor_si256(AVX2_ROR32_CONST(e, 11), AVX2_ROR32_CONST(e, 25)));
+    __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
+    __m256i kw = _mm256_add_epi32(_mm256_set1_epi32(K), Wr);
+    __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));
 
-    for (int j = 0; j < 80; ++j) {
-        g_avx2_consts.sl[j] = _mm256_set1_epi32(host_sl_tab[j]);
-        g_avx2_consts.sl_inv[j] = _mm256_set1_epi32(32 - host_sl_tab[j]);
-        g_avx2_consts.sr[j] = _mm256_set1_epi32(host_sr_tab[j]);
-        g_avx2_consts.sr_inv[j] = _mm256_set1_epi32(32 - host_sr_tab[j]);
+    __m256i S0 = _mm256_xor_si256(AVX2_ROR32_CONST(a, 2), _mm256_xor_si256(AVX2_ROR32_CONST(a, 13), AVX2_ROR32_CONST(a, 22)));
+    __m256i maj = _mm256_xor_si256(
+        _mm256_and_si256(a, b),
+        _mm256_xor_si256(_mm256_and_si256(a, c), _mm256_and_si256(b, c))
+    );
+    __m256i temp2 = _mm256_add_epi32(S0, maj);
+
+    h = g;
+    g = f;
+    f = e;
+    e = _mm256_add_epi32(d, temp1);
+    d = c;
+    c = b;
+    b = a;
+    a = _mm256_add_epi32(temp1, temp2);
+}
+
+template<size_t... Is>
+CUDA_INLINE void run_sha256_rounds_avx2(
+    __m256i& a, __m256i& b, __m256i& c, __m256i& d,
+    __m256i& e, __m256i& f, __m256i& g, __m256i& h,
+    const __m256i W[64],
+    std::index_sequence<Is...>
+) {
+    (sha256_round_avx2<Is>(a, b, c, d, e, f, g, h, W[Is]), ...);
+}
+
+template<int j>
+CUDA_INLINE void ripemd160_step_avx2(
+    __m256i& A, __m256i& B, __m256i& C, __m256i& D, __m256i& E,
+    __m256i& Ap, __m256i& Bp, __m256i& Cp, __m256i& Dp, __m256i& Ep,
+    const __m256i X[16], const __m256i& all_ones
+) {
+    constexpr uint8_t rl = host_rl_tab[j];
+    constexpr uint8_t sl = host_sl_tab[j];
+    constexpr uint8_t rr = host_rr_tab[j];
+    constexpr uint8_t sr = host_sr_tab[j];
+
+    __m256i f, sum, T;
+    if constexpr (j < 16) {
+        f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, X[rl]));
+    } else if constexpr (j < 32) {
+        f = _mm256_or_si256(_mm256_and_si256(B, C), _mm256_andnot_si256(B, D));
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x5A827999U))));
+    } else if constexpr (j < 48) {
+        __m256i not_C = _mm256_xor_si256(C, all_ones);
+        f = _mm256_xor_si256(_mm256_or_si256(B, not_C), D);
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x6ED9EBA1U))));
+    } else if constexpr (j < 64) {
+        f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x8F1BBCDCU))));
+    } else {
+        __m256i not_D = _mm256_xor_si256(D, all_ones);
+        f = _mm256_xor_si256(B, _mm256_or_si256(C, not_D));
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0xA953FD4EU))));
     }
-    for (int j = 0; j < 64; ++j) {
-        g_avx2_consts.K_sha[j] = _mm256_set1_epi32(host_K_SHA256[j]);
+    T = _mm256_add_epi32(AVX2_ROL32_CONST(sum, sl), E);
+    A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
+
+    __m256i fp, sump, Tp;
+    if constexpr (j < 16) {
+        __m256i not_Dp = _mm256_xor_si256(Dp, all_ones);
+        fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, not_Dp));
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x50A28BE6U))));
+    } else if constexpr (j < 32) {
+        fp = _mm256_or_si256(_mm256_and_si256(Bp, Dp), _mm256_andnot_si256(Dp, Cp));
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x5C4DD124U))));
+    } else if constexpr (j < 48) {
+        __m256i not_Cp = _mm256_xor_si256(Cp, all_ones);
+        fp = _mm256_xor_si256(_mm256_or_si256(Bp, not_Cp), Dp);
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x6D703EF3U))));
+    } else if constexpr (j < 64) {
+        fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x7A6D76E9U))));
+    } else {
+        fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, X[rr]));
     }
-    g_avx2_consts_initialized.store(true, std::memory_order_release);
+    Tp = _mm256_add_epi32(AVX2_ROL32_CONST(sump, sr), Ep);
+    Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
+}
+
+template<size_t... Is>
+CUDA_INLINE void run_ripemd160_steps_avx2(
+    __m256i& A, __m256i& B, __m256i& C, __m256i& D, __m256i& E,
+    __m256i& Ap, __m256i& Bp, __m256i& Cp, __m256i& Dp, __m256i& Ep,
+    const __m256i X[16], const __m256i& all_ones,
+    std::index_sequence<Is...>
+) {
+    (ripemd160_step_avx2<Is>(A, B, C, D, E, Ap, Bp, Cp, Dp, Ep, X, all_ones), ...);
 }
 
 CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
@@ -1085,32 +1163,97 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     const Fe* __restrict__ xs,
     const uint32_t target_w[5]
 ) {
-    alignas(32) uint32_t w_in[9][8];
-    #pragma unroll
-    for (int k = 0; k < 8; ++k) {
-        uint32_t prefix = (uint32_t)prefixes[k];
-        const Fe& x = xs[k];
-        w_in[0][k] = (prefix << 24) | (uint32_t)(x.d[3] >> 40);
-        w_in[1][k] = (uint32_t)(x.d[3] >> 8);
-        w_in[2][k] = ((uint32_t)x.d[3] << 24) | (uint32_t)(x.d[2] >> 40);
-        w_in[3][k] = (uint32_t)(x.d[2] >> 8);
-        w_in[4][k] = ((uint32_t)x.d[2] << 24) | (uint32_t)(x.d[1] >> 40);
-        w_in[5][k] = (uint32_t)(x.d[1] >> 8);
-        w_in[6][k] = ((uint32_t)x.d[1] << 24) | (uint32_t)(x.d[0] >> 40);
-        w_in[7][k] = (uint32_t)(x.d[0] >> 8);
-        w_in[8][k] = ((uint32_t)x.d[0] << 24) | 0x00800000U;
-    }
-
     __m256i W[64];
-    W[0] = _mm256_load_si256((const __m256i*)w_in[0]);
-    W[1] = _mm256_load_si256((const __m256i*)w_in[1]);
-    W[2] = _mm256_load_si256((const __m256i*)w_in[2]);
-    W[3] = _mm256_load_si256((const __m256i*)w_in[3]);
-    W[4] = _mm256_load_si256((const __m256i*)w_in[4]);
-    W[5] = _mm256_load_si256((const __m256i*)w_in[5]);
-    W[6] = _mm256_load_si256((const __m256i*)w_in[6]);
-    W[7] = _mm256_load_si256((const __m256i*)w_in[7]);
-    W[8] = _mm256_load_si256((const __m256i*)w_in[8]);
+    W[0] = _mm256_setr_epi32(
+        ((uint32_t)prefixes[0] << 24) | (uint32_t)(xs[0].d[3] >> 40),
+        ((uint32_t)prefixes[1] << 24) | (uint32_t)(xs[1].d[3] >> 40),
+        ((uint32_t)prefixes[2] << 24) | (uint32_t)(xs[2].d[3] >> 40),
+        ((uint32_t)prefixes[3] << 24) | (uint32_t)(xs[3].d[3] >> 40),
+        ((uint32_t)prefixes[4] << 24) | (uint32_t)(xs[4].d[3] >> 40),
+        ((uint32_t)prefixes[5] << 24) | (uint32_t)(xs[5].d[3] >> 40),
+        ((uint32_t)prefixes[6] << 24) | (uint32_t)(xs[6].d[3] >> 40),
+        ((uint32_t)prefixes[7] << 24) | (uint32_t)(xs[7].d[3] >> 40)
+    );
+    W[1] = _mm256_setr_epi32(
+        (uint32_t)(xs[0].d[3] >> 8),
+        (uint32_t)(xs[1].d[3] >> 8),
+        (uint32_t)(xs[2].d[3] >> 8),
+        (uint32_t)(xs[3].d[3] >> 8),
+        (uint32_t)(xs[4].d[3] >> 8),
+        (uint32_t)(xs[5].d[3] >> 8),
+        (uint32_t)(xs[6].d[3] >> 8),
+        (uint32_t)(xs[7].d[3] >> 8)
+    );
+    W[2] = _mm256_setr_epi32(
+        ((uint32_t)xs[0].d[3] << 24) | (uint32_t)(xs[0].d[2] >> 40),
+        ((uint32_t)xs[1].d[3] << 24) | (uint32_t)(xs[1].d[2] >> 40),
+        ((uint32_t)xs[2].d[3] << 24) | (uint32_t)(xs[2].d[2] >> 40),
+        ((uint32_t)xs[3].d[3] << 24) | (uint32_t)(xs[3].d[2] >> 40),
+        ((uint32_t)xs[4].d[3] << 24) | (uint32_t)(xs[4].d[2] >> 40),
+        ((uint32_t)xs[5].d[3] << 24) | (uint32_t)(xs[5].d[2] >> 40),
+        ((uint32_t)xs[6].d[3] << 24) | (uint32_t)(xs[6].d[2] >> 40),
+        ((uint32_t)xs[7].d[3] << 24) | (uint32_t)(xs[7].d[2] >> 40)
+    );
+    W[3] = _mm256_setr_epi32(
+        (uint32_t)(xs[0].d[2] >> 8),
+        (uint32_t)(xs[1].d[2] >> 8),
+        (uint32_t)(xs[2].d[2] >> 8),
+        (uint32_t)(xs[3].d[2] >> 8),
+        (uint32_t)(xs[4].d[2] >> 8),
+        (uint32_t)(xs[5].d[2] >> 8),
+        (uint32_t)(xs[6].d[2] >> 8),
+        (uint32_t)(xs[7].d[2] >> 8)
+    );
+    W[4] = _mm256_setr_epi32(
+        ((uint32_t)xs[0].d[2] << 24) | (uint32_t)(xs[0].d[1] >> 40),
+        ((uint32_t)xs[1].d[2] << 24) | (uint32_t)(xs[1].d[1] >> 40),
+        ((uint32_t)xs[2].d[2] << 24) | (uint32_t)(xs[2].d[1] >> 40),
+        ((uint32_t)xs[3].d[2] << 24) | (uint32_t)(xs[3].d[1] >> 40),
+        ((uint32_t)xs[4].d[2] << 24) | (uint32_t)(xs[4].d[1] >> 40),
+        ((uint32_t)xs[5].d[2] << 24) | (uint32_t)(xs[5].d[1] >> 40),
+        ((uint32_t)xs[6].d[2] << 24) | (uint32_t)(xs[6].d[1] >> 40),
+        ((uint32_t)xs[7].d[2] << 24) | (uint32_t)(xs[7].d[1] >> 40)
+    );
+    W[5] = _mm256_setr_epi32(
+        (uint32_t)(xs[0].d[1] >> 8),
+        (uint32_t)(xs[1].d[1] >> 8),
+        (uint32_t)(xs[2].d[1] >> 8),
+        (uint32_t)(xs[3].d[1] >> 8),
+        (uint32_t)(xs[4].d[1] >> 8),
+        (uint32_t)(xs[5].d[1] >> 8),
+        (uint32_t)(xs[6].d[1] >> 8),
+        (uint32_t)(xs[7].d[1] >> 8)
+    );
+    W[6] = _mm256_setr_epi32(
+        ((uint32_t)xs[0].d[1] << 24) | (uint32_t)(xs[0].d[0] >> 40),
+        ((uint32_t)xs[1].d[1] << 24) | (uint32_t)(xs[1].d[0] >> 40),
+        ((uint32_t)xs[2].d[1] << 24) | (uint32_t)(xs[2].d[0] >> 40),
+        ((uint32_t)xs[3].d[1] << 24) | (uint32_t)(xs[3].d[0] >> 40),
+        ((uint32_t)xs[4].d[1] << 24) | (uint32_t)(xs[4].d[0] >> 40),
+        ((uint32_t)xs[5].d[1] << 24) | (uint32_t)(xs[5].d[0] >> 40),
+        ((uint32_t)xs[6].d[1] << 24) | (uint32_t)(xs[6].d[0] >> 40),
+        ((uint32_t)xs[7].d[1] << 24) | (uint32_t)(xs[7].d[0] >> 40)
+    );
+    W[7] = _mm256_setr_epi32(
+        (uint32_t)(xs[0].d[0] >> 8),
+        (uint32_t)(xs[1].d[0] >> 8),
+        (uint32_t)(xs[2].d[0] >> 8),
+        (uint32_t)(xs[3].d[0] >> 8),
+        (uint32_t)(xs[4].d[0] >> 8),
+        (uint32_t)(xs[5].d[0] >> 8),
+        (uint32_t)(xs[6].d[0] >> 8),
+        (uint32_t)(xs[7].d[0] >> 8)
+    );
+    W[8] = _mm256_setr_epi32(
+        ((uint32_t)xs[0].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[1].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[2].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[3].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[4].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[5].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[6].d[0] << 24) | 0x00800000U,
+        ((uint32_t)xs[7].d[0] << 24) | 0x00800000U
+    );
     W[9]  = _mm256_setzero_si256();
     W[10] = _mm256_setzero_si256();
     W[11] = _mm256_setzero_si256();
@@ -1143,29 +1286,7 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     __m256i g = _mm256_set1_epi32(0x1f83d9ab);
     __m256i h = _mm256_set1_epi32(0x5be0cd19);
 
-    #pragma unroll
-    for (int r = 0; r < 64; ++r) {
-        __m256i S1 = _mm256_xor_si256(AVX2_ROR32_CONST(e, 6), _mm256_xor_si256(AVX2_ROR32_CONST(e, 11), AVX2_ROR32_CONST(e, 25)));
-        __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-        __m256i kw = _mm256_add_epi32(g_avx2_consts.K_sha[r], W[r]);
-        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));
-
-        __m256i S0 = _mm256_xor_si256(AVX2_ROR32_CONST(a, 2), _mm256_xor_si256(AVX2_ROR32_CONST(a, 13), AVX2_ROR32_CONST(a, 22)));
-        __m256i maj = _mm256_xor_si256(
-            _mm256_and_si256(a, b),
-            _mm256_xor_si256(_mm256_and_si256(a, c), _mm256_and_si256(b, c))
-        );
-        __m256i temp2 = _mm256_add_epi32(S0, maj);
-
-        h = g;
-        g = f;
-        f = e;
-        e = _mm256_add_epi32(d, temp1);
-        d = c;
-        c = b;
-        b = a;
-        a = _mm256_add_epi32(temp1, temp2);
-    }
+    run_sha256_rounds_avx2(a, b, c, d, e, f, g, h, W, std::make_index_sequence<64>{});
 
     const __m256i bswap_mask = _mm256_set_epi8(
         12, 13, 14, 15,
@@ -1205,74 +1326,7 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     __m256i Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
     const __m256i all_ones = _mm256_set1_epi32(0xFFFFFFFFU);
 
-    #pragma unroll
-    for (int j = 0; j < 16; ++j) {
-        __m256i f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
-        __m256i sum = _mm256_add_epi32(A, _mm256_add_epi32(f, X[host_rl_tab[j]]));
-        __m256i T = _mm256_add_epi32(AVX2_ROL32_VAR(sum, g_avx2_consts.sl[j], g_avx2_consts.sl_inv[j]), E);
-        A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
-
-        __m256i not_Dp = _mm256_xor_si256(Dp, all_ones);
-        __m256i fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, not_Dp));
-        __m256i sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[host_rr_tab[j]], _mm256_set1_epi32(0x50A28BE6U))));
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL32_VAR(sump, g_avx2_consts.sr[j], g_avx2_consts.sr_inv[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 16; j < 32; ++j) {
-        __m256i f = _mm256_or_si256(_mm256_and_si256(B, C), _mm256_andnot_si256(B, D));
-        __m256i sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[host_rl_tab[j]], _mm256_set1_epi32(0x5A827999U))));
-        __m256i T = _mm256_add_epi32(AVX2_ROL32_VAR(sum, g_avx2_consts.sl[j], g_avx2_consts.sl_inv[j]), E);
-        A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
-
-        __m256i fp = _mm256_or_si256(_mm256_and_si256(Bp, Dp), _mm256_andnot_si256(Dp, Cp));
-        __m256i sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[host_rr_tab[j]], _mm256_set1_epi32(0x5C4DD124U))));
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL32_VAR(sump, g_avx2_consts.sr[j], g_avx2_consts.sr_inv[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 32; j < 48; ++j) {
-        __m256i not_C = _mm256_xor_si256(C, all_ones);
-        __m256i f = _mm256_xor_si256(_mm256_or_si256(B, not_C), D);
-        __m256i sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[host_rl_tab[j]], _mm256_set1_epi32(0x6ED9EBA1U))));
-        __m256i T = _mm256_add_epi32(AVX2_ROL32_VAR(sum, g_avx2_consts.sl[j], g_avx2_consts.sl_inv[j]), E);
-        A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
-
-        __m256i not_Cp = _mm256_xor_si256(Cp, all_ones);
-        __m256i fp = _mm256_xor_si256(_mm256_or_si256(Bp, not_Cp), Dp);
-        __m256i sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[host_rr_tab[j]], _mm256_set1_epi32(0x6D703EF3U))));
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL32_VAR(sump, g_avx2_consts.sr[j], g_avx2_consts.sr_inv[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 48; j < 64; ++j) {
-        __m256i f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
-        __m256i sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[host_rl_tab[j]], _mm256_set1_epi32(0x8F1BBCDCU))));
-        __m256i T = _mm256_add_epi32(AVX2_ROL32_VAR(sum, g_avx2_consts.sl[j], g_avx2_consts.sl_inv[j]), E);
-        A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
-
-        __m256i fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
-        __m256i sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[host_rr_tab[j]], _mm256_set1_epi32(0x7A6D76E9U))));
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL32_VAR(sump, g_avx2_consts.sr[j], g_avx2_consts.sr_inv[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 64; j < 80; ++j) {
-        __m256i not_D = _mm256_xor_si256(D, all_ones);
-        __m256i f = _mm256_xor_si256(B, _mm256_or_si256(C, not_D));
-        __m256i sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[host_rl_tab[j]], _mm256_set1_epi32(0xA953FD4EU))));
-        __m256i T = _mm256_add_epi32(AVX2_ROL32_VAR(sum, g_avx2_consts.sl[j], g_avx2_consts.sl_inv[j]), E);
-        A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
-
-        __m256i fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
-        __m256i sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, X[host_rr_tab[j]]));
-        __m256i Tp = _mm256_add_epi32(AVX2_ROL32_VAR(sump, g_avx2_consts.sr[j], g_avx2_consts.sr_inv[j]), Ep);
-        Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
-    }
+    run_ripemd160_steps_avx2(A, B, C, D, E, Ap, Bp, Cp, Dp, Ep, X, all_ones, std::make_index_sequence<80>{});
 
     __m256i out0 = _mm256_add_epi32(_mm256_set1_epi32(0xEFCDAB89), _mm256_add_epi32(C, Dp));
     __m256i out1 = _mm256_add_epi32(_mm256_set1_epi32(0x98BADCFE), _mm256_add_epi32(D, Ep));
@@ -1531,12 +1585,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe inv_dx[1024];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 512;
+    alignas(64) Fe dx[512];
+    alignas(64) Fe cum[513];
+    alignas(64) Fe cur_x[512];
+    alignas(64) uint8_t cur_prefix[512];
 
     uint64_t local_counter = 0;
 
@@ -1581,15 +1634,13 @@ void scan_worker_montgomery(
 
                 Fe u = fe_inv(cum[cur_batch]);
 
-                for (int i = (int)cur_batch - 1; i >= 0; --i) {
-                    inv_dx[i] = fe_mul(u, cum[i]);
-                    u = fe_mul(u, dx[i]);
-                }
-
                 AffinePoint next_base;
-                for (uint32_t i = 0; i < cur_batch; ++i) {
+                for (int i = (int)cur_batch - 1; i >= 0; --i) {
+                    Fe inv_dx_i = fe_mul(u, cum[i]);
+                    u = fe_mul(u, dx[i]);
+
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
+                    Fe lambda = fe_mul(dy_i, inv_dx_i);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
@@ -1597,7 +1648,7 @@ void scan_worker_montgomery(
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
 
-                    if (i == cur_batch - 1) {
+                    if (i == (int)cur_batch - 1) {
                         next_base.x = xi;
                         next_base.y = yi;
                     }
