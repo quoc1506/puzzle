@@ -1643,15 +1643,31 @@ void scan_worker_montgomery(
                     Fe lambda = fe_mul(dy_i, inv_dx_i);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
-                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
+
+                    Fe term = fe_mul(lambda, fe_sub(cur_base.x, xi));
+                    uint64_t yi_d0 = term.d[0] - cur_base.y.d[0];
 
                     cur_x[i] = xi;
-                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    cur_prefix[i] = (yi_d0 & 1) ? 0x03 : 0x02;
 
-                    if (i == (int)cur_batch - 1) {
+                    if (__builtin_expect(i == (int)cur_batch - 1, 0)) {
                         next_base.x = xi;
-                        next_base.y = yi;
+                        next_base.y = fe_sub(term, cur_base.y);
                     }
+
+#if defined(__AVX2__)
+                    // Fuse 8-way AVX2 hash check right when an 8-element block completes in reverse pass
+                    if ((i & 7) == 0 && (i + 8 <= (int)cur_batch)) {
+                        int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
+                        if (__builtin_expect(match_idx >= 0, 0)) {
+                            std::lock_guard<std::mutex> lock(found_mtx);
+                            found_flag.store(true, std::memory_order_release);
+                            found_key = cur_k + (uint64_t)(i + match_idx);
+                            checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
+                            return;
+                        }
+                    }
+#endif
                 }
                 // Seamlessly advance cur_base to the next batch with ZERO scalar_mul_G!
                 cur_base = next_base;
@@ -1662,24 +1678,27 @@ void scan_worker_montgomery(
                 }
                 cur_base = G_TABLE[cur_batch - 1];
                 cur_base_valid = true;
+
+#if defined(__AVX2__)
+                uint32_t i = 0;
+                for (; i + 8 <= cur_batch; i += 8) {
+                    int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
+                    if (__builtin_expect(match_idx >= 0, 0)) {
+                        std::lock_guard<std::mutex> lock(found_mtx);
+                        found_flag.store(true, std::memory_order_release);
+                        found_key = cur_k + (uint64_t)(i + match_idx);
+                        checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
+                        return;
+                    }
+                }
+#endif
             }
 
-            // High-speed SHA256 + RIPEMD160 hash checks
-#if defined(__AVX2__)
-            uint32_t i = 0;
-            for (; i + 8 <= cur_batch; i += 8) {
-                int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
-                if (__builtin_expect(match_idx >= 0, 0)) {
-                    std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)(i + match_idx);
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
-                    return;
-                }
-            }
-            for (; i < cur_batch; ++i) {
+            // Remainder scalar checks if cur_batch is not a multiple of 8
+            uint32_t rem_start = (cur_batch & ~7U);
+            for (uint32_t rem = rem_start; rem < cur_batch; ++rem) {
                 uint32_t X[16];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                fast_sha256_into_ripemd_X(cur_prefix[rem], cur_x[rem], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
 
@@ -1687,13 +1706,14 @@ void scan_worker_montgomery(
                 if (cur_h64 == target_h64 && out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + i;
-                    checked_counter.fetch_add(local_counter + i + 1, std::memory_order_relaxed);
+                    found_key = cur_k + rem;
+                    checked_counter.fetch_add(local_counter + rem + 1, std::memory_order_relaxed);
                     return;
                 }
             }
-#else
-            for (uint32_t i = 0; i < cur_batch; ++i) {
+#if !defined(__AVX2__)
+            // For non-AVX2 builds, process all elements with scalar
+            for (uint32_t i = 0; i < rem_start; ++i) {
                 uint32_t X[16];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
@@ -1990,11 +2010,11 @@ int main(int argc, char* argv[]) {
         } else
 #endif
         {
-            std::atomic<uint64_t> work_offset(0);
+            alignas(64) std::atomic<uint64_t> work_offset(0);
             uint64_t slice_size = is_fast ? 1048576 : 524288;
-            std::atomic<bool> found_flag(false);
-            std::mutex found_mtx;
-            std::atomic<uint64_t> checked_counter(0);
+            alignas(64) std::atomic<bool> found_flag(false);
+            alignas(64) std::mutex found_mtx;
+            alignas(64) std::atomic<uint64_t> checked_counter(0);
 
             std::vector<std::thread> pool;
             for (int i = 0; i < threads; ++i) {
