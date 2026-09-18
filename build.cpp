@@ -270,6 +270,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r;
     uint64_t c = 0;
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         uint64_t s = a.d[i] + b.d[i];
         uint64_t c1 = (s < a.d[i]);
@@ -283,6 +284,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         uint64_t s = r.d[0] + K;
         uint64_t c2 = (s < K);
         r.d[0] = s;
+        #pragma unroll
         for (int i = 1; i < 4; ++i) {
             s = r.d[i] + c2;
             c2 = (s < c2);
@@ -305,6 +307,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     Fe r;
     uint64_t borrow = 0;
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         uint64_t diff = a.d[i] - b.d[i];
         uint64_t b1 = (a.d[i] < b.d[i]);
@@ -318,6 +321,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
         uint64_t diff = r.d[0] - K;
         uint64_t b2 = (r.d[0] < K);
         r.d[0] = diff;
+        #pragma unroll
         for (int i = 1; i < 4; ++i) {
             diff = r.d[i] - b2;
             b2 = (r.d[i] < b2);
@@ -330,6 +334,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
     const uint64_t K = 0x1000003D1ULL;
     uint64_t c = 0;
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         uint64_t hi = t[4 + i];
         uint64_t prod_lo = hi * K;
@@ -396,8 +401,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t t[8] = {0};
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         uint64_t carry = 0;
+        #pragma unroll
         for (int j = 0; j < 4; ++j) {
             uint64_t prod_lo = a.d[i] * b.d[j];
 #if defined(__CUDA_ARCH__)
@@ -423,28 +430,48 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     return fe_mul(a, a);
 }
 
-// 100% Mathematically Verified Inversion modulo 2^256 - 2^32 - 977
-CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
-    const uint64_t exp[4] = {
-        0xFFFFFFFEFFFFFC2DULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL,
-        0xFFFFFFFFFFFFFFFFULL
-    };
-    Fe res = {{1, 0, 0, 0}};
-    Fe base = a;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t w = exp[i];
-        for (int b = 0; b < 64; ++b) {
-            if (w & 1) {
-                res = fe_mul(res, base);
-            }
-            if (i == 3 && b == 63) break;
-            base = fe_sqr(base);
-            w >>= 1;
-        }
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
+    #pragma unroll
+    for (int i = 0; i < n; ++i) {
+        a = fe_sqr(a);
     }
-    return res;
+    return a;
+}
+
+// 100% Mathematically Verified Inversion modulo 2^256 - 2^32 - 977 (22-step Addition Chain)
+CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
+    Fe x2 = fe_mul(fe_sqr(a), a);
+    Fe x3 = fe_mul(fe_sqr(x2), a);
+    Fe x6 = fe_mul(fe_sqr_n(x3, 3), x3);
+    Fe x9 = fe_mul(fe_sqr_n(x6, 3), x3);
+    Fe x11 = fe_mul(fe_sqr_n(x9, 2), x2);
+    Fe x22 = fe_mul(fe_sqr_n(x11, 11), x11);
+    Fe x44 = fe_mul(fe_sqr_n(x22, 22), x22);
+    Fe x88 = fe_mul(fe_sqr_n(x44, 44), x44);
+    Fe x176 = fe_mul(fe_sqr_n(x88, 88), x88);
+    Fe x220 = fe_mul(fe_sqr_n(x176, 44), x44);
+    Fe x223 = fe_mul(fe_sqr_n(x220, 3), x3);
+
+    // Top 223 bits (all 1s) shifted by 33 bits
+    Fe t = fe_sqr_n(x223, 33);
+
+    // Low 33 bits: bit 32 is 0, bits 31..0 is 0xFFFFFC2D
+    Fe x14 = fe_mul(fe_sqr_n(x11, 3), x3);
+    Fe x16 = fe_mul(fe_sqr_n(x14, 2), x2);
+    Fe low = fe_sqr_n(x16, 16);
+
+    uint32_t val = 0xFC2D;
+    Fe b = a;
+    Fe low16 = {{1, 0, 0, 0}};
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        if ((val >> i) & 1) {
+            low16 = fe_mul(low16, b);
+        }
+        if (i < 15) b = fe_sqr(b);
+    }
+    low = fe_mul(low, low16);
+    return fe_mul(t, low);
 }
 
 struct AffinePoint {
@@ -842,6 +869,7 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __constant__ uint32_t dev_target_w[5];
 __constant__ uint64_t dev_target_h64;
+__constant__ AffinePoint dev_delta_G;
 
 CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
@@ -987,7 +1015,6 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
 CUDA_GLOBAL void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
-    AffinePoint delta_G,
     uint32_t grid_threads,
     uint32_t steps
 ) {
@@ -1017,7 +1044,7 @@ CUDA_GLOBAL void cuda_scan_kernel(
         }
 
         if (s + 1 < steps) {
-            P = warp_montgomery_add_affine(P, delta_G, lane);
+            P = warp_montgomery_add_affine(P, dev_delta_G, lane);
         }
     }
 }
@@ -1058,7 +1085,8 @@ void scan_worker_montgomery(
     std::atomic<uint64_t>& checked_counter
 ) {
     const uint32_t BATCH_SIZE = 1024;
-    AffinePoint cur_points[1024];
+    Fe cur_x[1024];
+    uint8_t cur_prefix[1024];
     Fe dx_arr[1024];
     Fe prefix_prod[1024];
 
@@ -1079,7 +1107,8 @@ void scan_worker_montgomery(
                 (uint64_t)(k0.high >> 64)
             };
             AffinePoint P0 = scalar_mul_G(limbs);
-            cur_points[0] = P0;
+            cur_x[0] = P0.x;
+            cur_prefix[0] = (P0.y.d[0] & 1) ? 0x03 : 0x02;
 
             for (uint32_t i = 1; i < cur_batch; ++i) {
                 dx_arr[i] = fe_sub(G_TABLE[i - 1].x, P0.x);
@@ -1105,14 +1134,13 @@ void scan_worker_montgomery(
                 Fe lambda2 = fe_sqr(lambda);
                 Fe x3 = fe_sub(fe_sub(lambda2, P0.x), G_TABLE[i - 1].x);
                 Fe y3 = fe_sub(fe_mul(lambda, fe_sub(P0.x, x3)), P0.y);
-                cur_points[i].x = x3;
-                cur_points[i].y = y3;
+                cur_x[i] = x3;
+                cur_prefix[i] = (y3.d[0] & 1) ? 0x03 : 0x02;
             }
 
             for (uint32_t i = 0; i < cur_batch; ++i) {
-                uint8_t prefix = (cur_points[i].y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[16];
-                fast_sha256_into_ripemd_X(prefix, cur_points[i].x, X);
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
 
@@ -1197,7 +1225,7 @@ int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
-    int current_puzzle = 70;
+    int current_puzzle = 71;
     std::string current_user = "guest";
     int requested_multiple = 1;
 
@@ -1231,7 +1259,7 @@ int main(int argc, char* argv[]) {
             api_base = argv[++i];
         } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
             current_puzzle = std::atoi(argv[++i]);
-        } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
+        } else if ((arg == "-u" || arg == "--user" || arg == "-w" || arg == "--worker") && i + 1 < argc) {
             current_user = argv[++i];
         } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::max(1, std::atoi(argv[++i]));
@@ -1250,35 +1278,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::cout << "==========================================================" << std::endl;
-    std::cout << "  Bitcoin Puzzle Distributed Solver - Unified Engine      " << std::endl;
-    std::cout << "==========================================================" << std::endl;
-    std::cout << "[*] Target Server : " << api_base << std::endl;
-    std::cout << "[*] Puzzle ID     : " << current_puzzle << std::endl;
-    std::cout << "[*] Worker User   : " << current_user << std::endl;
-    std::cout << "[*] Batch Multiple: " << requested_multiple << std::endl;
-
 #ifdef __CUDACC__
     bool use_cuda = !force_cpu;
     if (use_cuda) {
         int deviceCount = 0;
         cudaError_t err = cudaGetDeviceCount(&deviceCount);
         if (err != cudaSuccess || deviceCount == 0) {
-            std::cout << "[!] No CUDA GPU detected. Falling back to CPU mode..." << std::endl;
             use_cuda = false;
-        } else {
-            cudaDeviceProp prop;
-            cudaGetDeviceProperties(&prop, 0);
-            std::cout << "[+] CUDA Device   : " << prop.name << " (" << prop.multiProcessorCount << " SMs)" << std::endl;
         }
     }
-    if (!use_cuda) {
-        std::cout << "[*] Mode          : CPU mode" << (force_cpu ? " (forced with -cpu flag)" : "") << std::endl;
-        std::cout << "[*] CPU Threads   : " << threads << std::endl;
-    }
-#else
-    std::cout << "[*] Mode          : Native CPU mode" << std::endl;
-    std::cout << "[*] CPU Threads   : " << threads << std::endl;
 #endif
 
     init_generator_table();
@@ -1299,41 +1307,52 @@ int main(int argc, char* argv[]) {
 
     while (g_running.load()) {
         std::stringstream req_url;
-        req_url << api_base << "?action=get_work&puzzle=" << current_puzzle
-                << "&user=" << current_user << "&batch=" << requested_multiple;
+        req_url << api_base << "?action=range&puzzle=" << current_puzzle
+                << "&user=" << current_user << "&multiple=" << requested_multiple;
 
         std::string resp;
         if (!http_get(req_url.str(), &resp)) {
-            std::cerr << "[!] Network error fetching work. Retrying in 3s..." << std::endl;
             portable_sleep_ms(3000);
             continue;
         }
 
         std::string status = json_get_string(resp, "status");
+        if (status == "no_work") {
+            portable_sleep_ms(2000);
+            continue;
+        }
         if (status == "solved") {
-            std::cout << "[+] Puzzle #" << current_puzzle << " is already solved! Exiting..." << std::endl;
             break;
         }
-        if (status != "ok" && status != "success") {
-            std::cout << "[*] Server message: " << resp << ". Retrying in 3s..." << std::endl;
+        std::string server_err = json_get_string(resp, "error");
+        if (!server_err.empty()) {
             portable_sleep_ms(3000);
             continue;
         }
 
         std::string str_block = json_get_string(resp, "block");
+        std::string str_range_idx = json_get_string(resp, "range_idx");
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
-        std::string str_target = json_get_string(resp, "target");
+        std::string str_target = json_get_string(resp, "target_address");
+        if (str_target.empty()) {
+            str_target = json_get_string(resp, "target");
+        }
         std::string str_range_count = json_get_string(resp, "range_count");
         if (str_range_count.empty()) str_range_count = json_get_string(resp, "multiple");
 
+        std::string str_server_user = json_get_string(resp, "user");
+        if (!str_server_user.empty() && (current_user == "guest" || current_user.rfind("user-", 0) == 0)) {
+            current_user = str_server_user;
+        }
+
         if (str_start.empty() || str_end.empty() || str_target.empty()) {
-            std::cerr << "[!] Invalid work payload: " << resp << std::endl;
             portable_sleep_ms(3000);
             continue;
         }
 
         uint64_t block_idx = (uint64_t)std::strtoull(str_block.c_str(), NULL, 10);
+        uint64_t range_idx = str_range_idx.empty() ? 0 : (uint64_t)std::strtoull(str_range_idx.c_str(), NULL, 10);
         int range_count = str_range_count.empty() ? requested_multiple : std::atoi(str_range_count.c_str());
         if (range_count <= 0) range_count = 1;
 
@@ -1344,7 +1363,6 @@ int main(int argc, char* argv[]) {
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
-            std::cerr << "[!] Error decoding target address base58check: " << str_target << std::endl;
             portable_sleep_ms(3000);
             continue;
         }
@@ -1358,9 +1376,6 @@ int main(int argc, char* argv[]) {
                           ((uint32_t)target_h160[i * 4 + 3] << 24);
         }
         uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
-
-        std::cout << "[*] Block " << block_idx << " | Ranges: " << range_count
-                  << " | Keys: " << u256_to_dec(total_keys) << std::endl;
 
         bool hit = false;
         u256 found_key = 0;
@@ -1386,6 +1401,7 @@ int main(int argc, char* argv[]) {
 
             uint64_t delta_scalar[4] = { grid_threads, 0, 0, 0 };
             AffinePoint delta_G = scalar_mul_G(delta_scalar);
+            cudaMemcpyToSymbol(dev_delta_G, &delta_G, sizeof(AffinePoint));
 
             uint64_t actual_checked = 0;
             while (actual_checked < total_keys_count && g_running.load() && !hit) {
@@ -1394,7 +1410,7 @@ int main(int argc, char* argv[]) {
                 u256 cur_start = start_k + actual_checked;
 
                 cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                    cur_start, cur_chunk, delta_G, grid_threads, cur_steps
+                    cur_start, cur_chunk, grid_threads, cur_steps
                 );
                 cudaDeviceSynchronize();
 
@@ -1438,25 +1454,19 @@ int main(int argc, char* argv[]) {
         if (elapsed <= 0.0) elapsed = 0.001;
         double speed = (double)checked / elapsed;
 
-        if (hit) {
-            std::cout << "\n========================================================" << std::endl;
-            std::cout << "[!!!] PRIVATE KEY FOUND: 0x" << u256_to_hex64(found_key) << std::endl;
-            std::cout << "========================================================\n" << std::endl;
-        } else {
-            std::cout << "[-] Range scan completed. Speed: " << std::fixed << std::setprecision(2)
-                      << (speed / 1e6) << " MKeys/s | Elapsed: " << elapsed << "s" << std::endl;
-        }
+
 
         if (!hit && !g_running.load()) break;
 
         std::stringstream json;
-        json << "{\"action\":\"result\",\"puzzle\":" << current_puzzle
+        json << "{\"action\":\"result\""
+             << ",\"puzzle\":" << current_puzzle
              << ",\"block\":" << block_idx
-             << ",\"range_idx\":0"
+             << ",\"range_idx\":" << range_idx
              << ",\"range_count\":" << range_count
              << ",\"multiple\":" << range_count
              << ",\"status\":\"" << (hit ? "found" : "done") << "\""
-             << ",\"private_key\":\"" << (hit ? u256_to_hex64(found_key) : "") << "\""
+             << ",\"private_key\":\"" << (hit ? ("0x" + u256_to_hex64(found_key)) : "") << "\""
              << ",\"user\":\"" << current_user << "\""
              << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
              << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
@@ -1464,7 +1474,7 @@ int main(int argc, char* argv[]) {
              << ",\"count\":" << checked
              << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
 
-        std::string post_url = api_base + "?action=result&user=" + current_user;
+        std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
         std::string ack;
         http_post(post_url, json.str(), &ack);
 
