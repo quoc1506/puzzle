@@ -925,6 +925,26 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
 #endif
 }
 
+template<uint32_t imm>
+CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
+#if defined(__CUDA_ARCH__)
+    uint32_t res;
+    asm("lop3.b32 %0, %1, %2, %3, %4;" : "=r"(res) : "r"(a), "r"(b), "r"(c), "n"(imm));
+    return res;
+#else
+    uint32_t res = 0;
+    if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
+    if constexpr (imm & 0x02) res |= (~a & ~b &  c);
+    if constexpr (imm & 0x04) res |= (~a &  b & ~c);
+    if constexpr (imm & 0x08) res |= (~a &  b &  c);
+    if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
+    if constexpr (imm & 0x20) res |= ( a & ~b &  c);
+    if constexpr (imm & 0x40) res |= ( a &  b & ~c);
+    if constexpr (imm & 0x80) res |= ( a &  b &  c);
+    return res;
+#endif
+}
+
 inline constexpr uint32_t host_K_SHA256[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
     0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
@@ -969,24 +989,42 @@ inline constexpr uint8_t host_sr_tab[80] = {
 };
 
 CUDA_HOSTDEV CUDA_INLINE constexpr uint32_t get_sha256_k(int i) {
-#if defined(__CUDA_ARCH__)
-    constexpr uint32_t K[64] = {
-        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
-        0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
-        0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
-        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
-        0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
-        0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
-        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
-        0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
-    };
-    return K[i];
-#else
     return host_K_SHA256[i];
-#endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rl(int j) {
+    return host_rl_tab[j];
+}
+
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sl(int j) {
+    return host_sl_tab[j];
+}
+
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rr(int j) {
+    return host_rr_tab[j];
+}
+
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sr(int j) {
+    return host_sr_tab[j];
+}
+
+CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_X_left(int j, const uint32_t X[8]) {
+    uint8_t rl = host_rl_tab[j];
+    if (rl < 8) return X[rl];
+    if (rl == 8) return 0x00000080U;
+    if (rl == 14) return 256U;
+    return 0U;
+}
+
+CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_X_right(int j, const uint32_t X[8]) {
+    uint8_t rr = host_rr_tab[j];
+    if (rr < 8) return X[rr];
+    if (rr == 8) return 0x00000080U;
+    if (rr == 14) return 256U;
+    return 0U;
+}
+
+CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
     w[1] = (uint32_t)(x.d[3] >> 8);
@@ -1006,10 +1044,10 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     #pragma unroll
     for (int i = 0; i < 16; ++i) {
         uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
-        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t ch = lop3_b32<0xCA>(e, f, g);
         uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + w[i];
         uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t maj = lop3_b32<0xE8>(a, b, c);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1024,10 +1062,10 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
         w[i & 15] = wi;
 
         uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
-        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t ch = lop3_b32<0xCA>(e, f, g);
         uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + wi;
         uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
-        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t maj = lop3_b32<0xE8>(a, b, c);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1042,193 +1080,205 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     X[5] = bswap32_dev(0x9b05688c + f);
     X[6] = bswap32_dev(0x1f83d9ab + g);
     X[7] = bswap32_dev(0x5be0cd19 + h);
-    X[8] = 0x00000080U;
-    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
-    X[14] = 256;
-    X[15] = 0;
 }
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rl(int j) {
-#if defined(__CUDA_ARCH__)
-    constexpr uint8_t tab[80] = {
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-        7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
-        3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
-        1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
-        4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
-    };
-    return tab[j];
-#else
-    return host_rl_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sl(int j) {
-#if defined(__CUDA_ARCH__)
-    constexpr uint8_t tab[80] = {
-        11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
-        7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
-        11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
-        11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
-        9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
-    };
-    return tab[j];
-#else
-    return host_sl_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rr(int j) {
-#if defined(__CUDA_ARCH__)
-    constexpr uint8_t tab[80] = {
-        5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
-        6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
-        15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
-        8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
-        12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
-    };
-    return tab[j];
-#else
-    return host_rr_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sr(int j) {
-#if defined(__CUDA_ARCH__)
-    constexpr uint8_t tab[80] = {
-        8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
-        9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
-        9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
-        15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
-        8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
-    };
-    return tab[j];
-#else
-    return host_sr_tab[j];
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[16], const uint32_t target_w[5]) {
+CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
+    // 1. Left line execution using only 5 state registers
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
     #pragma unroll
     for (int j = 0; j < 16; ++j) {
-        uint32_t f = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)], get_ripemd_sl(j)) + E;
+        uint32_t f = lop3_b32<0x96>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val, host_sl_tab[j]) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
+    }
+
+    #pragma unroll
+    for (int j = 16; j < 32; ++j) {
+        uint32_t f = lop3_b32<0xCA>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 32; j < 48; ++j) {
+        uint32_t f = lop3_b32<0x59>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 48; j < 64; ++j) {
+        uint32_t f = lop3_b32<0xE4>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 64; j < 80; ++j) {
+        uint32_t f = lop3_b32<0x2D>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    uint32_t c_left = C;
+    uint32_t d_left = D;
+    uint32_t e_left = E;
+    uint32_t a_left = A;
+    uint32_t b_left = B;
+
+    // 2. Right line execution reusing state registers
+    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
+
+    #pragma unroll
+    for (int j = 0; j < 16; ++j) {
+        uint32_t fp = lop3_b32<0x2D>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 16; j < 32; ++j) {
-        uint32_t f = (B & C) | (~B & D);
-        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x5A827999U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0xE4>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 32; j < 48; ++j) {
-        uint32_t f = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0x59>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 48; j < 64; ++j) {
-        uint32_t f = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0xCA>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 64; j < 80; ++j) {
-        uint32_t f = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0xA953FD4EU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)], get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0x96>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
-    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
-    if ((0x10325476U + E + Ap) != target_w[2]) return false;
-    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
-    return ((0x67452301U + B + Cp) == target_w[4]);
+    // Fast early check on word 0
+    if ((0xEFCDAB89U + c_left + Dp) != target_w[0]) return false;
+    if ((0x98BADCFEU + d_left + Ep) != target_w[1]) return false;
+    if ((0x10325476U + e_left + Ap) != target_w[2]) return false;
+    if ((0xC3D2E1F0U + a_left + Bp) != target_w[3]) return false;
+    return ((0x67452301U + b_left + Cp) == target_w[4]);
 }
 
-CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
+CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t out_h[5]) {
     uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
 
     #pragma unroll
     for (int j = 0; j < 16; ++j) {
-        uint32_t f = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)], get_ripemd_sl(j)) + E;
+        uint32_t f = lop3_b32<0x96>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val, host_sl_tab[j]) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
+    }
+
+    #pragma unroll
+    for (int j = 16; j < 32; ++j) {
+        uint32_t f = lop3_b32<0xCA>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 32; j < 48; ++j) {
+        uint32_t f = lop3_b32<0x59>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 48; j < 64; ++j) {
+        uint32_t f = lop3_b32<0xE4>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    #pragma unroll
+    for (int j = 64; j < 80; ++j) {
+        uint32_t f = lop3_b32<0x2D>(B, C, D);
+        uint32_t x_val = get_ripemd_X_left(j, X);
+        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+    }
+
+    uint32_t c_left = C;
+    uint32_t d_left = D;
+    uint32_t e_left = E;
+    uint32_t a_left = A;
+    uint32_t b_left = B;
+
+    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
+
+    #pragma unroll
+    for (int j = 0; j < 16; ++j) {
+        uint32_t fp = lop3_b32<0x2D>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 16; j < 32; ++j) {
-        uint32_t f = (B & C) | (~B & D);
-        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x5A827999U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0xE4>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 32; j < 48; ++j) {
-        uint32_t f = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0x59>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 48; j < 64; ++j) {
-        uint32_t f = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)] + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0xCA>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
     #pragma unroll
     for (int j = 64; j < 80; ++j) {
-        uint32_t f = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32_dev(A + f + X[get_ripemd_rl(j)] + 0xA953FD4EU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + X[get_ripemd_rr(j)], get_ripemd_sr(j)) + Ep;
+        uint32_t fp = lop3_b32<0x96>(Bp, Cp, Dp);
+        uint32_t x_val = get_ripemd_X_right(j, X);
+        uint32_t Tp = rol32_dev(Ap + fp + x_val, host_sr_tab[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
-    // Standard RIPEMD-160 Parallel Branch Accumulation
-    out_h[0] = 0xEFCDAB89 + C + Dp;
-    out_h[1] = 0x98BADCFE + D + Ep;
-    out_h[2] = 0x10325476 + E + Ap;
-    out_h[3] = 0xC3D2E1F0 + A + Bp;
-    out_h[4] = 0x67452301 + B + Cp;
+    out_h[0] = 0xEFCDAB89 + c_left + Dp;
+    out_h[1] = 0x98BADCFE + d_left + Ep;
+    out_h[2] = 0x10325476 + e_left + Ap;
+    out_h[3] = 0xC3D2E1F0 + a_left + Bp;
+    out_h[4] = 0x67452301 + b_left + Cp;
 }
 
 #if defined(__AVX2__)
@@ -1311,69 +1361,115 @@ CUDA_INLINE void run_sha256_rest_avx2(
 }
 
 template<int j>
-CUDA_INLINE void ripemd160_step_avx2(
+CUDA_INLINE void ripemd160_left_step_avx2(
     __m256i& A, __m256i& B, __m256i& C, __m256i& D, __m256i& E,
-    __m256i& Ap, __m256i& Bp, __m256i& Cp, __m256i& Dp, __m256i& Ep,
-    const __m256i X[16], const __m256i& all_ones
+    const __m256i X[8], const __m256i& all_ones
 ) {
     constexpr uint8_t rl = host_rl_tab[j];
     constexpr uint8_t sl = host_sl_tab[j];
-    constexpr uint8_t rr = host_rr_tab[j];
-    constexpr uint8_t sr = host_sr_tab[j];
 
     __m256i f, sum, T;
     if constexpr (j < 16) {
         f = _mm256_xor_si256(B, _mm256_xor_si256(C, D));
-        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, X[rl]));
     } else if constexpr (j < 32) {
         f = _mm256_or_si256(_mm256_and_si256(B, C), _mm256_andnot_si256(B, D));
-        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x5A827999U))));
     } else if constexpr (j < 48) {
         __m256i not_C = _mm256_xor_si256(C, all_ones);
         f = _mm256_xor_si256(_mm256_or_si256(B, not_C), D);
-        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x6ED9EBA1U))));
     } else if constexpr (j < 64) {
         f = _mm256_xor_si256(C, _mm256_and_si256(D, _mm256_xor_si256(B, C)));
-        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0x8F1BBCDCU))));
     } else {
         __m256i not_D = _mm256_xor_si256(D, all_ones);
         f = _mm256_xor_si256(B, _mm256_or_si256(C, not_D));
-        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(0xA953FD4EU))));
     }
+
+    constexpr uint32_t K = (j < 16) ? 0 : (j < 32) ? 0x5A827999U : (j < 48) ? 0x6ED9EBA1U : (j < 64) ? 0x8F1BBCDCU : 0xA953FD4EU;
+
+    if constexpr (rl < 8) {
+        if constexpr (K == 0) {
+            sum = _mm256_add_epi32(A, _mm256_add_epi32(f, X[rl]));
+        } else {
+            sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_add_epi32(X[rl], _mm256_set1_epi32(K))));
+        }
+    } else if constexpr (rl == 8) {
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_set1_epi32(K + 0x00000080U)));
+    } else if constexpr (rl == 14) {
+        sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_set1_epi32(K + 256U)));
+    } else {
+        if constexpr (K == 0) {
+            sum = _mm256_add_epi32(A, f);
+        } else {
+            sum = _mm256_add_epi32(A, _mm256_add_epi32(f, _mm256_set1_epi32(K)));
+        }
+    }
+
     T = _mm256_add_epi32(AVX2_ROL32_CONST(sum, sl), E);
     A = E; E = D; D = AVX2_ROL32_CONST(C, 10); C = B; B = T;
+}
+
+template<size_t... Is>
+CUDA_INLINE void run_ripemd160_left_steps_avx2(
+    __m256i& A, __m256i& B, __m256i& C, __m256i& D, __m256i& E,
+    const __m256i X[8], const __m256i& all_ones,
+    std::index_sequence<Is...>
+) {
+    (ripemd160_left_step_avx2<Is>(A, B, C, D, E, X, all_ones), ...);
+}
+
+template<int j>
+CUDA_INLINE void ripemd160_right_step_avx2(
+    __m256i& Ap, __m256i& Bp, __m256i& Cp, __m256i& Dp, __m256i& Ep,
+    const __m256i X[8], const __m256i& all_ones
+) {
+    constexpr uint8_t rr = host_rr_tab[j];
+    constexpr uint8_t sr = host_sr_tab[j];
 
     __m256i fp, sump, Tp;
     if constexpr (j < 16) {
         __m256i not_Dp = _mm256_xor_si256(Dp, all_ones);
         fp = _mm256_xor_si256(Bp, _mm256_or_si256(Cp, not_Dp));
-        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x50A28BE6U))));
     } else if constexpr (j < 32) {
         fp = _mm256_or_si256(_mm256_and_si256(Bp, Dp), _mm256_andnot_si256(Dp, Cp));
-        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x5C4DD124U))));
     } else if constexpr (j < 48) {
         __m256i not_Cp = _mm256_xor_si256(Cp, all_ones);
         fp = _mm256_xor_si256(_mm256_or_si256(Bp, not_Cp), Dp);
-        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x6D703EF3U))));
     } else if constexpr (j < 64) {
         fp = _mm256_xor_si256(Dp, _mm256_and_si256(Bp, _mm256_xor_si256(Cp, Dp)));
-        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(0x7A6D76E9U))));
     } else {
         fp = _mm256_xor_si256(Bp, _mm256_xor_si256(Cp, Dp));
-        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, X[rr]));
     }
+
+    constexpr uint32_t Kp = (j < 16) ? 0x50A28BE6U : (j < 32) ? 0x5C4DD124U : (j < 48) ? 0x6D703EF3U : (j < 64) ? 0x7A6D76E9U : 0;
+
+    if constexpr (rr < 8) {
+        if constexpr (Kp == 0) {
+            sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, X[rr]));
+        } else {
+            sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_add_epi32(X[rr], _mm256_set1_epi32(Kp))));
+        }
+    } else if constexpr (rr == 8) {
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_set1_epi32(Kp + 0x00000080U)));
+    } else if constexpr (rr == 14) {
+        sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_set1_epi32(Kp + 256U)));
+    } else {
+        if constexpr (Kp == 0) {
+            sump = _mm256_add_epi32(Ap, fp);
+        } else {
+            sump = _mm256_add_epi32(Ap, _mm256_add_epi32(fp, _mm256_set1_epi32(Kp)));
+        }
+    }
+
     Tp = _mm256_add_epi32(AVX2_ROL32_CONST(sump, sr), Ep);
     Ap = Ep; Ep = Dp; Dp = AVX2_ROL32_CONST(Cp, 10); Cp = Bp; Bp = Tp;
 }
 
 template<size_t... Is>
-CUDA_INLINE void run_ripemd160_steps_avx2(
-    __m256i& A, __m256i& B, __m256i& C, __m256i& D, __m256i& E,
+CUDA_INLINE void run_ripemd160_right_steps_avx2(
     __m256i& Ap, __m256i& Bp, __m256i& Cp, __m256i& Dp, __m256i& Ep,
-    const __m256i X[16], const __m256i& all_ones,
+    const __m256i X[8], const __m256i& all_ones,
     std::index_sequence<Is...>
 ) {
-    (ripemd160_step_avx2<Is>(A, B, C, D, E, Ap, Bp, Cp, Dp, Ep, X, all_ones), ...);
+    (ripemd160_right_step_avx2<Is>(Ap, Bp, Cp, Dp, Ep, X, all_ones), ...);
 }
 
 CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
@@ -1503,7 +1599,7 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
          0,  1,  2,  3
     );
 
-    __m256i X[16];
+    __m256i X[8];
     X[0] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0x6a09e667), a), bswap_mask);
     X[1] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0xbb67ae85), b), bswap_mask);
     X[2] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0x3c6ef372), c), bswap_mask);
@@ -1512,37 +1608,43 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     X[5] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0x9b05688c), f), bswap_mask);
     X[6] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0x1f83d9ab), g), bswap_mask);
     X[7] = _mm256_shuffle_epi8(_mm256_add_epi32(_mm256_set1_epi32(0x5be0cd19), h), bswap_mask);
-    X[8] = _mm256_set1_epi32(0x00000080U);
-    X[9]  = _mm256_setzero_si256();
-    X[10] = _mm256_setzero_si256();
-    X[11] = _mm256_setzero_si256();
-    X[12] = _mm256_setzero_si256();
-    X[13] = _mm256_setzero_si256();
-    X[14] = _mm256_set1_epi32(256);
-    X[15] = _mm256_setzero_si256();
 
+    // 1. Left line using 5 YMM registers
     __m256i A = _mm256_set1_epi32(0x67452301);
     __m256i B = _mm256_set1_epi32(0xEFCDAB89);
     __m256i C = _mm256_set1_epi32(0x98BADCFE);
     __m256i D = _mm256_set1_epi32(0x10325476);
     __m256i E = _mm256_set1_epi32(0xC3D2E1F0);
-
-    __m256i Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
     const __m256i all_ones = _mm256_set1_epi32(0xFFFFFFFFU);
 
-    run_ripemd160_steps_avx2(A, B, C, D, E, Ap, Bp, Cp, Dp, Ep, X, all_ones, std::make_index_sequence<80>{});
+    run_ripemd160_left_steps_avx2(A, B, C, D, E, X, all_ones, std::make_index_sequence<80>{});
 
-    __m256i out0 = _mm256_add_epi32(_mm256_set1_epi32(0xEFCDAB89), _mm256_add_epi32(C, Dp));
-    __m256i out1 = _mm256_add_epi32(_mm256_set1_epi32(0x98BADCFE), _mm256_add_epi32(D, Ep));
+    __m256i C_left = C;
+    __m256i D_left = D;
+    __m256i E_left = E;
+    __m256i A_left = A;
+    __m256i B_left = B;
+
+    // 2. Right line reusing registers
+    __m256i Ap = _mm256_set1_epi32(0x67452301);
+    __m256i Bp = _mm256_set1_epi32(0xEFCDAB89);
+    __m256i Cp = _mm256_set1_epi32(0x98BADCFE);
+    __m256i Dp = _mm256_set1_epi32(0x10325476);
+    __m256i Ep = _mm256_set1_epi32(0xC3D2E1F0);
+
+    run_ripemd160_right_steps_avx2(Ap, Bp, Cp, Dp, Ep, X, all_ones, std::make_index_sequence<80>{});
+
+    __m256i out0 = _mm256_add_epi32(_mm256_set1_epi32(0xEFCDAB89), _mm256_add_epi32(C_left, Dp));
+    __m256i out1 = _mm256_add_epi32(_mm256_set1_epi32(0x98BADCFE), _mm256_add_epi32(D_left, Ep));
 
     __m256i match0 = _mm256_cmpeq_epi32(out0, _mm256_set1_epi32(target_w[0]));
     __m256i match1 = _mm256_cmpeq_epi32(out1, _mm256_set1_epi32(target_w[1]));
     int mask = _mm256_movemask_epi8(_mm256_and_si256(match0, match1));
 
     if (__builtin_expect(mask != 0, 0)) {
-        __m256i out2 = _mm256_add_epi32(_mm256_set1_epi32(0x10325476), _mm256_add_epi32(E, Ap));
-        __m256i out3 = _mm256_add_epi32(_mm256_set1_epi32(0xC3D2E1F0), _mm256_add_epi32(A, Bp));
-        __m256i out4 = _mm256_add_epi32(_mm256_set1_epi32(0x67452301), _mm256_add_epi32(B, Cp));
+        __m256i out2 = _mm256_add_epi32(_mm256_set1_epi32(0x10325476), _mm256_add_epi32(E_left, Ap));
+        __m256i out3 = _mm256_add_epi32(_mm256_set1_epi32(0xC3D2E1F0), _mm256_add_epi32(A_left, Bp));
+        __m256i out4 = _mm256_add_epi32(_mm256_set1_epi32(0x67452301), _mm256_add_epi32(B_left, Cp));
 
         alignas(32) uint32_t o0[8], o1[8], o2[8], o3[8], o4[8];
         _mm256_store_si256((__m256i*)o0, out0);
@@ -1568,7 +1670,7 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __constant__ uint32_t dev_target_w[5];
 __constant__ uint64_t dev_target_h64;
-__constant__ AffinePoint dev_batch_G[8];
+__constant__ AffinePoint dev_batch_G[4];
 
 CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
     uint32_t lo = (uint32_t)val;
@@ -1701,137 +1803,10 @@ CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4])
     return jacobian_to_affine(res);
 }
 
-CUDA_DEV CUDA_INLINE uint32_t get_ripemd_word(int idx, uint32_t x0, uint32_t x1, uint32_t x2, uint32_t x3, uint32_t x4, uint32_t x5, uint32_t x6, uint32_t x7) {
-    switch (idx) {
-        case 0: return x0;
-        case 1: return x1;
-        case 2: return x2;
-        case 3: return x3;
-        case 4: return x4;
-        case 5: return x5;
-        case 6: return x6;
-        case 7: return x7;
-        case 8: return 0x00000080U;
-        case 14: return 256U;
-        default: return 0U;
-    }
-}
-
 CUDA_DEV CUDA_INLINE bool fast_hash160_check(uint8_t prefix, const Fe& x, const uint32_t target_w[5]) {
-    uint32_t w[16];
-    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
-    w[1] = (uint32_t)(x.d[3] >> 8);
-    w[2] = ((uint32_t)x.d[3] << 24) | (uint32_t)(x.d[2] >> 40);
-    w[3] = (uint32_t)(x.d[2] >> 8);
-    w[4] = ((uint32_t)x.d[2] << 24) | (uint32_t)(x.d[1] >> 40);
-    w[5] = (uint32_t)(x.d[1] >> 8);
-    w[6] = ((uint32_t)x.d[1] << 24) | (uint32_t)(x.d[0] >> 40);
-    w[7] = (uint32_t)(x.d[0] >> 8);
-    w[8] = ((uint32_t)x.d[0] << 24) | 0x00800000U;
-    w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
-    w[15] = 264;
-
-    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
-    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
-
-    #pragma unroll
-    for (int i = 0; i < 16; ++i) {
-        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
-        uint32_t ch = g ^ (e & (f ^ g));
-        uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + w[i];
-        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
-        uint32_t maj = (a & b) | (c & (a ^ b));
-        uint32_t temp2 = S0 + maj;
-
-        h = g; g = f; f = e; e = d + temp1;
-        d = c; c = b; b = a; a = temp1 + temp2;
-    }
-
-    #pragma unroll
-    for (int i = 16; i < 64; ++i) {
-        uint32_t s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
-        uint32_t s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
-        uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
-        w[i & 15] = wi;
-
-        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
-        uint32_t ch = g ^ (e & (f ^ g));
-        uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + wi;
-        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
-        uint32_t maj = (a & b) | (c & (a ^ b));
-        uint32_t temp2 = S0 + maj;
-
-        h = g; g = f; f = e; e = d + temp1;
-        d = c; c = b; b = a; a = temp1 + temp2;
-    }
-
-    uint32_t x0 = bswap32_dev(0x6a09e667 + a);
-    uint32_t x1 = bswap32_dev(0xbb67ae85 + b);
-    uint32_t x2 = bswap32_dev(0x3c6ef372 + c);
-    uint32_t x3 = bswap32_dev(0xa54ff53a + d);
-    uint32_t x4 = bswap32_dev(0x510e527f + e);
-    uint32_t x5 = bswap32_dev(0x9b05688c + f);
-    uint32_t x6 = bswap32_dev(0x1f83d9ab + g);
-    uint32_t x7 = bswap32_dev(0x5be0cd19 + h);
-
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
-
-    #pragma unroll
-    for (int j = 0; j < 16; ++j) {
-        uint32_t f_val = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 16; j < 32; ++j) {
-        uint32_t f_val = D ^ (B & (C ^ D));
-        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5A827999U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 32; j < 48; ++j) {
-        uint32_t f_val = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 48; j < 64; ++j) {
-        uint32_t f_val = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 64; j < 80; ++j) {
-        uint32_t f_val = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0xA953FD4EU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
-    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
-    if ((0x10325476U + E + Ap) != target_w[2]) return false;
-    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
-    return ((0x67452301U + B + Cp) == target_w[4]);
+    uint32_t X[8];
+    fast_sha256_into_ripemd_X(prefix, x, X);
+    return fast_ripemd160_32_check(X, target_w);
 }
 
 CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64 = 0) {
@@ -1860,7 +1835,7 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
     for (uint32_t b = 0; b < num_batches; ++b) {
         if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
 
-        uint64_t base_offset = tid + (uint64_t)b * 8 * grid_threads;
+        uint64_t base_offset = tid + (uint64_t)b * 4 * grid_threads;
 
         if (base_offset < total_keys) {
             if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
@@ -1870,22 +1845,22 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             }
         }
 
-        Fe cum[7];
+        Fe cum[3];
         cum[0] = fe_sub(dev_batch_G[0].x, P.x);
         #pragma unroll
-        for (int i = 1; i < 7; ++i) {
+        for (int i = 1; i < 3; ++i) {
             Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
             cum[i] = fe_mul(cum[i - 1], cur_dx);
         }
-        Fe dx7 = fe_sub(dev_batch_G[7].x, P.x);
-        Fe last_cum = fe_mul(cum[6], dx7);
+        Fe dx3 = fe_sub(dev_batch_G[3].x, P.x);
+        Fe last_cum = fe_mul(cum[2], dx3);
 
-        // Lockstep parallel warp batch inversion: 1 inversion per 256 keys across warp
+        // Lockstep parallel warp batch inversion: 1 inversion per 128 keys across warp
         Fe u = warp_montgomery_inv(last_cum, lane);
 
         AffinePoint next_P;
         #pragma unroll 1
-        for (int i = 7; i >= 0; --i) {
+        for (int i = 3; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
             if (i > 0) {
                 Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
@@ -1898,12 +1873,12 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             Fe xi = fe_sub(fe_sub(lambda2, P.x), dev_batch_G[i].x);
             Fe yi = fe_sub(fe_mul(lambda, fe_sub(P.x, xi)), P.y);
 
-            if (i == 7) {
+            if (i == 3) {
                 next_P.x = xi;
                 next_P.y = yi;
             }
 
-            if (i < 7 || b + 1 == num_batches) {
+            if (i < 3 || b + 1 == num_batches) {
                 uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
                 if (pt_offset < total_keys) {
                     uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
@@ -1960,11 +1935,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 256;
+    alignas(64) Fe dx[256];
+    alignas(64) Fe cum[257];
+    alignas(64) Fe cur_x[256];
+    alignas(64) uint8_t cur_prefix[256];
 
     uint64_t local_counter = 0;
 
@@ -2055,7 +2030,7 @@ void scan_worker_montgomery(
             }
             // Only check remainder elements not covered by 8-lane AVX2
             for (; i < cur_batch; ++i) {
-                uint32_t X[16];
+                uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
@@ -2071,7 +2046,7 @@ void scan_worker_montgomery(
             }
 #else
             for (uint32_t i = 0; i < cur_batch; ++i) {
-                uint32_t X[16];
+                uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 uint32_t out[5];
                 fast_ripemd160_32(X, out);
@@ -2358,8 +2333,8 @@ int main(int argc, char* argv[]) {
             uint32_t steps_per_launch = is_fast ? 32768 : 16384;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-            AffinePoint h_batch_G[8];
-            for (int i = 0; i < 8; ++i) {
+            AffinePoint h_batch_G[4];
+            for (int i = 0; i < 4; ++i) {
                 uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
                 uint64_t s[4] = { step_mult, 0, 0, 0 };
                 h_batch_G[i] = scalar_mul_G(s);
@@ -2373,7 +2348,7 @@ int main(int argc, char* argv[]) {
 
                 uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
                 uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-                uint32_t cur_batches = (cur_steps + 7) / 8;
+                uint32_t cur_batches = (cur_steps + 3) / 4;
                 u256 cur_start = start_k + actual_checked;
 
                 cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
