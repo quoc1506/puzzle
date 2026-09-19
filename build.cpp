@@ -657,6 +657,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     c = (u128)t[5] + a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
 
     uint64_t carry = 0;
+    #pragma unroll
     for (int i = 1; i < 7; ++i) {
         uint64_t v = (t[i] << 1) | carry;
         carry = t[i] >> 63;
@@ -675,6 +676,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 
     const uint64_t SECP_K = 0x1000003D1ULL;
     u128 red_carry = 0;
+    #pragma unroll
     for (int i = 0; i < 4; ++i) {
         u128 prod = (u128)t[4 + i] * SECP_K + t[i] + red_carry;
         t[i] = (uint64_t)prod;
@@ -1698,11 +1700,142 @@ CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4])
     return jacobian_to_affine(res);
 }
 
-CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64) {
+CUDA_DEV CUDA_INLINE uint32_t get_ripemd_word(int idx, uint32_t x0, uint32_t x1, uint32_t x2, uint32_t x3, uint32_t x4, uint32_t x5, uint32_t x6, uint32_t x7) {
+    switch (idx) {
+        case 0: return x0;
+        case 1: return x1;
+        case 2: return x2;
+        case 3: return x3;
+        case 4: return x4;
+        case 5: return x5;
+        case 6: return x6;
+        case 7: return x7;
+        case 8: return 0x00000080U;
+        case 14: return 256U;
+        default: return 0U;
+    }
+}
+
+CUDA_DEV CUDA_INLINE bool fast_hash160_check(uint8_t prefix, const Fe& x, const uint32_t target_w[5]) {
+    uint32_t w[16];
+    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
+    w[1] = (uint32_t)(x.d[3] >> 8);
+    w[2] = ((uint32_t)x.d[3] << 24) | (uint32_t)(x.d[2] >> 40);
+    w[3] = (uint32_t)(x.d[2] >> 8);
+    w[4] = ((uint32_t)x.d[2] << 24) | (uint32_t)(x.d[1] >> 40);
+    w[5] = (uint32_t)(x.d[1] >> 8);
+    w[6] = ((uint32_t)x.d[1] << 24) | (uint32_t)(x.d[0] >> 40);
+    w[7] = (uint32_t)(x.d[0] >> 8);
+    w[8] = ((uint32_t)x.d[0] << 24) | 0x00800000U;
+    w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
+    w[15] = 264;
+
+    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
+    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+
+    #pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
+        uint32_t ch = g ^ (e & (f ^ g));
+        uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + w[i];
+        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
+        uint32_t maj = (a & b) | (c & (a ^ b));
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    #pragma unroll
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
+        uint32_t s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
+        uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+        w[i & 15] = wi;
+
+        uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
+        uint32_t ch = g ^ (e & (f ^ g));
+        uint32_t temp1 = h + S1 + ch + get_sha256_k(i) + wi;
+        uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
+        uint32_t maj = (a & b) | (c & (a ^ b));
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    uint32_t x0 = bswap32_dev(0x6a09e667 + a);
+    uint32_t x1 = bswap32_dev(0xbb67ae85 + b);
+    uint32_t x2 = bswap32_dev(0x3c6ef372 + c);
+    uint32_t x3 = bswap32_dev(0xa54ff53a + d);
+    uint32_t x4 = bswap32_dev(0x510e527f + e);
+    uint32_t x5 = bswap32_dev(0x9b05688c + f);
+    uint32_t x6 = bswap32_dev(0x1f83d9ab + g);
+    uint32_t x7 = bswap32_dev(0x5be0cd19 + h);
+
+    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
+    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
+
+    #pragma unroll
+    for (int j = 0; j < 16; ++j) {
+        uint32_t f_val = B ^ C ^ D;
+        uint32_t fp = Bp ^ (Cp | ~Dp);
+        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sl(j)) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 16; j < 32; ++j) {
+        uint32_t f_val = D ^ (B & (C ^ D));
+        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
+        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5A827999U, get_ripemd_sl(j)) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 32; j < 48; ++j) {
+        uint32_t f_val = (B | ~C) ^ D;
+        uint32_t fp = (Bp | ~Cp) ^ Dp;
+        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 48; j < 64; ++j) {
+        uint32_t f_val = C ^ (D & (B ^ C));
+        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
+        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 64; j < 80; ++j) {
+        uint32_t f_val = B ^ (C | ~D);
+        uint32_t fp = Bp ^ Cp ^ Dp;
+        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0xA953FD4EU, get_ripemd_sl(j)) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sr(j)) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
+    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
+    if ((0x10325476U + E + Ap) != target_w[2]) return false;
+    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
+    return ((0x67452301U + B + Cp) == target_w[4]);
+}
+
+CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64 = 0) {
     uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[16];
-    fast_sha256_into_ripemd_X(prefix, P.x, X);
-    return fast_ripemd160_32_check(X, target_w);
+    return fast_hash160_check(prefix, P.x, target_w);
 }
 
 CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
@@ -1736,17 +1869,15 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             }
         }
 
-        Fe dx[8];
         Fe cum[7];
-        dx[0] = fe_sub(dev_batch_G[0].x, P.x);
-        cum[0] = dx[0];
+        cum[0] = fe_sub(dev_batch_G[0].x, P.x);
         #pragma unroll
         for (int i = 1; i < 7; ++i) {
-            dx[i] = fe_sub(dev_batch_G[i].x, P.x);
-            cum[i] = fe_mul(cum[i - 1], dx[i]);
+            Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
+            cum[i] = fe_mul(cum[i - 1], cur_dx);
         }
-        dx[7] = fe_sub(dev_batch_G[7].x, P.x);
-        Fe last_cum = fe_mul(cum[6], dx[7]);
+        Fe dx7 = fe_sub(dev_batch_G[7].x, P.x);
+        Fe last_cum = fe_mul(cum[6], dx7);
 
         // Lockstep parallel warp batch inversion: 1 inversion per 256 keys across warp
         Fe u = warp_montgomery_inv(last_cum, lane);
@@ -1755,7 +1886,10 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
         #pragma unroll
         for (int i = 7; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
-            if (i > 0) u = fe_mul(u, dx[i]);
+            if (i > 0) {
+                Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
+                u = fe_mul(u, cur_dx);
+            }
 
             Fe dy = fe_sub(dev_batch_G[i].y, P.y);
             Fe lambda = fe_mul(dy, inv_dx);
@@ -1771,10 +1905,8 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             if (i < 7 || b + 1 == num_batches) {
                 uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
                 if (pt_offset < total_keys) {
-                    AffinePoint cur_pt;
-                    cur_pt.x = xi;
-                    cur_pt.y = yi;
-                    if (check_point_hash160(cur_pt, dev_target_w, dev_target_h64)) {
+                    uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    if (fast_hash160_check(prefix, xi, dev_target_w)) {
                         if (atomicExch(&dev_found_flag, 1) == 0) {
                             dev_found_offset = pt_offset;
                         }
