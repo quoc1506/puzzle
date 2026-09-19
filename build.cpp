@@ -270,38 +270,34 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
-    uint64_t carry = 0;
+    uint64_t c0 = 0;
     asm volatile(
         "add.cc.u64 %0, %5, %9;\n\t"
         "addc.cc.u64 %1, %6, %10;\n\t"
         "addc.cc.u64 %2, %7, %11;\n\t"
         "addc.cc.u64 %3, %8, %12;\n\t"
         "addc.u64 %4, 0, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(carry)
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c0)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
-    if (carry) {
-        const uint64_t K = 0x1000003D1ULL;
-        asm volatile(
-            "add.cc.u64 %0, %0, %4;\n\t"
-            "addc.cc.u64 %1, %1, 0;\n\t"
-            "addc.cc.u64 %2, %2, 0;\n\t"
-            "addc.u64 %3, %3, 0;\n\t"
-            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(K)
-        );
-    } else {
-        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
-    }
+    Fe r_k;
+    uint64_t c1 = 0;
+    const uint64_t K = 0x1000003D1ULL;
+    asm volatile(
+        "add.cc.u64 %0, %5, %9;\n\t"
+        "addc.cc.u64 %1, %6, 0;\n\t"
+        "addc.cc.u64 %2, %7, 0;\n\t"
+        "addc.cc.u64 %3, %8, 0;\n\t"
+        "addc.u64 %4, 0, 0;\n\t"
+        : "=l"(r_k.d[0]), "=l"(r_k.d[1]), "=l"(r_k.d[2]), "=l"(r_k.d[3]), "=l"(c1)
+        : "l"(r.d[0]), "l"(r.d[1]), "l"(r.d[2]), "l"(r.d[3]), "l"(K)
+    );
+    uint64_t need_reduce = c0 | c1;
+    r.d[0] = need_reduce ? r_k.d[0] : r.d[0];
+    r.d[1] = need_reduce ? r_k.d[1] : r.d[1];
+    r.d[2] = need_reduce ? r_k.d[2] : r.d[2];
+    r.d[3] = need_reduce ? r_k.d[3] : r.d[3];
     return r;
 #elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
@@ -412,17 +408,16 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
-    if (borrow) {
-        const uint64_t K = 0x1000003D1ULL;
-        asm volatile(
-            "sub.cc.u64 %0, %0, %4;\n\t"
-            "subc.cc.u64 %1, %1, 0;\n\t"
-            "subc.cc.u64 %2, %2, 0;\n\t"
-            "subc.u64 %3, %3, 0;\n\t"
-            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-            : "l"(K)
-        );
-    }
+    const uint64_t K = 0x1000003D1ULL;
+    uint64_t sub_k = borrow & K;
+    asm volatile(
+        "sub.cc.u64 %0, %0, %4;\n\t"
+        "subc.cc.u64 %1, %1, 0;\n\t"
+        "subc.cc.u64 %2, %2, 0;\n\t"
+        "subc.u64 %3, %3, 0;\n\t"
+        : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+        : "l"(sub_k)
+    );
     return r;
 #elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
@@ -1713,7 +1708,7 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
     return fast_ripemd160_32_check(X, target_w);
 }
 
-CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
+CUDA_GLOBAL __launch_bounds__(256, 4) void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
     uint32_t grid_threads,
@@ -1756,7 +1751,7 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
         Fe u = warp_montgomery_inv(last_cum, lane);
 
         AffinePoint next_P;
-        #pragma unroll
+        #pragma unroll 1
         for (int i = 7; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
             if (i > 0) u = fe_mul(u, fe_sub(dev_batch_G[i].x, P.x));
@@ -1831,11 +1826,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 256;
-    alignas(64) Fe dx[256];
-    alignas(64) Fe cum[257];
-    alignas(64) Fe cur_x[256];
-    alignas(64) uint8_t cur_prefix[256];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
@@ -2223,8 +2218,8 @@ int main(int argc, char* argv[]) {
             cudaDeviceProp prop;
             cudaGetDeviceProperties(&prop, 0);
             uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-            uint32_t threadsPerBlock = 128;
-            uint32_t numBlocks = num_sms * (is_fast ? 64 : 32);
+            uint32_t threadsPerBlock = 256;
+            uint32_t numBlocks = num_sms * (is_fast ? 32 : 16);
             uint32_t grid_threads = numBlocks * threadsPerBlock;
             uint32_t steps_per_launch = is_fast ? 2048 : 1024;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
@@ -2239,6 +2234,9 @@ int main(int argc, char* argv[]) {
 
             uint64_t actual_checked = 0;
             while (actual_checked < total_keys_count && g_running.load() && !hit) {
+                int zero = 0;
+                cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
+
                 uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
                 uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
                 uint32_t cur_batches = (cur_steps + 7) / 8;
