@@ -268,7 +268,33 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+    Fe r;
+    unsigned char c = 0;
+    c = _addcarry_u64(c, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    c = _addcarry_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (__builtin_expect(c != 0, 0)) {
+        const uint64_t K = 0x1000003D1ULL;
+        c = _addcarry_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
+        c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    } else {
+        if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+#elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
     u128 c = (u128)a.d[0] + b.d[0];
     r.d[0] = (uint64_t)c; c >>= 64;
@@ -338,7 +364,23 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+    Fe r;
+    unsigned char borrow = 0;
+    borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
+    borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
+    borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
+    borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
+
+    if (__builtin_expect(borrow != 0, 0)) {
+        const uint64_t K = 0x1000003D1ULL;
+        borrow = _subborrow_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
+        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    }
+    return r;
+#elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
     u128 c = (u128)a.d[0] - b.d[0];
     r.d[0] = (uint64_t)c;
@@ -790,11 +832,27 @@ CUDA_HOSTDEV CUDA_INLINE AffinePoint scalar_mul_G(const uint64_t scalar[4]) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_dev(uint32_t x, int n) {
+#if defined(__CUDA_ARCH__)
+    return __funnelshift_r(x, x, n);
+#elif defined(_MSC_VER)
+    return _rotr(x, n);
+#elif defined(__GNUC__) || defined(__clang__)
     return (x >> n) | (x << (32 - n));
+#else
+    return (x >> n) | (x << (32 - n));
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_dev(uint32_t x, int n) {
+#if defined(__CUDA_ARCH__)
+    return __funnelshift_l(x, x, n);
+#elif defined(_MSC_VER)
+    return _rotl(x, n);
+#elif defined(__GNUC__) || defined(__clang__)
     return (x << n) | (x >> (32 - n));
+#else
+    return (x << n) | (x >> (32 - n));
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
@@ -1094,13 +1152,47 @@ CUDA_INLINE void sha256_round_avx2(
 }
 
 template<size_t... Is>
-CUDA_INLINE void run_sha256_rounds_avx2(
+CUDA_INLINE void run_sha256_first16_avx2(
     __m256i& a, __m256i& b, __m256i& c, __m256i& d,
     __m256i& e, __m256i& f, __m256i& g, __m256i& h,
-    const __m256i W[64],
+    const __m256i W[16],
     std::index_sequence<Is...>
 ) {
     (sha256_round_avx2<Is>(a, b, c, d, e, f, g, h, W[Is]), ...);
+}
+
+template<int r>
+CUDA_INLINE void sha256_step_and_round_avx2(
+    __m256i& a, __m256i& b, __m256i& c, __m256i& d,
+    __m256i& e, __m256i& f, __m256i& g, __m256i& h,
+    __m256i W[16]
+) {
+    __m256i w15 = W[(r - 15) & 15];
+    __m256i s0 = _mm256_xor_si256(
+        AVX2_ROR32_CONST(w15, 7),
+        _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+    );
+    __m256i w2 = W[(r - 2) & 15];
+    __m256i s1 = _mm256_xor_si256(
+        AVX2_ROR32_CONST(w2, 17),
+        _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+    );
+    __m256i wr = _mm256_add_epi32(
+        _mm256_add_epi32(W[(r - 16) & 15], s0),
+        _mm256_add_epi32(W[(r - 7) & 15], s1)
+    );
+    W[r & 15] = wr;
+    sha256_round_avx2<r>(a, b, c, d, e, f, g, h, wr);
+}
+
+template<size_t... Is>
+CUDA_INLINE void run_sha256_rest_avx2(
+    __m256i& a, __m256i& b, __m256i& c, __m256i& d,
+    __m256i& e, __m256i& f, __m256i& g, __m256i& h,
+    __m256i W[16],
+    std::index_sequence<Is...>
+) {
+    (sha256_step_and_round_avx2<16 + Is>(a, b, c, d, e, f, g, h, W), ...);
 }
 
 template<int j>
@@ -1174,7 +1266,7 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     const Fe* __restrict__ xs,
     const uint32_t target_w[5]
 ) {
-    __m256i W[64];
+    __m256i W[16];
     W[0] = _mm256_setr_epi32(
         ((uint32_t)prefixes[0] << 24) | (uint32_t)(xs[0].d[3] >> 40),
         ((uint32_t)prefixes[1] << 24) | (uint32_t)(xs[1].d[3] >> 40),
@@ -1273,21 +1365,6 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     W[14] = _mm256_setzero_si256();
     W[15] = _mm256_set1_epi32(264);
 
-    #pragma unroll
-    for (int r = 16; r < 64; ++r) {
-        __m256i w15 = W[r - 15];
-        __m256i s0 = _mm256_xor_si256(
-            AVX2_ROR32_CONST(w15, 7),
-            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
-        );
-        __m256i w2 = W[r - 2];
-        __m256i s1 = _mm256_xor_si256(
-            AVX2_ROR32_CONST(w2, 17),
-            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
-        );
-        W[r] = _mm256_add_epi32(_mm256_add_epi32(W[r - 16], s0), _mm256_add_epi32(W[r - 7], s1));
-    }
-
     __m256i a = _mm256_set1_epi32(0x6a09e667);
     __m256i b = _mm256_set1_epi32(0xbb67ae85);
     __m256i c = _mm256_set1_epi32(0x3c6ef372);
@@ -1297,7 +1374,8 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
     __m256i g = _mm256_set1_epi32(0x1f83d9ab);
     __m256i h = _mm256_set1_epi32(0x5be0cd19);
 
-    run_sha256_rounds_avx2(a, b, c, d, e, f, g, h, W, std::make_index_sequence<64>{});
+    run_sha256_first16_avx2(a, b, c, d, e, f, g, h, W, std::make_index_sequence<16>{});
+    run_sha256_rest_avx2(a, b, c, d, e, f, g, h, W, std::make_index_sequence<48>{});
 
     const __m256i bswap_mask = _mm256_set_epi8(
         12, 13, 14, 15,
@@ -1451,7 +1529,7 @@ CUDA_DEV CUDA_INLINE Fe warp_montgomery_inv(const Fe& v, int lane) {
     }
 
     // 3. Lane 31 computes inverse of all 32 elements combined
-    Fe total_inv;
+    Fe total_inv = {};
     if (lane == 31) {
         total_inv = fe_inv(prefix);
     }
@@ -1524,6 +1602,7 @@ CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
     uint32_t num_batches
 ) {
     uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int lane = threadIdx.x & 31;
 
     u256 start_k = base_start + tid;
     uint64_t limbs[4] = {
@@ -1557,8 +1636,8 @@ CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
             cum[i] = fe_mul(cum[i - 1], dx[i]);
         }
 
-        // Lockstep parallel inversion across all 32 lanes in warp
-        Fe u = fe_inv(cum[7]);
+        // Lockstep parallel warp batch inversion: 1 inversion per 256 keys across warp
+        Fe u = warp_montgomery_inv(cum[7], lane);
 
         AffinePoint next_P;
         #pragma unroll
@@ -1636,11 +1715,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    const uint32_t BATCH_SIZE = 256;
+    alignas(64) Fe dx[256];
+    alignas(64) Fe cum[257];
+    alignas(64) Fe cur_x[256];
+    alignas(64) uint8_t cur_prefix[256];
 
     uint64_t local_counter = 0;
 
