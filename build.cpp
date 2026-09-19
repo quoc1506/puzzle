@@ -36,11 +36,13 @@
 #define CUDA_DEV __device__
 #define CUDA_GLOBAL __global__
 #define CUDA_INLINE __forceinline__
+#define CUDA_CONSTANT __constant__
 #else
 #define CUDA_HOSTDEV
 #define CUDA_DEV
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
+#define CUDA_CONSTANT inline constexpr
 #endif
 
 #if defined(__clang__)
@@ -945,7 +947,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
 #endif
 }
 
-inline constexpr uint32_t host_K_SHA256[64] = {
+CUDA_CONSTANT uint32_t host_K_SHA256[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
     0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
     0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
@@ -956,7 +958,7 @@ inline constexpr uint32_t host_K_SHA256[64] = {
     0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
 };
 
-inline constexpr uint8_t host_rl_tab[80] = {
+CUDA_CONSTANT uint8_t host_rl_tab[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
@@ -964,7 +966,7 @@ inline constexpr uint8_t host_rl_tab[80] = {
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
 
-inline constexpr uint8_t host_sl_tab[80] = {
+CUDA_CONSTANT uint8_t host_sl_tab[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
@@ -972,7 +974,7 @@ inline constexpr uint8_t host_sl_tab[80] = {
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
 
-inline constexpr uint8_t host_rr_tab[80] = {
+CUDA_CONSTANT uint8_t host_rr_tab[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
@@ -980,7 +982,7 @@ inline constexpr uint8_t host_rr_tab[80] = {
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
 
-inline constexpr uint8_t host_sr_tab[80] = {
+CUDA_CONSTANT uint8_t host_sr_tab[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -988,23 +990,23 @@ inline constexpr uint8_t host_sr_tab[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint32_t get_sha256_k(int i) {
+CUDA_HOSTDEV CUDA_INLINE uint32_t get_sha256_k(int i) {
     return host_K_SHA256[i];
 }
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rl(int j) {
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) {
     return host_rl_tab[j];
 }
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sl(int j) {
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) {
     return host_sl_tab[j];
 }
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rr(int j) {
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) {
     return host_rr_tab[j];
 }
 
-CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sr(int j) {
+CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) {
     return host_sr_tab[j];
 }
 
