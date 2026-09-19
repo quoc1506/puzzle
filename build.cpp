@@ -1643,12 +1643,10 @@ CUDA_DEV CUDA_INLINE Fe warp_montgomery_inv(const Fe& v, int lane) {
         }
     }
 
-    // 3. Lane 31 computes inverse of all 32 elements combined
-    Fe total_inv = {};
-    if (lane == 31) {
-        total_inv = fe_inv(prefix);
-    }
-    total_inv = shfl_fe(total_inv, 31);
+    // 3. Broadcast combined product of all 32 elements to all lanes
+    Fe total_prod = shfl_fe(prefix, 31);
+    // All 32 lanes compute fe_inv in uniform SIMD lockstep without warp divergence
+    Fe total_inv = fe_inv(total_prod);
 
     // 4. Multiply total inverse by prefix[lane-1] and suffix[lane+1]
     Fe p_prev = shfl_up_fe(prefix, 1);
@@ -1683,7 +1681,11 @@ CUDA_DEV CUDA_INLINE AffinePoint warp_montgomery_add_affine(const AffinePoint& P
 CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4]) {
     JacobianPoint res;
     res.infinity = true;
-    for (int limb = 3; limb >= 0; --limb) {
+    int top_limb = 3;
+    while (top_limb > 0 && scalar[top_limb] == 0) {
+        top_limb--;
+    }
+    for (int limb = top_limb; limb >= 0; --limb) {
         uint64_t w = scalar[limb];
         for (int b = 60; b >= 0; b -= 4) {
             uint32_t window = (uint32_t)((w >> b) & 0xF);
@@ -1883,7 +1885,7 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
         Fe u = warp_montgomery_inv(last_cum, lane);
 
         AffinePoint next_P;
-        #pragma unroll
+        #pragma unroll 1
         for (int i = 7; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
             if (i > 0) {
@@ -2352,9 +2354,9 @@ int main(int argc, char* argv[]) {
             cudaGetDeviceProperties(&prop, 0);
             uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
             uint32_t threadsPerBlock = 128;
-            uint32_t numBlocks = num_sms * (is_fast ? 64 : 32);
+            uint32_t numBlocks = num_sms * (is_fast ? 16 : 8);
             uint32_t grid_threads = numBlocks * threadsPerBlock;
-            uint32_t steps_per_launch = is_fast ? 8192 : 4096;
+            uint32_t steps_per_launch = is_fast ? 32768 : 16384;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
             AffinePoint h_batch_G[8];
