@@ -554,31 +554,97 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__) || defined(__CUDACC__)
+#if defined(__CUDA_ARCH__)
     uint64_t t[8] = {0};
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-    u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        uint64_t carry = 0;
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            uint64_t prod_lo = a.d[i] * b.d[j];
+            uint64_t prod_hi = __umul64hi(a.d[i], b.d[j]);
+            uint64_t sum1 = t[i + j] + prod_lo;
+            uint64_t c1 = (sum1 < t[i + j]);
+            uint64_t sum2 = sum1 + carry;
+            uint64_t c2 = (sum2 < sum1);
+            t[i + j] = sum2;
+            carry = prod_hi + c1 + c2;
+        }
+        t[i + 4] = carry;
+    }
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    uint64_t carry = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        uint64_t prod_lo = t[4 + i] * SECP_K;
+        uint64_t prod_hi = __umul64hi(t[4 + i], SECP_K);
+        uint64_t sum1 = t[i] + prod_lo;
+        uint64_t c1 = (sum1 < t[i]);
+        uint64_t sum2 = sum1 + carry;
+        uint64_t c2 = (sum2 < sum1);
+        t[i] = sum2;
+        carry = prod_hi + c1 + c2;
+    }
+    uint64_t c2_lo = carry * SECP_K;
+    uint64_t c2_hi = __umul64hi(carry, SECP_K);
+    uint64_t sum_lo = t[0] + c2_lo;
+    uint64_t carry2 = (sum_lo < t[0]) + c2_hi;
+    t[0] = sum_lo;
+    #pragma unroll
+    for (int i = 1; i < 4; ++i) {
+        uint64_t sum = t[i] + carry2;
+        carry2 = (sum < t[i]);
+        t[i] = sum;
+    }
+    if (__builtin_expect(carry2 != 0, 0)) {
+        uint64_t c3_lo = carry2 * SECP_K;
+        uint64_t sum3 = t[0] + c3_lo;
+        uint64_t carry3 = (sum3 < t[0]) + __umul64hi(carry2, SECP_K);
+        t[0] = sum3;
+        #pragma unroll
+        for (int i = 1; i < 4; ++i) {
+            uint64_t s = t[i] + carry3;
+            carry3 = (s < t[i]);
+            t[i] = s;
+        }
+    }
+    if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        t[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        t[1] = 0;
+        t[2] = 0;
+        t[3] = 0;
+    }
+    Fe r;
+    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+    return r;
+#elif defined(__SIZEOF_INT128__)
+    uint64_t t[8] = {0};
+    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
     u128 c;
-    c = a0 * b0; t[0] = (uint64_t)c; c >>= 64;
-    c += a0 * b1; t[1] = (uint64_t)c; c >>= 64;
-    c += a0 * b2; t[2] = (uint64_t)c; c >>= 64;
-    c += a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+    c = (u128)a0 * b0; t[0] = (uint64_t)c; c >>= 64;
+    c += (u128)a0 * b1; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)a0 * b2; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
 
-    c = (u128)t[1] + a1 * b0; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + a1 * b1; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + a1 * b2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+    c = (u128)t[1] + (u128)a1 * b0; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + (u128)a1 * b1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + (u128)a1 * b2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + (u128)a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
 
-    c = (u128)t[2] + a2 * b0; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + a2 * b1; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a2 * b2; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+    c = (u128)t[2] + (u128)a2 * b0; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[3] + (u128)a2 * b1; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + (u128)a2 * b2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + (u128)a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
 
-    c = (u128)t[3] + a3 * b0; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a3 * b1; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + a3 * b2; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
+    c = (u128)t[3] + (u128)a3 * b0; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + (u128)a3 * b1; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[5] + (u128)a3 * b2; t[5] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + (u128)a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
 
     const uint64_t SECP_K = 0x1000003D1ULL;
     u128 carry = 0;
@@ -643,18 +709,20 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__) || defined(__CUDACC__)
+#if defined(__CUDA_ARCH__)
+    return fe_mul(a, a);
+#elif defined(__SIZEOF_INT128__)
     uint64_t t[8] = {0};
-    u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    u128 c = a0 * a1; t[1] = (uint64_t)c; c >>= 64;
-    c += a0 * a2; t[2] = (uint64_t)c; c >>= 64;
-    c += a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+    u128 c = (u128)a0 * a1; t[1] = (uint64_t)c; c >>= 64;
+    c += (u128)a0 * a2; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
 
-    c = (u128)t[3] + a1 * a2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+    c = (u128)t[3] + (u128)a1 * a2; t[3] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + (u128)a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
 
-    c = (u128)t[5] + a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+    c = (u128)t[5] + (u128)a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
 
     uint64_t carry = 0;
     #pragma unroll
@@ -665,13 +733,13 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     }
     t[7] = carry;
 
-    c = (u128)t[0] + a0 * a0; t[0] = (uint64_t)c; c >>= 64;
+    c = (u128)t[0] + (u128)a0 * a0; t[0] = (uint64_t)c; c >>= 64;
     c += (u128)t[1]; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + a1 * a1; t[2] = (uint64_t)c; c >>= 64;
+    c += (u128)t[2] + (u128)a1 * a1; t[2] = (uint64_t)c; c >>= 64;
     c += (u128)t[3]; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + a2 * a2; t[4] = (uint64_t)c; c >>= 64;
+    c += (u128)t[4] + (u128)a2 * a2; t[4] = (uint64_t)c; c >>= 64;
     c += (u128)t[5]; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + a3 * a3; t[6] = (uint64_t)c; c >>= 64;
+    c += (u128)t[6] + (u128)a3 * a3; t[6] = (uint64_t)c; c >>= 64;
     t[7] += (uint64_t)c;
 
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -1621,45 +1689,37 @@ CUDA_DEV CUDA_INLINE Fe shfl_fe(const Fe& f, int srcLane) {
     return r;
 }
 
-// True Warp-Level Montgomery Batch Inversion across 32 lanes
+// True Warp-Level Montgomery Batch Inversion across 32 lanes (100% lockstep SIMD)
 CUDA_DEV CUDA_INLINE Fe warp_montgomery_inv(const Fe& v, int lane) {
-    // 1. Prefix scan
+    const Fe fe_one = {{1, 0, 0, 0}};
+    // 1. Prefix scan without divergence
     Fe prefix = v;
     #pragma unroll
     for (int offset = 1; offset < 32; offset *= 2) {
         Fe up = shfl_up_fe(prefix, offset);
-        if (lane >= offset) {
-            prefix = fe_mul(prefix, up);
-        }
+        Fe factor = (lane >= offset) ? up : fe_one;
+        prefix = fe_mul(prefix, factor);
     }
 
-    // 2. Suffix scan
+    // 2. Suffix scan without divergence
     Fe suffix = v;
     #pragma unroll
     for (int offset = 1; offset < 32; offset *= 2) {
         Fe down = shfl_down_fe(suffix, offset);
-        if (lane + offset < 32) {
-            suffix = fe_mul(suffix, down);
-        }
+        Fe factor = (lane + offset < 32) ? down : fe_one;
+        suffix = fe_mul(suffix, factor);
     }
 
     // 3. Broadcast combined product of all 32 elements to all lanes
     Fe total_prod = shfl_fe(prefix, 31);
-    // All 32 lanes compute fe_inv in uniform SIMD lockstep without warp divergence
     Fe total_inv = fe_inv(total_prod);
 
     // 4. Multiply total inverse by prefix[lane-1] and suffix[lane+1]
     Fe p_prev = shfl_up_fe(prefix, 1);
     Fe s_next = shfl_down_fe(suffix, 1);
 
-    Fe other;
-    if (lane == 0) {
-        other = s_next;
-    } else if (lane == 31) {
-        other = p_prev;
-    } else {
-        other = fe_mul(p_prev, s_next);
-    }
+    Fe mid = fe_mul(p_prev, s_next);
+    Fe other = (lane == 0) ? s_next : ((lane == 31) ? p_prev : mid);
 
     return fe_mul(total_inv, other);
 }
@@ -1700,22 +1760,6 @@ CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4])
         }
     }
     return jacobian_to_affine(res);
-}
-
-CUDA_DEV CUDA_INLINE uint32_t get_ripemd_word(int idx, uint32_t x0, uint32_t x1, uint32_t x2, uint32_t x3, uint32_t x4, uint32_t x5, uint32_t x6, uint32_t x7) {
-    switch (idx) {
-        case 0: return x0;
-        case 1: return x1;
-        case 2: return x2;
-        case 3: return x3;
-        case 4: return x4;
-        case 5: return x5;
-        case 6: return x6;
-        case 7: return x7;
-        case 8: return 0x00000080U;
-        case 14: return 256U;
-        default: return 0U;
-    }
 }
 
 CUDA_DEV CUDA_INLINE bool fast_hash160_check(uint8_t prefix, const Fe& x, const uint32_t target_w[5]) {
@@ -1766,73 +1810,21 @@ CUDA_DEV CUDA_INLINE bool fast_hash160_check(uint8_t prefix, const Fe& x, const 
         d = c; c = b; b = a; a = temp1 + temp2;
     }
 
-    uint32_t x0 = bswap32_dev(0x6a09e667 + a);
-    uint32_t x1 = bswap32_dev(0xbb67ae85 + b);
-    uint32_t x2 = bswap32_dev(0x3c6ef372 + c);
-    uint32_t x3 = bswap32_dev(0xa54ff53a + d);
-    uint32_t x4 = bswap32_dev(0x510e527f + e);
-    uint32_t x5 = bswap32_dev(0x9b05688c + f);
-    uint32_t x6 = bswap32_dev(0x1f83d9ab + g);
-    uint32_t x7 = bswap32_dev(0x5be0cd19 + h);
+    uint32_t X[16];
+    X[0] = bswap32_dev(0x6a09e667 + a);
+    X[1] = bswap32_dev(0xbb67ae85 + b);
+    X[2] = bswap32_dev(0x3c6ef372 + c);
+    X[3] = bswap32_dev(0xa54ff53a + d);
+    X[4] = bswap32_dev(0x510e527f + e);
+    X[5] = bswap32_dev(0x9b05688c + f);
+    X[6] = bswap32_dev(0x1f83d9ab + g);
+    X[7] = bswap32_dev(0x5be0cd19 + h);
+    X[8] = 0x00000080U;
+    X[9] = 0; X[10] = 0; X[11] = 0; X[12] = 0; X[13] = 0;
+    X[14] = 256U;
+    X[15] = 0;
 
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
-
-    #pragma unroll
-    for (int j = 0; j < 16; ++j) {
-        uint32_t f_val = B ^ C ^ D;
-        uint32_t fp = Bp ^ (Cp | ~Dp);
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 16; j < 32; ++j) {
-        uint32_t f_val = D ^ (B & (C ^ D));
-        uint32_t fp = Cp ^ (Dp & (Bp ^ Cp));
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5A827999U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 32; j < 48; ++j) {
-        uint32_t f_val = (B | ~C) ^ D;
-        uint32_t fp = (Bp | ~Cp) ^ Dp;
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 48; j < 64; ++j) {
-        uint32_t f_val = C ^ (D & (B ^ C));
-        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    #pragma unroll
-    for (int j = 64; j < 80; ++j) {
-        uint32_t f_val = B ^ (C | ~D);
-        uint32_t fp = Bp ^ Cp ^ Dp;
-        uint32_t T = rol32_dev(A + f_val + get_ripemd_word(get_ripemd_rl(j), x0, x1, x2, x3, x4, x5, x6, x7) + 0xA953FD4EU, get_ripemd_sl(j)) + E;
-        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-        uint32_t Tp = rol32_dev(Ap + fp + get_ripemd_word(get_ripemd_rr(j), x0, x1, x2, x3, x4, x5, x6, x7), get_ripemd_sr(j)) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
-    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
-    if ((0x10325476U + E + Ap) != target_w[2]) return false;
-    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
-    return ((0x67452301U + B + Cp) == target_w[4]);
+    return fast_ripemd160_32_check(X, target_w);
 }
 
 CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64 = 0) {
