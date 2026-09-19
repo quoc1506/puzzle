@@ -268,7 +268,42 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__)
+    Fe r;
+    uint64_t carry = 0;
+    asm volatile(
+        "add.cc.u64 %0, %5, %9;\n\t"
+        "addc.cc.u64 %1, %6, %10;\n\t"
+        "addc.cc.u64 %2, %7, %11;\n\t"
+        "addc.cc.u64 %3, %8, %12;\n\t"
+        "addc.u64 %4, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(carry)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+    );
+    if (carry) {
+        const uint64_t K = 0x1000003D1ULL;
+        asm volatile(
+            "add.cc.u64 %0, %0, %4;\n\t"
+            "addc.cc.u64 %1, %1, 0;\n\t"
+            "addc.cc.u64 %2, %2, 0;\n\t"
+            "addc.u64 %3, %3, 0;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+            : "l"(K)
+        );
+    } else {
+        if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
+    }
+    return r;
+#elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
     unsigned char c = 0;
     c = _addcarry_u64(c, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
@@ -364,7 +399,32 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__)
+    Fe r;
+    uint64_t borrow = 0;
+    asm volatile(
+        "sub.cc.u64 %0, %5, %9;\n\t"
+        "subc.cc.u64 %1, %6, %10;\n\t"
+        "subc.cc.u64 %2, %7, %11;\n\t"
+        "subc.cc.u64 %3, %8, %12;\n\t"
+        "subc.u64 %4, 0, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
+    );
+    if (borrow) {
+        const uint64_t K = 0x1000003D1ULL;
+        asm volatile(
+            "sub.cc.u64 %0, %0, %4;\n\t"
+            "subc.cc.u64 %1, %1, 0;\n\t"
+            "subc.cc.u64 %2, %2, 0;\n\t"
+            "subc.u64 %3, %3, 0;\n\t"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+            : "l"(K)
+        );
+    }
+    return r;
+#elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
     unsigned char borrow = 0;
     borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
@@ -499,7 +559,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__) || defined(__CUDACC__)
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     u128 b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -588,7 +648,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__) || defined(__CUDACC__)
     uint64_t t[8] = {0};
     u128 a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
@@ -892,12 +952,8 @@ __constant__ uint32_t dev_K_SHA256[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-CUDA_HOSTDEV CUDA_INLINE uint32_t get_sha256_k(int i) {
-#if defined(__CUDA_ARCH__)
-    return dev_K_SHA256[i];
-#else
+CUDA_HOSTDEV CUDA_INLINE constexpr uint32_t get_sha256_k(int i) {
     return host_K_SHA256[i];
-#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[16]) {
@@ -1022,36 +1078,81 @@ __constant__ uint8_t dev_sr_tab[80] = {
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
 
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_rl_tab[j];
-#else
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rl(int j) {
     return host_rl_tab[j];
-#endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_sl_tab[j];
-#else
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sl(int j) {
     return host_sl_tab[j];
-#endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_rr_tab[j];
-#else
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_rr(int j) {
     return host_rr_tab[j];
-#endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) {
-#if defined(__CUDA_ARCH__)
-    return dev_sr_tab[j];
-#else
+CUDA_HOSTDEV CUDA_INLINE constexpr uint8_t get_ripemd_sr(int j) {
     return host_sr_tab[j];
-#endif
+}
+
+CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[16], const uint32_t target_w[5]) {
+    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
+    uint32_t Ap = A, Bp = B, Cp = C, Dp = D, Ep = E;
+
+    #pragma unroll
+    for (int j = 0; j < 16; ++j) {
+        uint32_t f = B ^ C ^ D;
+        uint32_t fp = Bp ^ (Cp | ~Dp);
+        uint32_t T = rol32_dev(A + f + X[host_rl_tab[j]], host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + X[host_rr_tab[j]] + 0x50A28BE6U, host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 16; j < 32; ++j) {
+        uint32_t f = (B & C) | (~B & D);
+        uint32_t fp = (Bp & Dp) | (Cp & ~Dp);
+        uint32_t T = rol32_dev(A + f + X[host_rl_tab[j]] + 0x5A827999U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + X[host_rr_tab[j]] + 0x5C4DD124U, host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 32; j < 48; ++j) {
+        uint32_t f = (B | ~C) ^ D;
+        uint32_t fp = (Bp | ~Cp) ^ Dp;
+        uint32_t T = rol32_dev(A + f + X[host_rl_tab[j]] + 0x6ED9EBA1U, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + X[host_rr_tab[j]] + 0x6D703EF3U, host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 48; j < 64; ++j) {
+        uint32_t f = C ^ (D & (B ^ C));
+        uint32_t fp = Dp ^ (Bp & (Cp ^ Dp));
+        uint32_t T = rol32_dev(A + f + X[host_rl_tab[j]] + 0x8F1BBCDCU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + X[host_rr_tab[j]] + 0x7A6D76E9U, host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    #pragma unroll
+    for (int j = 64; j < 80; ++j) {
+        uint32_t f = B ^ (C | ~D);
+        uint32_t fp = Bp ^ Cp ^ Dp;
+        uint32_t T = rol32_dev(A + f + X[host_rl_tab[j]] + 0xA953FD4EU, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
+        uint32_t Tp = rol32_dev(Ap + fp + X[host_rr_tab[j]], host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
+    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
+    if ((0x10325476U + E + Ap) != target_w[2]) return false;
+    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
+    return ((0x67452301U + B + Cp) == target_w[4]);
 }
 
 CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[16], uint32_t out_h[5]) {
@@ -1589,13 +1690,10 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
     uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
     uint32_t X[16];
     fast_sha256_into_ripemd_X(prefix, P.x, X);
-    uint32_t out[5];
-    fast_ripemd160_32(X, out);
-    if (out[0] != target_w[0] || out[1] != target_w[1]) return false;
-    return (out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]);
+    return fast_ripemd160_32_check(X, target_w);
 }
 
-CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
+CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
     uint32_t grid_threads,
@@ -1626,24 +1724,22 @@ CUDA_GLOBAL __launch_bounds__(128, 8) void cuda_scan_kernel(
             }
         }
 
-        Fe dx[8];
-        Fe cum[8];
-        dx[0] = fe_sub(dev_batch_G[0].x, P.x);
-        cum[0] = dx[0];
+        Fe cum[7];
+        cum[0] = fe_sub(dev_batch_G[0].x, P.x);
         #pragma unroll
-        for (int i = 1; i < 8; ++i) {
-            dx[i] = fe_sub(dev_batch_G[i].x, P.x);
-            cum[i] = fe_mul(cum[i - 1], dx[i]);
+        for (int i = 1; i < 7; ++i) {
+            cum[i] = fe_mul(cum[i - 1], fe_sub(dev_batch_G[i].x, P.x));
         }
+        Fe last_cum = fe_mul(cum[6], fe_sub(dev_batch_G[7].x, P.x));
 
         // Lockstep parallel warp batch inversion: 1 inversion per 256 keys across warp
-        Fe u = warp_montgomery_inv(cum[7], lane);
+        Fe u = warp_montgomery_inv(last_cum, lane);
 
         AffinePoint next_P;
         #pragma unroll
         for (int i = 7; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
-            if (i > 0) u = fe_mul(u, dx[i]);
+            if (i > 0) u = fe_mul(u, fe_sub(dev_batch_G[i].x, P.x));
 
             Fe dy = fe_sub(dev_batch_G[i].y, P.y);
             Fe lambda = fe_mul(dy, inv_dx);
