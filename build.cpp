@@ -36,13 +36,13 @@
 #define CUDA_DEV __device__
 #define CUDA_GLOBAL __global__
 #define CUDA_INLINE __forceinline__
-#define CUDA_CONSTANT __constant__
+#define CUDA_CONSTANT static constexpr
 #else
 #define CUDA_HOSTDEV
 #define CUDA_DEV
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
-#define CUDA_CONSTANT inline constexpr
+#define CUDA_CONSTANT static constexpr
 #endif
 
 #if defined(__clang__)
@@ -947,7 +947,8 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
 #endif
 }
 
-CUDA_CONSTANT uint32_t host_K_SHA256[64] = {
+#ifdef __CUDACC__
+__constant__ uint32_t dev_K_SHA256[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
     0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
     0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
@@ -958,7 +959,7 @@ CUDA_CONSTANT uint32_t host_K_SHA256[64] = {
     0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
 };
 
-CUDA_CONSTANT uint8_t host_rl_tab[80] = {
+__constant__ uint8_t dev_rl_tab[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
@@ -966,7 +967,7 @@ CUDA_CONSTANT uint8_t host_rl_tab[80] = {
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
 
-CUDA_CONSTANT uint8_t host_sl_tab[80] = {
+__constant__ uint8_t dev_sl_tab[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
@@ -974,7 +975,7 @@ CUDA_CONSTANT uint8_t host_sl_tab[80] = {
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
 
-CUDA_CONSTANT uint8_t host_rr_tab[80] = {
+__constant__ uint8_t dev_rr_tab[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
@@ -982,7 +983,51 @@ CUDA_CONSTANT uint8_t host_rr_tab[80] = {
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
 
-CUDA_CONSTANT uint8_t host_sr_tab[80] = {
+__constant__ uint8_t dev_sr_tab[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+};
+#endif
+
+static constexpr uint32_t host_K_SHA256[64] = {
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
+};
+
+static constexpr uint8_t host_rl_tab[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+};
+
+static constexpr uint8_t host_sl_tab[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+};
+
+static constexpr uint8_t host_rr_tab[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+};
+
+static constexpr uint8_t host_sr_tab[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
@@ -991,27 +1036,47 @@ CUDA_CONSTANT uint8_t host_sr_tab[80] = {
 };
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t get_sha256_k(int i) {
+#if defined(__CUDA_ARCH__)
+    return dev_K_SHA256[i];
+#else
     return host_K_SHA256[i];
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rl(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_rl_tab[j];
+#else
     return host_rl_tab[j];
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sl(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_sl_tab[j];
+#else
     return host_sl_tab[j];
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_rr(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_rr_tab[j];
+#else
     return host_rr_tab[j];
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint8_t get_ripemd_sr(int j) {
+#if defined(__CUDA_ARCH__)
+    return dev_sr_tab[j];
+#else
     return host_sr_tab[j];
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_X_left(int j, const uint32_t X[8]) {
-    uint8_t rl = host_rl_tab[j];
+    uint8_t rl = get_ripemd_rl(j);
     if (rl < 8) return X[rl];
     if (rl == 8) return 0x00000080U;
     if (rl == 14) return 256U;
@@ -1019,7 +1084,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_X_left(int j, const uint32_t X[8]) 
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t get_ripemd_X_right(int j, const uint32_t X[8]) {
-    uint8_t rr = host_rr_tab[j];
+    uint8_t rr = get_ripemd_rr(j);
     if (rr < 8) return X[rr];
     if (rr == 8) return 0x00000080U;
     if (rr == 14) return 256U;
@@ -1092,7 +1157,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 0; j < 16; ++j) {
         uint32_t f = lop3_b32<0x96>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1100,7 +1165,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 16; j < 32; ++j) {
         uint32_t f = lop3_b32<0xCA>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1108,7 +1173,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 32; j < 48; ++j) {
         uint32_t f = lop3_b32<0x59>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1116,7 +1181,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 48; j < 64; ++j) {
         uint32_t f = lop3_b32<0xE4>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1124,7 +1189,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 64; j < 80; ++j) {
         uint32_t f = lop3_b32<0x2D>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1141,7 +1206,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 0; j < 16; ++j) {
         uint32_t fp = lop3_b32<0x2D>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1149,7 +1214,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 16; j < 32; ++j) {
         uint32_t fp = lop3_b32<0xE4>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1157,7 +1222,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 32; j < 48; ++j) {
         uint32_t fp = lop3_b32<0x59>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1165,7 +1230,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 48; j < 64; ++j) {
         uint32_t fp = lop3_b32<0xCA>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1173,7 +1238,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     for (int j = 64; j < 80; ++j) {
         uint32_t fp = lop3_b32<0x96>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1192,7 +1257,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 0; j < 16; ++j) {
         uint32_t f = lop3_b32<0x96>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1200,7 +1265,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 16; j < 32; ++j) {
         uint32_t f = lop3_b32<0xCA>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x5A827999U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1208,7 +1273,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 32; j < 48; ++j) {
         uint32_t f = lop3_b32<0x59>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x6ED9EBA1U, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1216,7 +1281,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 48; j < 64; ++j) {
         uint32_t f = lop3_b32<0xE4>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0x8F1BBCDCU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1224,7 +1289,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 64; j < 80; ++j) {
         uint32_t f = lop3_b32<0x2D>(B, C, D);
         uint32_t x_val = get_ripemd_X_left(j, X);
-        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, host_sl_tab[j]) + E;
+        uint32_t T = rol32_dev(A + f + x_val + 0xA953FD4EU, get_ripemd_sl(j)) + E;
         A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
     }
 
@@ -1240,7 +1305,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 0; j < 16; ++j) {
         uint32_t fp = lop3_b32<0x2D>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x50A28BE6U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1248,7 +1313,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 16; j < 32; ++j) {
         uint32_t fp = lop3_b32<0xE4>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x5C4DD124U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1256,7 +1321,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 32; j < 48; ++j) {
         uint32_t fp = lop3_b32<0x59>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x6D703EF3U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1264,7 +1329,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 48; j < 64; ++j) {
         uint32_t fp = lop3_b32<0xCA>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val + 0x7A6D76E9U, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1272,7 +1337,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
     for (int j = 64; j < 80; ++j) {
         uint32_t fp = lop3_b32<0x96>(Bp, Cp, Dp);
         uint32_t x_val = get_ripemd_X_right(j, X);
-        uint32_t Tp = rol32_dev(Ap + fp + x_val, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32_dev(Ap + fp + x_val, get_ripemd_sr(j)) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
