@@ -745,16 +745,23 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x16 = fe_mul(fe_sqr_n(x14, 2), x2);
     Fe low = fe_sqr_n(x16, 16);
 
-    uint32_t val = 0xFC2D;
     Fe b = a;
-    Fe low16 = {{1, 0, 0, 0}};
-    #pragma unroll
-    for (int i = 0; i < 16; ++i) {
-        if ((val >> i) & 1) {
-            low16 = fe_mul(low16, b);
-        }
-        if (i < 15) b = fe_sqr(b);
-    }
+    Fe low16 = a;
+    b = fe_sqr(b);
+    b = fe_sqr(b);
+    low16 = fe_mul(low16, b);
+    b = fe_sqr(b);
+    low16 = fe_mul(low16, b);
+    b = fe_sqr(b);
+    b = fe_sqr(b);
+    low16 = fe_mul(low16, b);
+    b = fe_sqr_n(b, 5);
+    low16 = fe_mul(low16, b);
+    b = fe_sqr(b); low16 = fe_mul(low16, b);
+    b = fe_sqr(b); low16 = fe_mul(low16, b);
+    b = fe_sqr(b); low16 = fe_mul(low16, b);
+    b = fe_sqr(b); low16 = fe_mul(low16, b);
+    b = fe_sqr(b); low16 = fe_mul(low16, b);
     low = fe_mul(low, low16);
     return fe_mul(t, low);
 }
@@ -1587,114 +1594,7 @@ __device__ int dev_found_flag = 0;
 __device__ uint64_t dev_found_offset = 0;
 __constant__ uint32_t dev_target_w[5];
 __constant__ uint64_t dev_target_h64;
-__constant__ AffinePoint dev_batch_G[4];
-
-CUDA_DEV CUDA_INLINE uint64_t shfl_up64(uint64_t val, int delta) {
-    uint32_t lo = (uint32_t)val;
-    uint32_t hi = (uint32_t)(val >> 32);
-    lo = __shfl_up_sync(0xFFFFFFFF, lo, delta);
-    hi = __shfl_up_sync(0xFFFFFFFF, hi, delta);
-    return ((uint64_t)hi << 32) | lo;
-}
-
-CUDA_DEV CUDA_INLINE uint64_t shfl_down64(uint64_t val, int delta) {
-    uint32_t lo = (uint32_t)val;
-    uint32_t hi = (uint32_t)(val >> 32);
-    lo = __shfl_down_sync(0xFFFFFFFF, lo, delta);
-    hi = __shfl_down_sync(0xFFFFFFFF, hi, delta);
-    return ((uint64_t)hi << 32) | lo;
-}
-
-CUDA_DEV CUDA_INLINE uint64_t shfl64(uint64_t val, int srcLane) {
-    uint32_t lo = (uint32_t)val;
-    uint32_t hi = (uint32_t)(val >> 32);
-    lo = __shfl_sync(0xFFFFFFFF, lo, srcLane);
-    hi = __shfl_sync(0xFFFFFFFF, hi, srcLane);
-    return ((uint64_t)hi << 32) | lo;
-}
-
-CUDA_DEV CUDA_INLINE Fe shfl_up_fe(const Fe& f, int delta) {
-    Fe r;
-    r.d[0] = shfl_up64(f.d[0], delta);
-    r.d[1] = shfl_up64(f.d[1], delta);
-    r.d[2] = shfl_up64(f.d[2], delta);
-    r.d[3] = shfl_up64(f.d[3], delta);
-    return r;
-}
-
-CUDA_DEV CUDA_INLINE Fe shfl_down_fe(const Fe& f, int delta) {
-    Fe r;
-    r.d[0] = shfl_down64(f.d[0], delta);
-    r.d[1] = shfl_down64(f.d[1], delta);
-    r.d[2] = shfl_down64(f.d[2], delta);
-    r.d[3] = shfl_down64(f.d[3], delta);
-    return r;
-}
-
-CUDA_DEV CUDA_INLINE Fe shfl_fe(const Fe& f, int srcLane) {
-    Fe r;
-    r.d[0] = shfl64(f.d[0], srcLane);
-    r.d[1] = shfl64(f.d[1], srcLane);
-    r.d[2] = shfl64(f.d[2], srcLane);
-    r.d[3] = shfl64(f.d[3], srcLane);
-    return r;
-}
-
-// True Warp-Level Montgomery Batch Inversion across 32 lanes
-CUDA_DEV CUDA_INLINE Fe warp_montgomery_inv(const Fe& v, int lane) {
-    // 1. Prefix scan
-    Fe prefix = v;
-    #pragma unroll
-    for (int offset = 1; offset < 32; offset *= 2) {
-        Fe up = shfl_up_fe(prefix, offset);
-        if (lane >= offset) {
-            prefix = fe_mul(prefix, up);
-        }
-    }
-
-    // 2. Suffix scan
-    Fe suffix = v;
-    #pragma unroll
-    for (int offset = 1; offset < 32; offset *= 2) {
-        Fe down = shfl_down_fe(suffix, offset);
-        if (lane + offset < 32) {
-            suffix = fe_mul(suffix, down);
-        }
-    }
-
-    // 3. Broadcast combined product of all 32 elements to all lanes
-    Fe total_prod = shfl_fe(prefix, 31);
-    Fe total_inv = fe_inv(total_prod);
-
-    // 4. Multiply total inverse by prefix[lane-1] and suffix[lane+1]
-    Fe p_prev = shfl_up_fe(prefix, 1);
-    Fe s_next = shfl_down_fe(suffix, 1);
-
-    Fe other;
-    if (lane == 0) {
-        other = s_next;
-    } else if (lane == 31) {
-        other = p_prev;
-    } else {
-        other = fe_mul(p_prev, s_next);
-    }
-
-    return fe_mul(total_inv, other);
-}
-
-CUDA_DEV CUDA_INLINE AffinePoint warp_montgomery_add_affine(const AffinePoint& P, const AffinePoint& Q, int lane) {
-    Fe dx = fe_sub(Q.x, P.x);
-    Fe dy = fe_sub(Q.y, P.y);
-    Fe inv_dx = warp_montgomery_inv(dx, lane);
-    Fe lambda = fe_mul(dy, inv_dx);
-    Fe lambda2 = fe_sqr(lambda);
-    Fe x3 = fe_sub(fe_sub(lambda2, P.x), Q.x);
-    Fe y3 = fe_sub(fe_mul(lambda, fe_sub(P.x, x3)), P.y);
-    AffinePoint res;
-    res.x = x3;
-    res.y = y3;
-    return res;
-}
+__constant__ AffinePoint dev_batch_G[16];
 
 CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4]) {
     JacobianPoint res;
@@ -1731,14 +1631,14 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32
     return fast_hash160_check(prefix, P.x, target_w);
 }
 
-CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
+// 16-way Lockstep SIMD Montgomery Batch Addition Kernel (Zero warp shuffles, zero branch divergence)
+CUDA_GLOBAL __launch_bounds__(128, 2) void cuda_scan_kernel(
     u256 base_start,
     uint64_t total_keys,
     uint32_t grid_threads,
     uint32_t num_batches
 ) {
     uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    int lane = threadIdx.x & 31;
 
     u256 start_k = base_start + tid;
     uint64_t limbs[4] = {
@@ -1752,7 +1652,7 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
     for (uint32_t b = 0; b < num_batches; ++b) {
         if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
 
-        uint64_t base_offset = tid + (uint64_t)b * 4 * grid_threads;
+        uint64_t base_offset = tid + (uint64_t)b * 16 * grid_threads;
 
         if (base_offset < total_keys) {
             if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
@@ -1762,22 +1662,24 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             }
         }
 
-        Fe cum[3];
+        // 1. Prefix scan across 16 point additions
+        Fe cum[15];
         cum[0] = fe_sub(dev_batch_G[0].x, P.x);
         #pragma unroll
-        for (int i = 1; i < 3; ++i) {
+        for (int i = 1; i < 15; ++i) {
             Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
             cum[i] = fe_mul(cum[i - 1], cur_dx);
         }
-        Fe dx3 = fe_sub(dev_batch_G[3].x, P.x);
-        Fe last_cum = fe_mul(cum[2], dx3);
+        Fe dx15 = fe_sub(dev_batch_G[15].x, P.x);
+        Fe last_cum = fe_mul(cum[14], dx15);
 
-        // Lockstep parallel warp batch inversion: 1 inversion per 128 keys across warp
-        Fe u = warp_montgomery_inv(last_cum, lane);
+        // 2. Exact 1 inversion per 16 keys (lockstep across warp, 0 divergence, 0 cross-lane stalls)
+        Fe u = fe_inv(last_cum);
 
+        // 3. Backward sweep: compute all 16 affine point coordinates and verify Hash160 immediately
         AffinePoint next_P;
         #pragma unroll 1
-        for (int i = 3; i >= 0; --i) {
+        for (int i = 15; i >= 0; --i) {
             Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
             if (i > 0) {
                 Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
@@ -1790,12 +1692,12 @@ CUDA_GLOBAL __launch_bounds__(128, 4) void cuda_scan_kernel(
             Fe xi = fe_sub(fe_sub(lambda2, P.x), dev_batch_G[i].x);
             Fe yi = fe_sub(fe_mul(lambda, fe_sub(P.x, xi)), P.y);
 
-            if (i == 3) {
+            if (i == 15) {
                 next_P.x = xi;
                 next_P.y = yi;
             }
 
-            if (i < 3 || b + 1 == num_batches) {
+            if (i < 15 || b + 1 == num_batches) {
                 uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
                 if (pt_offset < total_keys) {
                     uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
@@ -2250,8 +2152,8 @@ int main(int argc, char* argv[]) {
             uint32_t steps_per_launch = is_fast ? 65536 : 32768;
             uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-            AffinePoint h_batch_G[4];
-            for (int i = 0; i < 4; ++i) {
+            AffinePoint h_batch_G[16];
+            for (int i = 0; i < 16; ++i) {
                 uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
                 uint64_t s[4] = { step_mult, 0, 0, 0 };
                 h_batch_G[i] = scalar_mul_G(s);
@@ -2265,7 +2167,7 @@ int main(int argc, char* argv[]) {
 
                 uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
                 uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-                uint32_t cur_batches = (cur_steps + 3) / 4;
+                uint32_t cur_batches = (cur_steps + 15) / 16;
                 u256 cur_start = start_k + actual_checked;
 
                 cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
