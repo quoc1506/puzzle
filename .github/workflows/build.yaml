@@ -53,7 +53,7 @@ jobs:
 
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
-          nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 192 -Xptxas -O3,-v ${GENCODES} \
+          nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 255 -Xptxas -O3,-v ${GENCODES} \
             -Xcompiler -march=x86-64-v3,-mavx2,-mbmi2,-madx,-O3,-funroll-loops \
             -x cu build.cpp -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda

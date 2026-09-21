@@ -1006,7 +1006,12 @@ CUDA_HOSTDEV CUDA_INLINE void sha256_round_dev(
     constexpr uint32_t K = host_K_SHA256[i];
     uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
     uint32_t ch = lop3_b32<0xCA>(e, f, g);
-    uint32_t temp1 = h + S1 + ch + K + wi;
+    uint32_t temp1;
+    if constexpr (i >= 9 && i <= 14) {
+        temp1 = h + S1 + ch + K;
+    } else {
+        temp1 = h + S1 + ch + K + wi;
+    }
     uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
     uint32_t maj = lop3_b32<0xE8>(a, b, c);
     uint32_t temp2 = S0 + maj;
@@ -1031,9 +1036,39 @@ CUDA_HOSTDEV CUDA_INLINE void sha256_step_and_round_dev(
     uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h,
     uint32_t w[16]
 ) {
-    uint32_t s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
-    uint32_t s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
-    uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+    uint32_t s0, s1, wi;
+    if constexpr (i == 16) {
+        s0 = ror32_dev(w[1], 7) ^ ror32_dev(w[1], 18) ^ (w[1] >> 3);
+        wi = w[0] + s0;
+    } else if constexpr (i == 17) {
+        s0 = ror32_dev(w[2], 7) ^ ror32_dev(w[2], 18) ^ (w[2] >> 3);
+        wi = w[1] + s0 + 0x00A50000U;
+    } else if constexpr (i >= 18 && i <= 21) {
+        s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
+        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
+        wi = w[(i - 16) & 15] + s0 + s1;
+    } else if constexpr (i == 22) {
+        s0 = ror32_dev(w[7], 7) ^ ror32_dev(w[7], 18) ^ (w[7] >> 3);
+        s1 = ror32_dev(w[4], 17) ^ ror32_dev(w[4], 19) ^ (w[4] >> 10);
+        wi = w[6] + s0 + s1 + 264U;
+    } else if constexpr (i == 24) {
+        s1 = ror32_dev(w[6], 17) ^ ror32_dev(w[6], 19) ^ (w[6] >> 10);
+        wi = w[8] + w[1] + s1;
+    } else if constexpr (i >= 25 && i <= 29) {
+        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
+        wi = w[(i - 7) & 15] + s1;
+    } else if constexpr (i == 30) {
+        s1 = ror32_dev(w[12], 17) ^ ror32_dev(w[12], 19) ^ (w[12] >> 10);
+        wi = 0x10420023U + w[7] + s1;
+    } else if constexpr (i == 31) {
+        s0 = ror32_dev(w[0], 7) ^ ror32_dev(w[0], 18) ^ (w[0] >> 3);
+        s1 = ror32_dev(w[13], 17) ^ ror32_dev(w[13], 19) ^ (w[13] >> 10);
+        wi = 264U + s0 + w[8] + s1;
+    } else {
+        s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
+        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
+        wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+    }
     w[i & 15] = wi;
     sha256_round_dev<i>(a, b, c, d, e, f, g, h, wi);
 }
@@ -1220,8 +1255,13 @@ CUDA_INLINE void sha256_round_avx2(
     constexpr uint32_t K = host_K_SHA256[r];
     __m256i S1 = _mm256_xor_si256(AVX2_ROR32_CONST(e, 6), _mm256_xor_si256(AVX2_ROR32_CONST(e, 11), AVX2_ROR32_CONST(e, 25)));
     __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-    __m256i kw = _mm256_add_epi32(_mm256_set1_epi32(K), Wr);
-    __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));
+    __m256i temp1;
+    if constexpr (r >= 9 && r <= 14) {
+        temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, _mm256_set1_epi32(K)));
+    } else {
+        __m256i kw = _mm256_add_epi32(_mm256_set1_epi32(K), Wr);
+        temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, kw));
+    }
 
     __m256i S0 = _mm256_xor_si256(AVX2_ROR32_CONST(a, 2), _mm256_xor_si256(AVX2_ROR32_CONST(a, 13), AVX2_ROR32_CONST(a, 22)));
     __m256i maj = _mm256_xor_si256(
@@ -1256,20 +1296,94 @@ CUDA_INLINE void sha256_step_and_round_avx2(
     __m256i& e, __m256i& f, __m256i& g, __m256i& h,
     __m256i W[16]
 ) {
-    __m256i w15 = W[(r - 15) & 15];
-    __m256i s0 = _mm256_xor_si256(
-        AVX2_ROR32_CONST(w15, 7),
-        _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
-    );
-    __m256i w2 = W[(r - 2) & 15];
-    __m256i s1 = _mm256_xor_si256(
-        AVX2_ROR32_CONST(w2, 17),
-        _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
-    );
-    __m256i wr = _mm256_add_epi32(
-        _mm256_add_epi32(W[(r - 16) & 15], s0),
-        _mm256_add_epi32(W[(r - 7) & 15], s1)
-    );
+    __m256i wr;
+    if constexpr (r == 16) {
+        __m256i w15 = W[1];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        wr = _mm256_add_epi32(W[0], s0);
+    } else if constexpr (r == 17) {
+        __m256i w15 = W[2];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(W[1], s0), _mm256_set1_epi32(0x00A50000U));
+    } else if constexpr (r >= 18 && r <= 21) {
+        __m256i w15 = W[(r - 15) & 15];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        __m256i w2 = W[(r - 2) & 15];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(W[(r - 16) & 15], s0), s1);
+    } else if constexpr (r == 22) {
+        __m256i w15 = W[7];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        __m256i w2 = W[4];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(W[6], s0), _mm256_add_epi32(s1, _mm256_set1_epi32(264U)));
+    } else if constexpr (r == 24) {
+        __m256i w2 = W[6];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(W[8], W[1]), s1);
+    } else if constexpr (r >= 25 && r <= 29) {
+        __m256i w2 = W[(r - 2) & 15];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(W[(r - 7) & 15], s1);
+    } else if constexpr (r == 30) {
+        __m256i w2 = W[12];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(0x10420023U), W[7]), s1);
+    } else if constexpr (r == 31) {
+        __m256i w15 = W[0];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        __m256i w2 = W[13];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(264U), s0), _mm256_add_epi32(W[8], s1));
+    } else {
+        __m256i w15 = W[(r - 15) & 15];
+        __m256i s0 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w15, 7),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w15, 18), _mm256_srli_epi32(w15, 3))
+        );
+        __m256i w2 = W[(r - 2) & 15];
+        __m256i s1 = _mm256_xor_si256(
+            AVX2_ROR32_CONST(w2, 17),
+            _mm256_xor_si256(AVX2_ROR32_CONST(w2, 19), _mm256_srli_epi32(w2, 10))
+        );
+        wr = _mm256_add_epi32(
+            _mm256_add_epi32(W[(r - 16) & 15], s0),
+            _mm256_add_epi32(W[(r - 7) & 15], s1)
+        );
+    }
     W[r & 15] = wr;
     sha256_round_avx2<r>(a, b, c, d, e, f, g, h, wr);
 }
@@ -1754,11 +1868,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 256;
-    alignas(64) Fe dx[256];
-    alignas(64) Fe cum[257];
-    alignas(64) Fe cur_x[256];
-    alignas(64) uint8_t cur_prefix[256];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
