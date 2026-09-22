@@ -2159,6 +2159,13 @@ int main(int argc, char* argv[]) {
     init_generator_table();
 
 #ifdef __CUDACC__
+    uint32_t num_sms = 40;
+    uint32_t threadsPerBlock = 128;
+    uint32_t numBlocks = 640;
+    uint32_t grid_threads = numBlocks * threadsPerBlock;
+    uint32_t steps_per_launch = is_fast ? 65536 : 32768;
+    uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
+
     if (use_cuda) {
         AffinePoint h_table[16];
         std::memset(&h_table[0], 0, sizeof(AffinePoint));
@@ -2167,6 +2174,23 @@ int main(int argc, char* argv[]) {
             h_table[i] = scalar_mul_G(s);
         }
         cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
+
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, 0);
+        num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
+        threadsPerBlock = 128;
+        numBlocks = num_sms * (is_fast ? 32 : 16);
+        grid_threads = numBlocks * threadsPerBlock;
+        steps_per_launch = is_fast ? 65536 : 32768;
+        chunk_size = (uint64_t)grid_threads * steps_per_launch;
+
+        AffinePoint h_batch_G[16];
+        for (int i = 0; i < 16; ++i) {
+            uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
+            uint64_t s[4] = { step_mult, 0, 0, 0 };
+            h_batch_G[i] = scalar_mul_G(s);
+        }
+        cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
     }
 #endif
 
@@ -2247,7 +2271,7 @@ int main(int argc, char* argv[]) {
         bool hit = false;
         u256 found_key = 0;
         uint64_t checked = 0;
-        auto t_start = std::chrono::high_resolution_clock::now();
+        std::chrono::high_resolution_clock::time_point t_start;
 
 #ifdef __CUDACC__
         if (use_cuda) {
@@ -2257,22 +2281,7 @@ int main(int argc, char* argv[]) {
             int zero = 0;
             cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
-            cudaDeviceProp prop;
-            cudaGetDeviceProperties(&prop, 0);
-            uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-            uint32_t threadsPerBlock = 128;
-            uint32_t numBlocks = num_sms * (is_fast ? 32 : 16);
-            uint32_t grid_threads = numBlocks * threadsPerBlock;
-            uint32_t steps_per_launch = is_fast ? 65536 : 32768;
-            uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
-
-            AffinePoint h_batch_G[16];
-            for (int i = 0; i < 16; ++i) {
-                uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
-                uint64_t s[4] = { step_mult, 0, 0, 0 };
-                h_batch_G[i] = scalar_mul_G(s);
-            }
-            cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
+            t_start = std::chrono::high_resolution_clock::now();
 
             uint64_t actual_checked = 0;
             while (actual_checked < total_keys_count && g_running.load() && !hit) {
@@ -2317,6 +2326,8 @@ int main(int argc, char* argv[]) {
             alignas(64) std::atomic<bool> found_flag(false);
             alignas(64) std::mutex found_mtx;
             alignas(64) std::atomic<uint64_t> checked_counter(0);
+
+            t_start = std::chrono::high_resolution_clock::now();
 
             std::vector<std::thread> pool;
             for (int i = 0; i < threads; ++i) {
