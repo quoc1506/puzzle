@@ -30,19 +30,9 @@
 #include <immintrin.h>
 #endif
 
+#if defined(__NVCC__) || defined(__CUDACC__)
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
-
-#ifndef CURL_STATICLIB
-#define CURL_STATICLIB
-#endif
-
-#include <curl/curl.h>
-#include <openssl/sha.h>
-#include <openssl/ripemd.h>
-#include <openssl/bn.h>
-
-#if defined(__NVCC__) || defined(__CUDACC__)
 #define CUDA_HOSTDEV __host__ __device__
 #define CUDA_DEV __device__
 #define CUDA_GLOBAL __global__
@@ -54,7 +44,63 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
+struct uint3 { unsigned int x, y, z; };
+struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
+static uint3 threadIdx = {0,0,0};
+static uint3 blockIdx = {0,0,0};
+static dim3 blockDim = {1,1,1};
+static dim3 gridDim = {1,1,1};
+typedef int cudaError_t;
+#define cudaSuccess 0
+#define cudaMemcpyDeviceToHost 2
+#define cudaMemcpyHostToDevice 1
+#define cudaLimitStackSize 0
+inline const char* cudaGetErrorString(cudaError_t) { return "ok"; }
+inline cudaError_t cudaSetDevice(int) { return 0; }
+struct cudaDeviceProp { char name[256]; int major; int minor; int multiProcessorCount; size_t totalGlobalMem; int regsPerBlock; };
+inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) { if (p) { p->multiProcessorCount = 40; } return 0; }
+inline cudaError_t cudaDeviceSetLimit(int, size_t) { return 0; }
+inline cudaError_t cudaDeviceSynchronize() { return 0; }
+inline cudaError_t cudaGetLastError() { return 0; }
+template<typename T> inline cudaError_t cudaMemcpyToSymbol(T& dst, const void* src, size_t count, size_t offset=0, int kind=0) {
+    std::memcpy(((char*)&dst) + offset, src, count);
+    return 0;
+}
+template<typename T> inline cudaError_t cudaMemcpyFromSymbol(void* dst, const T& src, size_t count, size_t offset=0, int kind=0) {
+    std::memcpy(dst, ((const char*)&src) + offset, count);
+    return 0;
+}
+template<typename T> inline cudaError_t cudaMalloc(T** devPtr, size_t size) {
+    *devPtr = (T*)std::malloc(size);
+    return 0;
+}
+inline cudaError_t cudaMemset(void* devPtr, int value, size_t count) {
+    std::memset(devPtr, value, count);
+    return 0;
+}
+inline cudaError_t cudaMemcpy(void* dst, const void* src, size_t count, int kind=0) {
+    std::memcpy(dst, src, count);
+    return 0;
+}
+inline cudaError_t cudaFree(void* devPtr) {
+    if (devPtr) std::free(devPtr);
+    return 0;
+}
+template<typename T> inline T atomicExch(T* address, T val) {
+    T old = *address;
+    *address = val;
+    return old;
+}
 #endif
+
+#ifndef CURL_STATICLIB
+#define CURL_STATICLIB
+#endif
+
+#include <curl/curl.h>
+#include <openssl/sha.h>
+#include <openssl/ripemd.h>
+#include <openssl/bn.h>
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1259,16 +1305,13 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
 // ============================================================================
 CUDA_CONSTANT AffinePoint dev_G_table[16];
 CUDA_CONSTANT AffinePoint dev_batch_G[16];
-CUDA_CONSTANT uint32_t dev_target_w[5];
-CUDA_CONSTANT uint64_t dev_target_h64;
-CUDA_DEV int dev_found_flag = 0;
-CUDA_DEV uint64_t dev_found_offset = 0;
 
-CUDA_DEV AffinePoint scalar_mul_G_windowed(const u256& scalar) {
+CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
+    uint64_t limbs[4] = { s0, s1, s2, s3 };
     JacobianPoint res;
     res.infinity = true;
     for (int limb = 3; limb >= 0; --limb) {
-        uint64_t w = (limb >= 2) ? (uint64_t)(scalar.high >> ((limb - 2) * 64)) : (uint64_t)(scalar.low >> (limb * 64));
+        uint64_t w = limbs[limb];
         for (int b = 60; b >= 0; b -= 4) {
             if (!res.infinity) {
                 res = jacobian_double(res);
@@ -1285,18 +1328,21 @@ CUDA_DEV AffinePoint scalar_mul_G_windowed(const u256& scalar) {
     return jacobian_to_affine(res);
 }
 
-CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& pt) {
+CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& pt, const uint32_t target_w[5]) {
     uint8_t prefix = (pt.y.d[0] & 1) ? 0x03 : 0x02;
     uint32_t X[8];
     fast_sha256_into_ripemd_X(prefix, pt.x, X);
-    return fast_ripemd160_32_check(X, dev_target_w);
+    return fast_ripemd160_32_check(X, target_w);
 }
 
 CUDA_GLOBAL void cuda_scan_kernel(
-    u256 start_key,
+    uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
-    uint32_t batches
+    uint32_t batches,
+    int* d_found_flag,
+    uint64_t* d_found_offset,
+    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4
 ) {
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= grid_threads) return;
@@ -1304,19 +1350,30 @@ CUDA_GLOBAL void cuda_scan_kernel(
     uint64_t thread_start_offset = (uint64_t)tid;
     if (thread_start_offset >= total_chunk_keys) return;
 
-    u256 cur_key = start_key + thread_start_offset;
-    AffinePoint cur_P = scalar_mul_G_windowed(cur_key);
+    uint32_t tw[5] = { tw0, tw1, tw2, tw3, tw4 };
 
-    if (check_point_hash160(cur_P)) {
-        atomicExch(&dev_found_flag, 1);
-        atomicExch((unsigned long long*)&dev_found_offset, (unsigned long long)thread_start_offset);
+    // Add thread_start_offset to start_k with carry propagation
+    uint64_t cur_k0 = start_k0 + thread_start_offset;
+    uint64_t carry = (cur_k0 < start_k0) ? 1 : 0;
+    uint64_t cur_k1 = start_k1 + carry;
+    carry = (cur_k1 < carry) ? 1 : 0;
+    uint64_t cur_k2 = start_k2 + carry;
+    carry = (cur_k2 < carry) ? 1 : 0;
+    uint64_t cur_k3 = start_k3 + carry;
+
+    AffinePoint cur_P = scalar_mul_G_windowed(cur_k0, cur_k1, cur_k2, cur_k3);
+
+    if (check_point_hash160(cur_P, tw)) {
+        if (atomicExch(d_found_flag, 1) == 0) {
+            *d_found_offset = thread_start_offset;
+        }
         return;
     }
 
     uint64_t step_keys = (uint64_t)grid_threads;
 
     for (uint32_t b = 0; b < batches; ++b) {
-        if (dev_found_flag) return;
+        if (*d_found_flag) return;
 
         uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 16ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
@@ -1358,9 +1415,10 @@ CUDA_GLOBAL void cuda_scan_kernel(
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
                 AffinePoint cand{next_x, next_y};
-                if (check_point_hash160(cand)) {
-                    atomicExch(&dev_found_flag, 1);
-                    atomicExch((unsigned long long*)&dev_found_offset, (unsigned long long)key_offset);
+                if (check_point_hash160(cand, tw)) {
+                    if (atomicExch(d_found_flag, 1) == 0) {
+                        *d_found_offset = key_offset;
+                    }
                     return;
                 }
             }
@@ -1462,7 +1520,11 @@ int main(int argc, char* argv[]) {
         } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::atoi(argv[++i]);
             multiple_specified = true;
-        } else if ((arg == "-d" || arg == "--device") && i + 1 < argc) {
+        } else if ((arg == "-d" || arg == "-double" || arg == "--double")) {
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                target_device_id = std::atoi(argv[++i]);
+            }
+        } else if (arg == "--device" && i + 1 < argc) {
             target_device_id = std::atoi(argv[++i]);
         } else if (arg == "--fast") {
             is_fast = true;
@@ -1481,8 +1543,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Set 16KB stack size limit per thread to completely prevent stack overflow
+    // caused by Montgomery inversion and RIPEMD-160/SHA-256 local state
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
+
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, target_device_id);
+
+    // Allocate GPU Device Pointers for Found Detection
+    int* d_found_flag = nullptr;
+    uint64_t* d_found_offset = nullptr;
+    cudaMalloc(&d_found_flag, sizeof(int));
+    cudaMalloc(&d_found_offset, sizeof(uint64_t));
 
     // Initialize Base Point Precomputed Lookup Tables on Host
     AffinePoint h_table[16];
@@ -1579,14 +1651,6 @@ int main(int argc, char* argv[]) {
                           ((uint32_t)target_h160[i * 4 + 2] << 16) |
                           ((uint32_t)target_h160[i * 4 + 3] << 24);
         }
-        uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
-
-        // Upload Target Parameters to GPU Constant Memory
-        cudaMemcpyToSymbol(dev_target_w, target_w, sizeof(target_w));
-        cudaMemcpyToSymbol(dev_target_h64, &target_h64, sizeof(uint64_t));
-
-        int zero = 0;
-        cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
 
         bool hit = false;
         u256 found_key = 0;
@@ -1595,30 +1659,45 @@ int main(int argc, char* argv[]) {
         auto t_start = std::chrono::high_resolution_clock::now();
 
         while (actual_checked < total_keys_count && g_running.load() && !hit) {
-            int zero_flag = 0;
-            cudaMemcpyToSymbol(dev_found_flag, &zero_flag, sizeof(int));
+            cudaMemset(d_found_flag, 0, sizeof(int));
 
             uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
             uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
             uint32_t cur_batches = (cur_steps + 15) / 16;
             u256 cur_start = start_k + actual_checked;
 
+            uint64_t sk0 = (uint64_t)cur_start.low;
+            uint64_t sk1 = (uint64_t)(cur_start.low >> 64);
+            uint64_t sk2 = (uint64_t)cur_start.high;
+            uint64_t sk3 = (uint64_t)(cur_start.high >> 64);
+
 #if defined(__CUDACC__) || defined(__NVCC__)
             cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                cur_start, cur_chunk, grid_threads, cur_batches
+                sk0, sk1, sk2, sk3,
+                cur_chunk, grid_threads, cur_batches,
+                d_found_flag, d_found_offset,
+                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
             );
 #else
             (void)numBlocks; (void)threadsPerBlock;
-            cuda_scan_kernel(cur_start, cur_chunk, grid_threads, cur_batches);
+            cuda_scan_kernel(
+                sk0, sk1, sk2, sk3,
+                cur_chunk, grid_threads, cur_batches,
+                d_found_flag, d_found_offset,
+                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
+            );
 #endif
 
-            cudaDeviceSynchronize();
+            cudaError_t k_err = cudaGetLastError();
+            if (k_err == cudaSuccess) {
+                k_err = cudaDeviceSynchronize();
+            }
 
             int h_found = 0;
-            cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
+            cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
             if (h_found != 0) {
                 uint64_t h_offset = 0;
-                cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
+                cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
                 hit = true;
                 found_key = cur_start + h_offset;
                 actual_checked += h_offset + 1;
@@ -1671,6 +1750,8 @@ int main(int argc, char* argv[]) {
         if (hit) break;
     }
 
+    if (d_found_flag) cudaFree(d_found_flag);
+    if (d_found_offset) cudaFree(d_found_offset);
     curl_global_cleanup();
     return 0;
 }

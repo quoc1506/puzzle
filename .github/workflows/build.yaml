@@ -42,26 +42,36 @@ jobs:
           echo "Using host compiler flag: ${CCBIN_ARG}"
 
           GENCODES=""
-          # Ensure compute 75 (Tesla T4) is always supported as base architecture
-          for arch in 75 80 86 89 90; do
+          # Support Pascal, Volta, Turing (Colab T4), Ampere, Ada Lovelace, and Hopper
+          for arch in 60 61 70 75 80 86 89 90; do
             if nvcc ${CCBIN_ARG} -gencode arch=compute_${arch},code=sm_${arch} -E -x cu /dev/null -o /dev/null 2>/dev/null; then
               GENCODES="${GENCODES} -gencode arch=compute_${arch},code=sm_${arch}"
             fi
           done
 
-          # Always include PTX JIT for forward compatibility starting from compute 75 (Turing / Colab T4)
-          GENCODES="${GENCODES} -gencode arch=compute_75,code=compute_75"
+          # Always include PTX JIT for forward compatibility
+          if nvcc ${CCBIN_ARG} -gencode arch=compute_60,code=compute_60 -E -x cu /dev/null -o /dev/null 2>/dev/null; then
+            GENCODES="${GENCODES} -gencode arch=compute_60,code=compute_60"
+          else
+            GENCODES="${GENCODES} -gencode arch=compute_75,code=compute_75"
+          fi
 
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
           SRC_FILE="build_gpu.cu"
-          if [ ! -f "$SRC_FILE" ]; then
-            SRC_FILE="build_cpu.cpp"
+          if [ -f "src/files/build_gpu.cu" ]; then
+            SRC_FILE="src/files/build_gpu.cu"
+          elif [ ! -f "$SRC_FILE" ]; then
+            if [ -f "src/files/build_cpu.cpp" ]; then
+              SRC_FILE="src/files/build_cpu.cpp"
+            else
+              SRC_FILE="build_cpu.cpp"
+            fi
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
           nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 255 -Xptxas -O3,-v ${GENCODES} \
-            -Xcompiler -march=x86-64-v3,-mavx2,-mbmi2,-madx,-O3,-funroll-loops \
+            -Xcompiler -O3,-mavx2,-mbmi2,-madx,-funroll-loops \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda
           chmod +x bin/build_cuda
