@@ -468,7 +468,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
     const uint64_t K = 0x1000003D1ULL;
-    uint64_t sub_k = borrow & K;
+    uint64_t sub_k = borrow ? K : 0ULL;
     asm volatile(
         "sub.cc.u64 %0, %0, %4;\n\t"
         "subc.cc.u64 %1, %1, 0;\n\t"
@@ -1304,7 +1304,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
 // CUDA GPU CONSTANTS & LOCKSTEP SIMD MONTGOMERY BATCH INVERSION KERNEL
 // ============================================================================
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-CUDA_CONSTANT AffinePoint dev_batch_G[16];
+CUDA_CONSTANT AffinePoint dev_batch_G[64];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
@@ -1375,44 +1375,49 @@ CUDA_GLOBAL void cuda_scan_kernel(
     for (uint32_t b = 0; b < batches; ++b) {
         if (*d_found_flag) return;
 
-        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 16ULL * step_keys;
+        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 64ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
-        Fe dx[16];
-        Fe dy[16];
-        Fe prod[16];
+        // In-place 64-way Lockstep SIMD Montgomery Batch Inversion
+        Fe dx[64];
+        Fe prod[64];
 
         #pragma unroll
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < 64; ++i) {
             dx[i] = fe_sub(dev_batch_G[i].x, cur_P.x);
-            dy[i] = fe_sub(dev_batch_G[i].y, cur_P.y);
         }
 
         prod[0] = dx[0];
         #pragma unroll
-        for (int i = 1; i < 16; ++i) {
+        for (int i = 1; i < 64; ++i) {
             prod[i] = fe_mul(prod[i - 1], dx[i]);
         }
 
-        Fe inv_all = fe_inv(prod[15]);
+        Fe inv_all = fe_inv(prod[63]);
 
-        Fe inv_dx[16];
         #pragma unroll
-        for (int i = 15; i >= 1; --i) {
-            inv_dx[i] = fe_mul(inv_all, prod[i - 1]);
+        for (int i = 63; i >= 1; --i) {
+            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             inv_all = fe_mul(inv_all, dx[i]);
+            prod[i] = inv_dx_i; // prod[i] reused as inv_dx[i]
         }
-        inv_dx[0] = inv_all;
+        prod[0] = inv_all; // prod[0] reused as inv_dx[0]
 
+        AffinePoint next_cur_P;
         #pragma unroll
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < 64; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
-                Fe lambda = fe_mul(dy[i], inv_dx[i]);
+                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
+                Fe lambda = fe_mul(dy_i, prod[i]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+                if (i == 63) {
+                    next_cur_P = AffinePoint{next_x, next_y};
+                }
 
                 AffinePoint cand{next_x, next_y};
                 if (check_point_hash160(cand, tw)) {
@@ -1421,18 +1426,21 @@ CUDA_GLOBAL void cuda_scan_kernel(
                     }
                     return;
                 }
+            } else if (i == 63) {
+                Fe dy_63 = fe_sub(dev_batch_G[63].y, cur_P.y);
+                Fe lambda = fe_mul(dy_63, prod[63]);
+                Fe lambda_sq = fe_sqr(lambda);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[63].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+                next_cur_P = AffinePoint{next_x, next_y};
             }
         }
 
-        Fe lambda_adv = fe_mul(dy[15], inv_dx[15]);
-        Fe lambda_adv_sq = fe_sqr(lambda_adv);
-        Fe adv_x = fe_sub(fe_sub(lambda_adv_sq, cur_P.x), dev_batch_G[15].x);
-        Fe diff_adv_x = fe_sub(cur_P.x, adv_x);
-        Fe adv_y = fe_sub(fe_mul(lambda_adv, diff_adv_x), cur_P.y);
-        cur_P = AffinePoint{adv_x, adv_y};
+        // Advance cur_P to cur_P + dev_batch_G[63] for the next batch
+        cur_P = next_cur_P;
     }
 }
-
 
 static size_t curl_cb(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t total = size * nmemb;
@@ -1567,15 +1575,15 @@ int main(int argc, char* argv[]) {
 
     // Auto-tune Grid & Block dimensions for maximum GPU SM saturation
     uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-    uint32_t threadsPerBlock = 128;
-    uint32_t numBlocks = num_sms * (is_fast ? 32 : 16);
+    uint32_t threadsPerBlock = 256;
+    uint32_t numBlocks = num_sms * (is_fast ? 16 : 8);
     uint32_t grid_threads = numBlocks * threadsPerBlock;
-    uint32_t steps_per_launch = is_fast ? 65536 : 32768;
+    uint32_t steps_per_launch = is_fast ? 2048 : 1024;
     uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
 
-    // Precompute Batch G Points for 16-way Lockstep SIMD Montgomery Inversion
-    AffinePoint h_batch_G[16];
-    for (int i = 0; i < 16; ++i) {
+    // Precompute Batch G Points for 64-way Lockstep SIMD Montgomery Inversion
+    AffinePoint h_batch_G[64];
+    for (int i = 0; i < 64; ++i) {
         uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
         uint64_t s[4] = { step_mult, 0, 0, 0 };
         h_batch_G[i] = scalar_mul_G(s);
@@ -1663,7 +1671,7 @@ int main(int argc, char* argv[]) {
 
             uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
             uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-            uint32_t cur_batches = (cur_steps + 15) / 16;
+            uint32_t cur_batches = (cur_steps + 63) / 64;
             u256 cur_start = start_k + actual_checked;
 
             uint64_t sk0 = (uint64_t)cur_start.low;
@@ -1691,6 +1699,11 @@ int main(int argc, char* argv[]) {
             cudaError_t k_err = cudaGetLastError();
             if (k_err == cudaSuccess) {
                 k_err = cudaDeviceSynchronize();
+            }
+            if (k_err != cudaSuccess) {
+                std::cerr << "[CUDA ERROR] Kernel failure: " << cudaGetErrorString(k_err) << std::endl;
+                portable_sleep_ms(1000);
+                break;
             }
 
             int h_found = 0;
