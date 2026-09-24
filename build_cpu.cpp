@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <ctime>
 #include <cstdlib>
+#include <cmath>
 
 #ifndef CURL_STATICLIB
 #define CURL_STATICLIB
@@ -28,6 +29,11 @@
 #if defined(__GNUC__) || defined(__clang__)
 #include <x86intrin.h>
 #endif
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <pthread.h>
+#include <sched.h>
 #endif
 
 // ============================================================================
@@ -1964,6 +1970,8 @@ int main(int argc, char* argv[]) {
     int current_puzzle = 71;
     std::string current_user = "guest";
     int requested_multiple = 1;
+    bool multiple_specified = false;
+    double avg_speed = 0.0;
 
     int threads = 1;
     bool threads_specified = false;
@@ -1980,6 +1988,7 @@ int main(int argc, char* argv[]) {
             current_user = argv[++i];
         } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::max(1, std::atoi(argv[++i]));
+            multiple_specified = true;
         } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
             custom_threads = std::max(1, std::atoi(argv[++i]));
             threads_specified = true;
@@ -2090,10 +2099,21 @@ int main(int argc, char* argv[]) {
         std::vector<std::thread> pool;
         pool.reserve(threads);
         for (int i = 0; i < threads; ++i) {
-            pool.emplace_back(scan_worker_montgomery, start_k, std::ref(work_offset),
-                              total_keys_count, slice_size, target_h160, target_h64,
-                              target_w, std::ref(found_flag), std::ref(found_key),
-                              std::ref(found_mtx), std::ref(checked_counter));
+            pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
+#if defined(__linux__) && !defined(__ANDROID__)
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                unsigned int num_hw = std::thread::hardware_concurrency();
+                if (num_hw > 0) {
+                    CPU_SET(i % num_hw, &cpuset);
+                    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+                }
+#endif
+                scan_worker_montgomery(start_k, std::ref(work_offset),
+                                      total_keys_count, slice_size, target_h160, target_h64,
+                                      target_w, std::ref(found_flag), std::ref(found_key),
+                                      std::ref(found_mtx), std::ref(checked_counter));
+            });
         }
         for (auto& th : pool) {
             if (th.joinable()) th.join();
@@ -2132,6 +2152,16 @@ int main(int argc, char* argv[]) {
         std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
         std::string ack;
         http_post(post_url, json.str(), &ack);
+
+        // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
+        if (!multiple_specified && speed > 0.0) {
+            avg_speed = (avg_speed <= 0.0) ? speed : (0.7 * speed + 0.3 * avg_speed);
+            double target_keys = avg_speed * 30.0;
+            int next_m = (int)std::round(target_keys / 268435456.0);
+            if (next_m < 1) next_m = 1;
+            if (next_m > 128) next_m = 128;
+            requested_multiple = next_m;
+        }
 
         if (hit) break;
     }

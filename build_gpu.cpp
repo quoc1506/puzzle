@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <ctime>
 #include <cstdlib>
+#include <cmath>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -1444,7 +1445,9 @@ int main(int argc, char* argv[]) {
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
     int current_puzzle = 71;
     std::string current_user = "guest";
-    int requested_multiple = 4;
+    int requested_multiple = 1;
+    bool multiple_specified = false;
+    double avg_speed = 0.0;
     int target_device_id = 0;
     bool is_fast = true;
 
@@ -1456,8 +1459,9 @@ int main(int argc, char* argv[]) {
             current_puzzle = std::atoi(argv[++i]);
         } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
             current_user = argv[++i];
-        } else if ((arg == "-m" || arg == "--multiple") && i + 1 < argc) {
+        } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::atoi(argv[++i]);
+            multiple_specified = true;
         } else if ((arg == "-d" || arg == "--device") && i + 1 < argc) {
             target_device_id = std::atoi(argv[++i]);
         } else if (arg == "--fast") {
@@ -1653,6 +1657,16 @@ int main(int argc, char* argv[]) {
         std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
         std::string ack;
         http_post(post_url, json.str(), &ack);
+
+        // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
+        if (!multiple_specified && speed > 0.0) {
+            avg_speed = (avg_speed <= 0.0) ? speed : (0.7 * speed + 0.3 * avg_speed);
+            double target_keys = avg_speed * 30.0;
+            int next_m = (int)std::round(target_keys / 268435456.0);
+            if (next_m < 1) next_m = 1;
+            if (next_m > 512) next_m = 512;
+            requested_multiple = next_m;
+        }
 
         if (hit) break;
     }
