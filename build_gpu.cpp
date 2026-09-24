@@ -41,11 +41,19 @@
 #include <openssl/ripemd.h>
 #include <openssl/bn.h>
 
+#if defined(__NVCC__) || defined(__CUDACC__)
 #define CUDA_HOSTDEV __host__ __device__
 #define CUDA_DEV __device__
 #define CUDA_GLOBAL __global__
 #define CUDA_INLINE __forceinline__
 #define CUDA_CONSTANT __constant__
+#else
+#define CUDA_HOSTDEV
+#define CUDA_DEV
+#define CUDA_GLOBAL
+#define CUDA_INLINE inline
+#define CUDA_CONSTANT
+#endif
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1248,12 +1256,12 @@ CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t ou
 // ============================================================================
 // CUDA GPU CONSTANTS & LOCKSTEP SIMD MONTGOMERY BATCH INVERSION KERNEL
 // ============================================================================
-__constant__ AffinePoint dev_G_table[16];
-__constant__ AffinePoint dev_batch_G[16];
-__constant__ uint32_t dev_target_w[5];
-__constant__ uint64_t dev_target_h64;
-__device__ int dev_found_flag = 0;
-__device__ uint64_t dev_found_offset = 0;
+CUDA_CONSTANT AffinePoint dev_G_table[16];
+CUDA_CONSTANT AffinePoint dev_batch_G[16];
+CUDA_CONSTANT uint32_t dev_target_w[5];
+CUDA_CONSTANT uint64_t dev_target_h64;
+CUDA_DEV int dev_found_flag = 0;
+CUDA_DEV uint64_t dev_found_offset = 0;
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(const u256& scalar) {
     JacobianPoint res;
@@ -1283,7 +1291,7 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& pt) {
     return fast_ripemd160_32_check(X, dev_target_w);
 }
 
-__global__ void __launch_bounds__(128, 4) cuda_scan_kernel(
+CUDA_GLOBAL void cuda_scan_kernel(
     u256 start_key,
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
@@ -1457,14 +1465,6 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--safe") {
             is_fast = false;
         } else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: " << argv[0] << " [options]\n"
-                      << "  -s, --server <url>    Coordinator server API base\n"
-                      << "  -p, --puzzle <num>    Puzzle number (e.g. 71)\n"
-                      << "  -u, --user <name>     Coordinator username\n"
-                      << "  -m, --multiple <n>    Number of slices per assignment\n"
-                      << "  -d, --device <id>     CUDA device index (default: 0)\n"
-                      << "      --fast            Maximize GPU occupancy (default)\n"
-                      << "      --safe            Conservative GPU thread allocation\n";
             return 0;
         }
     }
@@ -1474,22 +1474,11 @@ int main(int argc, char* argv[]) {
 
     cudaError_t dev_err = cudaSetDevice(target_device_id);
     if (dev_err != cudaSuccess) {
-        std::cerr << "[ERROR] Cannot set CUDA device " << target_device_id << ": " << cudaGetErrorString(dev_err) << "\n";
         return 1;
     }
 
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, target_device_id);
-
-    std::cout << "========================================================\n"
-              << "  BITCOIN PUZZLE SOLVER - ULTRA NVIDIA CUDA GPU WORKER\n"
-              << "========================================================\n"
-              << "  Device " << target_device_id << ":          " << prop.name << "\n"
-              << "  Compute Arch:     SM " << prop.major << "." << prop.minor << "\n"
-              << "  Streaming Mults:  " << prop.multiProcessorCount << " SMs\n"
-              << "  Total VRAM:       " << (prop.totalGlobalMem / (1024 * 1024)) << " MB\n"
-              << "  Max Regs/Block:   " << prop.regsPerBlock << "\n"
-              << "========================================================\n";
 
     // Initialize Base Point Precomputed Lookup Tables on Host
     AffinePoint h_table[16];
@@ -1517,12 +1506,6 @@ int main(int argc, char* argv[]) {
     }
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
 
-    std::cout << "[GPU TUNING] Grid: " << numBlocks << " blocks x " << threadsPerBlock
-              << " threads = " << grid_threads << " active GPU threads.\n"
-              << "[GPU TUNING] Chunk size: " << chunk_size << " keys per GPU dispatch.\n";
-
-    int completed_ranges = 0;
-
     while (g_running.load()) {
         std::stringstream req_url;
         req_url << api_base << "?action=range&puzzle=" << current_puzzle
@@ -1530,7 +1513,6 @@ int main(int argc, char* argv[]) {
 
         std::string resp;
         if (!http_get(req_url.str(), &resp)) {
-            std::cerr << "[WARN] Server connection failed. Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -1541,12 +1523,10 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (status == "solved") {
-            std::cout << "[INFO] Puzzle " << current_puzzle << " is solved! Exiting.\n";
             break;
         }
         std::string server_err = json_get_string(resp, "error");
         if (!server_err.empty()) {
-            std::cerr << "[SERVER ERROR] " << server_err << ". Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -1584,7 +1564,6 @@ int main(int argc, char* argv[]) {
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
-            std::cerr << "[ERROR] Invalid target address: " << str_target << "\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -1629,14 +1608,7 @@ int main(int argc, char* argv[]) {
             cuda_scan_kernel(cur_start, cur_chunk, grid_threads, cur_batches);
 #endif
 
-            cudaError_t k_err = cudaGetLastError();
-            if (k_err != cudaSuccess) {
-                std::cerr << "[CUDA ERROR] Kernel launch failed: " << cudaGetErrorString(k_err) << "\n";
-            }
-            cudaError_t s_err = cudaDeviceSynchronize();
-            if (s_err != cudaSuccess) {
-                std::cerr << "[CUDA ERROR] Kernel execution failed: " << cudaGetErrorString(s_err) << "\n";
-            }
+            cudaDeviceSynchronize();
 
             int h_found = 0;
             cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
@@ -1656,15 +1628,8 @@ int main(int argc, char* argv[]) {
         if (elapsed <= 0.0) elapsed = 0.001;
         double speed = (double)actual_checked / elapsed;
 
-        std::cout << "[GPU PROGRESS] Block #" << block_idx << " Range " << range_idx
-                  << " (x" << range_count << ") -> " << std::fixed << std::setprecision(2)
-                  << (speed / 1e6) << " Mkeys/s | Time: " << std::setprecision(2) << elapsed << "s\n";
-
         if (hit) {
-            std::cout << "\n=======================================================\n"
-                      << "  [SUCCESS] PRIVATE KEY FOUND BY GPU!\n"
-                      << "  Key: 0x" << u256_to_hex64(found_key) << "\n"
-                      << "=======================================================\n";
+            // Private key found: reported to server via HTTP POST result
         }
 
         if (!hit && !g_running.load()) break;
@@ -1689,7 +1654,6 @@ int main(int argc, char* argv[]) {
         std::string ack;
         http_post(post_url, json.str(), &ack);
 
-        completed_ranges++;
         if (hit) break;
     }
 

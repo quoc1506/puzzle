@@ -1836,11 +1836,7 @@ void scan_worker_montgomery(
             for (; i < cur_batch; ++i) {
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
-                uint32_t out[5];
-                fast_ripemd160_32(X, out);
-
-                uint64_t cur_h64 = (uint64_t)out[0] | ((uint64_t)out[1] << 32);
-                if (cur_h64 == target_h64 && out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]) {
+                if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
                     found_key = cur_k + (uint64_t)i;
@@ -1852,11 +1848,7 @@ void scan_worker_montgomery(
             for (uint32_t i = 0; i < cur_batch; ++i) {
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
-                uint32_t out[5];
-                fast_ripemd160_32(X, out);
-
-                uint64_t cur_h64 = (uint64_t)out[0] | ((uint64_t)out[1] << 32);
-                if (cur_h64 == target_h64 && out[2] == target_w[2] && out[3] == target_w[3] && out[4] == target_w[4]) {
+                if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
                     found_key = cur_k + (uint64_t)i;
@@ -1952,11 +1944,10 @@ int main(int argc, char* argv[]) {
     std::string current_user = "guest";
     int requested_multiple = 1;
 
-    unsigned int hw = std::thread::hardware_concurrency();
-    int threads = (hw > 0) ? (int)hw : 4;
+    int threads = 1;
     bool threads_specified = false;
     int custom_threads = 1;
-    bool is_fast = true;
+    bool is_fast = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -1974,35 +1965,20 @@ int main(int argc, char* argv[]) {
         } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
             is_fast = true;
         } else if (arg == "-h" || arg == "--help" || arg == "-help") {
-            std::cout << "========================================================\n"
-                      << "  Bitcoin Puzzle Extreme CPU Solver (AVX2 / Multi-Thread)\n"
-                      << "========================================================\n"
-                      << "Usage: " << argv[0] << " [options]\n"
-                      << "  -s, --server <url>     Server API URL\n"
-                      << "  -p, --puzzle <num>     Puzzle number (e.g. 71)\n"
-                      << "  -u, -w, --user <name>  Worker/User name\n"
-                      << "  -m, -b, --multiple <n> Multiple chunks batch size (1..128)\n"
-                      << "  -t, --threads <n>      Number of CPU threads (default: all cores)\n"
-                      << "  -f, --fast             Fast high-throughput mode\n"
-                      << "  -h, --help             Show this help\n";
             return 0;
         }
     }
 
     if (threads_specified) {
         threads = custom_threads;
+    } else if (is_fast) {
+        unsigned int hw = std::thread::hardware_concurrency();
+        threads = (hw > 0) ? (int)hw : 4;
+    } else {
+        threads = 1;
     }
 
-    std::cout << "[CPU SOLVER] Starting with " << threads << " worker threads.\n";
-#if defined(__AVX2__)
-    std::cout << "[CPU SIMD] AVX2 + BMI2 8-lane parallel vectorized hashing enabled.\n";
-#else
-    std::cout << "[CPU SIMD] Standard 64-bit scalar engine enabled.\n";
-#endif
-
     init_generator_table();
-
-    int completed_ranges = 0;
 
     while (g_running.load()) {
         std::stringstream req_url;
@@ -2011,7 +1987,6 @@ int main(int argc, char* argv[]) {
 
         std::string resp;
         if (!http_get(req_url.str(), &resp)) {
-            std::cerr << "[WARN] Failed to connect to server. Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -2022,12 +1997,10 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (status == "solved") {
-            std::cout << "[INFO] Puzzle " << current_puzzle << " is solved! Exiting.\n";
             break;
         }
         std::string server_err = json_get_string(resp, "error");
         if (!server_err.empty()) {
-            std::cerr << "[SERVER ERROR] " << server_err << ". Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -2065,7 +2038,6 @@ int main(int argc, char* argv[]) {
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
-            std::cerr << "[ERROR] Invalid target address: " << str_target << "\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -2111,15 +2083,8 @@ int main(int argc, char* argv[]) {
         if (elapsed <= 0.0) elapsed = 0.001;
         double speed = (double)checked / elapsed;
 
-        std::cout << "[PROGRESS] Block #" << block_idx << " Range " << range_idx
-                  << " (x" << range_count << ") -> " << std::fixed << std::setprecision(2)
-                  << (speed / 1e6) << " Mkeys/s | Time: " << std::setprecision(2) << elapsed << "s\n";
-
         if (hit) {
-            std::cout << "\n=======================================================\n"
-                      << "  [SUCCESS] PRIVATE KEY FOUND!\n"
-                      << "  Key: 0x" << u256_to_hex64(found_key) << "\n"
-                      << "=======================================================\n";
+            // Private key found: reported to server via HTTP POST result
         }
 
         if (!hit && !g_running.load()) break;
@@ -2144,7 +2109,6 @@ int main(int argc, char* argv[]) {
         std::string ack;
         http_post(post_url, json.str(), &ack);
 
-        completed_ranges++;
         if (hit) break;
     }
 

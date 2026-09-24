@@ -7,6 +7,16 @@ cd "$DIR"
 OS="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')"
 
+log_debug() {
+    echo "[DEBUG] $1" >&2
+}
+
+log_info() {
+    echo "[LAUNCH] $1" >&2
+}
+
+log_debug "Platform detected: OS=$OS, ARCH=$ARCH"
+
 can_run() {
     [ -n "$1" ] || return 1
     [ -f "$1" ] || return 1
@@ -14,6 +24,7 @@ can_run() {
     if command -v ldd >/dev/null 2>&1; then
         LDD_OUT="$(ldd "$1" 2>&1)"
         if echo "$LDD_OUT" | grep -q -E '(not found|version `GLIBC_)'; then
+            log_debug "Candidate $1: Incompatible dynamic libraries / GLIBC"
             return 1
         fi
     fi
@@ -21,11 +32,17 @@ can_run() {
 }
 
 TARGET_BIN=""
-
 FORCE_CPU=0
+CLEAN_ARGS=""
+
 for arg in "$@"; do
     case "$arg" in
-        -cpu|--cpu|-c) FORCE_CPU=1 ;;
+        -cpu|--cpu|-c)
+            FORCE_CPU=1
+            log_debug "Forcing CPU mode via flag: $arg"
+            ;;
+        *)
+            ;;
     esac
 done
 
@@ -33,17 +50,21 @@ case "$OS" in
     linux*)
         case "$ARCH" in
             riscv64|riscv)
+                log_debug "Evaluating Linux RISC-V candidates..."
                 for f in "bin/build-linux-riscv64" "bin/build"; do
                     if can_run "$f"; then
                         TARGET_BIN="$f"
+                        log_debug "Found compatible RISC-V binary: $TARGET_BIN"
                         break
                     fi
                 done
                 ;;
             aarch64|arm64)
+                log_debug "Evaluating Linux ARM64 candidates..."
                 for f in "bin/build-linux-arm64" "bin/build"; do
                     if can_run "$f"; then
                         TARGET_BIN="$f"
+                        log_debug "Found compatible ARM64 binary: $TARGET_BIN"
                         break
                     fi
                 done
@@ -51,18 +72,20 @@ case "$OS" in
             x86_64|amd64|*)
                 if [ "$FORCE_CPU" != "1" ]; then
                     if command -v nvidia-smi >/dev/null 2>&1; then
+                        log_debug "NVIDIA GPU driver (nvidia-smi) detected on system."
                         if [ -f "bin/build_cuda" ]; then
                             if can_run "bin/build_cuda"; then
                                 TARGET_BIN="bin/build_cuda"
+                                log_debug "Selected CUDA GPU acceleration binary: $TARGET_BIN"
                             else
-                                echo "[WARN] NVIDIA GPU detected, but bin/build_cuda failed dynamic/GLIBC checks. Falling back to CPU..."
+                                log_debug "bin/build_cuda failed dependency checks, falling back to CPU."
                             fi
                         else
-                            echo "[WARN] NVIDIA GPU detected, but bin/build_cuda not found in bin/. Falling back to CPU..."
+                            log_debug "bin/build_cuda not present in bin/, falling back to CPU."
                         fi
+                    else
+                        log_debug "No NVIDIA GPU driver found. Proceeding with CPU binaries."
                     fi
-                else
-                    echo "[INFO] CPU mode forced via -cpu flag. Skipping CUDA GPU..."
                 fi
 
                 if [ -z "$TARGET_BIN" ]; then
@@ -75,6 +98,7 @@ case "$OS" in
 
                     GLIBC_MAJOR=0
                     GLIBC_MINOR=0
+                    GLIBC_VER="unknown"
                     if command -v getconf >/dev/null 2>&1; then
                         GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
                         if [ -n "$GLIBC_VER" ]; then
@@ -82,6 +106,7 @@ case "$OS" in
                             GLIBC_MINOR="$(echo "$GLIBC_VER" | cut -d. -f2)"
                         fi
                     fi
+                    log_debug "CPU SIMD: AVX2+BMI2=$HAS_AVX2 | System GLIBC=$GLIBC_VER ($GLIBC_MAJOR.$GLIBC_MINOR)"
 
                     CANDIDATES=""
                     if [ "$GLIBC_MAJOR" -gt 2 ] 2>/dev/null || ( [ "$GLIBC_MAJOR" -eq 2 ] && [ "$GLIBC_MINOR" -ge 38 ] ) 2>/dev/null; then
@@ -105,16 +130,20 @@ case "$OS" in
                     fi
 
                     for c in $CANDIDATES; do
+                        log_debug "Checking candidate binary: $c"
                         if can_run "$c"; then
                             TARGET_BIN="$c"
+                            log_debug "Candidate matched and verified: $c"
                             break
                         fi
                     done
 
                     if [ -z "$TARGET_BIN" ]; then
+                        log_debug "Testing secondary fallback binaries..."
                         for f in "bin/build-linux-musl-x86_64" "bin/build-linux-musl-x86_64-compat" "bin/build" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-u22-x86_64" "bin/build-linux-x86_64-compat" "bin/build-linux-x86_64"; do
                             if [ -f "$f" ]; then
                                 TARGET_BIN="$f"
+                                log_debug "Fallback binary selected: $TARGET_BIN"
                                 break
                             fi
                         done
@@ -124,6 +153,7 @@ case "$OS" in
         esac
         ;;
     darwin*)
+        log_debug "Evaluating macOS binary candidates..."
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
             for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64"; do
                 if [ -f "$f" ]; then
@@ -141,6 +171,7 @@ case "$OS" in
         fi
         ;;
     msys*|mingw*|cygwin*)
+        log_debug "Evaluating Windows binary candidates..."
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
             if [ -f "$f" ]; then
                 TARGET_BIN="$f"
@@ -155,13 +186,15 @@ esac
 
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
-    echo "[LAUNCH] Running binary: $TARGET_BIN"
+    log_info "Executing binary: $TARGET_BIN"
     exec "./$TARGET_BIN" "$@"
 fi
 
 if [ -f "bin/build" ]; then
     chmod +x "bin/build" 2>/dev/null || true
+    log_info "Executing fallback binary: bin/build"
     exec "./bin/build" "$@"
 fi
 
+echo "[ERROR] No compatible binary found in bin/ for this platform ($OS-$ARCH)." >&2
 exit 1
