@@ -4,7 +4,8 @@ on:
   push:
     branches: [ "main", "master" ]
     paths:
-      - 'build.cpp'
+      - 'build_cpu.cpp'
+      - 'build_gpu.cu'
       - '.github/workflows/**'
       - 'build.yaml'
       - 'build.yml'
@@ -53,9 +54,15 @@ jobs:
 
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
+          SRC_FILE="build_gpu.cu"
+          if [ ! -f "$SRC_FILE" ]; then
+            SRC_FILE="build_cpu.cpp"
+          fi
+          echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
+
           nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 255 -Xptxas -O3,-v ${GENCODES} \
             -Xcompiler -march=x86-64-v3,-mavx2,-mbmi2,-madx,-O3,-funroll-loops \
-            -x cu build.cpp -o bin/build_cuda -lcurl -lssl -lcrypto
+            -x cu ${SRC_FILE} -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda
           chmod +x bin/build_cuda
 
@@ -114,7 +121,7 @@ jobs:
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
@@ -122,7 +129,7 @@ jobs:
             -o bin/build-linux-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
@@ -194,7 +201,7 @@ jobs:
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
           g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
@@ -202,7 +209,7 @@ jobs:
             -o bin/build-linux-u22-x86_64
 
           g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
-            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
             -Wl,-Bstatic -lz -Wl,-Bdynamic \
@@ -272,14 +279,14 @@ jobs:
 
           # AVX2 optimized static binary
           g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
-            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64
 
           # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
           g++ -static -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
-            -DCURL_STATICLIB -DSECP256K1_STATIC build.cpp \
+            -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64-compat
@@ -335,7 +342,7 @@ jobs:
             [ -z "$SSL_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lssl"
             [ -z "$CRYPTO_A" ] && FALLBACK_FLAGS="${FALLBACK_FLAGS} -lcrypto"
 
-            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build.cpp \
+            g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -pthread build_cpu.cpp \
               ${STATIC_LIBS} ${FALLBACK_FLAGS} \
               -static-libgcc -static-libstdc++ \
               -lcurl -lz -lpthread -ldl \
@@ -392,7 +399,7 @@ jobs:
           clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
             -target arm64-apple-macos11.0 -mmacosx-version-min=11.0 \
             -DSECP256K1_STATIC \
-            build.cpp \
+            build_cpu.cpp \
             -I${SECP_ARM64}/include \
             -I${OPENSSL_PREFIX}/include \
             ${SECP_ARM64}/lib/libsecp256k1.a \
@@ -439,7 +446,7 @@ jobs:
             SSL_LIB_DIR="${OPENSSL_X86}/lib64"
           fi
 
-          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -I${SECP_X86}/include             -I${OPENSSL_X86}/include             -I${CURL_X86}/include             ${SECP_X86}/lib/libsecp256k1.a             ${CURL_X86}/lib/libcurl.a             ${SSL_LIB_DIR}/libssl.a             ${SSL_LIB_DIR}/libcrypto.a             -framework CoreFoundation -framework SystemConfiguration             -lz -lpthread             -o bin/build-macos-x86_64
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15             -DCURL_STATICLIB -DSECP256K1_STATIC             build_cpu.cpp             -I${SECP_X86}/include             -I${OPENSSL_X86}/include             -I${CURL_X86}/include             ${SECP_X86}/lib/libsecp256k1.a             ${CURL_X86}/lib/libcurl.a             ${SSL_LIB_DIR}/libssl.a             ${SSL_LIB_DIR}/libcrypto.a             -framework CoreFoundation -framework SystemConfiguration             -lz -lpthread             -o bin/build-macos-x86_64
 
           chmod +x bin/build-macos-x86_64
           rm -rf x86_build
@@ -487,9 +494,9 @@ jobs:
         run: |
           mkdir -p bin
           CURL_STATIC_LIBS=$(pkg-config --static --libs libcurl)
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64.exe
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build_cpu.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64.exe
 
-          g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64-compat.exe
+          g++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto             -DCURL_STATICLIB -DSECP256K1_STATIC             build_cpu.cpp             -static -static-libgcc -static-libstdc++             -lsecp256k1 $CURL_STATIC_LIBS -lws2_32 -lcrypt32 -lwldap32             -o bin/build-windows-x86_64-compat.exe
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

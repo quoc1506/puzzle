@@ -117,6 +117,8 @@ function init_schema(PDO $pdo): void {
             PRIMARY KEY (puzzle_id, block_id)
         );
 
+        CREATE INDEX IF NOT EXISTS idx_blocks_created ON blocks(puzzle_id, created_at);
+
         CREATE TABLE IF NOT EXISTS ranges (
             puzzle_id INTEGER NOT NULL,
             block_id INTEGER NOT NULL,
@@ -494,13 +496,36 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '.search-clear { position: absolute; right: 10px; background: none; border: none; color: #94a3b8; font-size: 14px; cursor: pointer; padding: 0; line-height: 1; display: none; }'
         . '.search-clear:hover { color: #f8fafc; }'
         . '.count-pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 9999px; background: #1e293b; color: #38bdf8; border: 1px solid #334155; }'
+        . '.btn-audit { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; border: 1px solid #38bdf8; border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3); transition: all 0.2s; }'
+        . '.btn-audit:hover { background: linear-gradient(135deg, #0369a1 0%, #075985 100%); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(56, 189, 248, 0.4); }'
+        . '.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(3, 7, 18, 0.85); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 16px; }'
+        . '.modal-box { background: #0f172a; border: 1px solid #334155; border-radius: 14px; width: 95%; max-width: 880px; max-height: 88vh; display: flex; flex-direction: column; box-shadow: 0 25px 60px rgba(0, 0, 0, 0.75); overflow: hidden; }'
+        . '.modal-header { padding: 14px 18px; border-bottom: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; background: #0b0f19; }'
+        . '.modal-close { background: none; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; padding: 4px 8px; line-height: 1; border-radius: 6px; }'
+        . '.modal-close:hover { color: #f8fafc; background: #1e293b; }'
+        . '.modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; }'
+        . '.modal-footer { padding: 12px 18px; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; background: #0b0f19; }'
+        . '.audit-table { width: 100%; border-collapse: collapse; }'
+        . '.audit-table th { padding: 8px 10px; font-size: 11px; font-weight: 600; color: #94a3b8; border-bottom: 1px solid #1e293b; text-transform: uppercase; background: #0b0f19; white-space: nowrap; }'
+        . '.audit-table td { padding: 7px 10px; font-size: 12px; border-bottom: 1px solid #1e293b; color: #cbd5e1; white-space: nowrap; }'
+        . '.btn-sm-action { padding: 3px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; white-space: nowrap; }'
+        . '.btn-sm-create { background: rgba(244, 63, 94, 0.15); color: #fb7185; border-color: rgba(244, 63, 94, 0.4); }'
+        . '.btn-sm-create:hover { background: rgba(244, 63, 94, 0.3); color: #fff; }'
+        . '.btn-sm-compact { background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.4); }'
+        . '.btn-sm-compact:hover { background: rgba(16, 185, 129, 0.3); color: #fff; }'
+        . '.btn-sm-reset { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); }'
+        . '.btn-sm-reset:hover { background: rgba(245, 158, 11, 0.3); color: #fff; }'
+        . '.badge-missing { background: rgba(244, 63, 94, 0.2); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: 700; font-size: 11px; }'
+        . '.progress-bar-bg { width: 60px; height: 5px; background: #1e293b; border-radius: 9999px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }'
+        . '.progress-bar-fill { height: 100%; background: #38bdf8; border-radius: 9999px; }'
         . '</style>'
         . '</head>'
         . '<body>'
         . '<div class="container">'
         . '<div class="header">'
         . '<div class="brand"><span>⚡</span> BTC Puzzle Cluster Dashboard</div>'
-        . '<div style="display: flex; gap: 12px; align-items: center;">'
+        . '<div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">'
+        . '<button type="button" class="btn-audit" onclick="openAuditModal()">🔍 Recheck Pending Blocks</button>'
         . '<span class="status-badge"><span class="dot"></span> SQLite WAL Active</span>'
         . '<span id="live-indicator" style="font-size: 12px; color: #64748b;">Live Auto-Refresh (3s)</span>'
         . '</div>'
@@ -697,7 +722,209 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '    }).catch(function(e) {});'
         . '}'
         . 'setInterval(refreshData, 3000);'
+        . ''
+        . 'function openAuditModal() {'
+        . '  var m = document.getElementById("audit-modal");'
+        . '  if (m) {'
+        . '    m.style.display = "flex";'
+        . '    loadAuditData();'
+        . '  }'
+        . '}'
+        . ''
+        . 'function closeAuditModal() {'
+        . '  var m = document.getElementById("audit-modal");'
+        . '  if (m) m.style.display = "none";'
+        . '}'
+        . ''
+        . 'function showAuditMsg(msg, isSuccess) {'
+        . '  var el = document.getElementById("audit-msg");'
+        . '  if (!el) return;'
+        . '  el.style.display = "block";'
+        . '  el.style.background = isSuccess ? "rgba(16,185,129,0.15)" : "rgba(244,63,94,0.15)";'
+        . '  el.style.color = isSuccess ? "#34d399" : "#fb7185";'
+        . '  el.style.border = "1px solid " + (isSuccess ? "rgba(16,185,129,0.4)" : "rgba(244,63,94,0.4)");'
+        . '  el.textContent = msg;'
+        . '  setTimeout(function() { el.style.display = "none"; }, 5000);'
+        . '}'
+        . ''
+        . 'function loadAuditData() {'
+        . '  var tbody = document.getElementById("audit-tbody");'
+        . '  var sumText = document.getElementById("audit-summary-text");'
+        . '  var fixAllBtn = document.getElementById("btn-fix-all-modal");'
+        . '  if (!tbody) return;'
+        . '  tbody.innerHTML = "<tr><td colspan=\"7\" style=\"text-align:center; padding:30px; color:#64748b;\">Đang quét phân tích các block...</td></tr>";'
+        . ''
+        . '  fetch("?action=audit_blocks&puzzle=" + curPuzzle + "&format=json")'
+        . '    .then(function(r) { return r.json(); })'
+        . '    .then(function(res) {'
+        . '      if (!res || res.status !== "ok") {'
+        . '        tbody.innerHTML = "<tr><td colspan=\"7\" style=\"text-align:center; padding:20px; color:#f43f5e;\">Lỗi khi tải danh sách block</td></tr>";'
+        . '        return;'
+        . '      }'
+        . '      var blocks = res.blocks || [];'
+        . '      if (blocks.length === 0) {'
+        . '        tbody.innerHTML = "<tr><td colspan=\"7\" style=\"text-align:center; padding:30px; color:#64748b;\">Không có block nào đang trong hàng đợi xử lý. Toàn bộ block đã hoàn tất!</td></tr>";'
+        . '        if (sumText) sumText.innerHTML = "<span style=\"color:#34d399; font-weight:600;\">✓ Không có block nào bị nghẽn trong database!</span>";'
+        . '        if (fixAllBtn) fixAllBtn.style.display = "none";'
+        . '        return;'
+        . '      }'
+        . ''
+        . '      var totBlocks = res.total_blocks || blocks.length;'
+        . '      var totDone = (res.total_done || 0).toLocaleString();'
+        . '      var totMissing = res.total_missing_all || 0;'
+        . ''
+        . '      if (sumText) {'
+        . '        sumText.innerHTML = "Đang xử lý: <strong style=\"color:#f8fafc;\">" + totBlocks + " blocks</strong> | " +'
+        . '          "Done trong active: <strong style=\"color:#34d399;\">" + totDone + " ranges</strong> | " +'
+        . '          "Missing: <strong style=\"color:" + (totMissing > 0 ? "#f43f5e" : "#34d399") + "; font-size: 14px;\">" + totMissing + " ranges</strong>";'
+        . '      }'
+        . ''
+        . '      if (fixAllBtn) {'
+        . '        fixAllBtn.style.display = (totMissing > 0) ? "inline-block" : "none";'
+        . '        fixAllBtn.textContent = "➕ Tạo lại tất cả " + totMissing + " range thiếu";'
+        . '      }'
+        . ''
+        . '      var h = "";'
+        . '      for (var i = 0; i < blocks.length; i++) {'
+        . '        var b = blocks[i];'
+        . '        var pct = b.pct || 0;'
+        . '        var isFull = b.done >= (b.expected || 1024);'
+        . '        var missingBadge = (b.missing > 0)'
+        . '          ? "<span class=\"badge-missing\">⚠️ Thiếu " + b.missing + "</span>"'
+        . '          : "<span style=\"color:#64748b;\">0</span>";'
+        . ''
+        . '        var acts = [];'
+        . '        if (b.missing > 0) {'
+        . '          acts.push("<button type=\"button\" class=\"btn-sm-action btn-sm-create\" onclick=\"fixBlockMissing(" + b.block_id + ")\">➕ Tạo lại thiếu (" + b.missing + ")</button>");'
+        . '        }'
+        . '        if (isFull) {'
+        . '          acts.push("<button type=\"button\" class=\"btn-sm-action btn-sm-compact\" onclick=\"forceCompactBlock(" + b.block_id + ")\">📦 Compact</button>");'
+        . '        }'
+        . '        if (b.scanning > 0 || b.expired > 0) {'
+        . '          acts.push("<button type=\"button\" class=\"btn-sm-action btn-sm-reset\" title=\"Reset scanning về Idle\" onclick=\"resetBlockStuck(" + b.block_id + ")\">🔄 Reset (" + (b.scanning + b.expired) + ")</button>");'
+        . '        }'
+        . '        if (acts.length === 0) {'
+        . '          acts.push("<span style=\"font-size:11px; color:#64748b;\">Chờ worker</span>");'
+        . '        }'
+        . ''
+        . '        h += "<tr>"'
+        . '          + "<td style=\"font-weight:700; font-family:monospace; color:#fbbf24;\">#" + b.block_id.toLocaleString() + "</td>"'
+        . '          + "<td><span class=\"progress-bar-bg\"><span class=\"progress-bar-fill\" style=\"width:" + pct + "%;\"></span></span>"'
+        . '          + "<span style=\"font-family:monospace; font-size:11px; font-weight:600; color:#34d399;\">" + b.done + "</span><span style=\"color:#64748b; font-size:11px;\">/" + b.expected + " (" + pct + "%)</span></td>"'
+        . '          + "<td style=\"text-align:center; font-family:monospace; color:#38bdf8;\">" + b.idle + "</td>"'
+        . '          + "<td style=\"text-align:center; font-family:monospace; color:#fbbf24;\">" + b.scanning + (b.expired > 0 ? " <small style=\"color:#f87171;\">(" + b.expired + ")</small>" : "") + "</td>"'
+        . '          + "<td style=\"text-align:center;\">" + missingBadge + "</td>"'
+        . '          + "<td style=\"text-align:right;\">" + acts.join(" ") + "</td>"'
+        . '          + "</tr>";'
+        . '      }'
+        . '      tbody.innerHTML = h;'
+        . '    })'
+        . '    .catch(function(err) {'
+        . '      tbody.innerHTML = "<tr><td colspan=\"6\" style=\"text-align:center; padding:20px; color:#f43f5e;\">Lỗi mạng khi tải dữ liệu</td></tr>";'
+        . '    });'
+        . '}'
+        . ''
+        . 'function fixBlockMissing(blockId) {'
+        . '  fetch("?action=recreate_missing_ranges&puzzle=" + curPuzzle + "&block=" + blockId)'
+        . '    .then(function(r) { return r.json(); })'
+        . '    .then(function(res) {'
+        . '      if (res && res.status === "ok") {'
+        . '        showAuditMsg(res.message || "Đã tạo lại các range bị thiếu thành công", true);'
+        . '        loadAuditData();'
+        . '        refreshData();'
+        . '      } else {'
+        . '        showAuditMsg((res && res.error) ? res.error : "Lỗi khi tạo lại range", false);'
+        . '      }'
+        . '    });'
+        . '}'
+        . ''
+        . 'function fixAllMissing() {'
+        . '  fetch("?action=recreate_missing_ranges&puzzle=" + curPuzzle)'
+        . '    .then(function(r) { return r.json(); })'
+        . '    .then(function(res) {'
+        . '      if (res && res.status === "ok") {'
+        . '        showAuditMsg(res.message || "Đã tạo lại tất cả range bị thiếu", true);'
+        . '        loadAuditData();'
+        . '        refreshData();'
+        . '      } else {'
+        . '        showAuditMsg((res && res.error) ? res.error : "Lỗi khi tạo lại range", false);'
+        . '      }'
+        . '    });'
+        . '}'
+        . ''
+        . 'function resetBlockStuck(blockId) {'
+        . '  fetch("?action=reset_stuck_ranges&puzzle=" + curPuzzle + "&block=" + blockId)'
+        . '    .then(function(r) { return r.json(); })'
+        . '    .then(function(res) {'
+        . '      if (res && res.status === "ok") {'
+        . '        showAuditMsg(res.message || "Đã reset các range đang quét về Idle (status=0)", true);'
+        . '        loadAuditData();'
+        . '        refreshData();'
+        . '      } else {'
+        . '        showAuditMsg((res && res.error) ? res.error : "Lỗi khi reset range", false);'
+        . '      }'
+        . '    });'
+        . '}'
+        . ''
+        . 'function forceCompactBlock(blockId) {'
+        . '  fetch("?action=force_compact&puzzle=" + curPuzzle + "&block=" + blockId)'
+        . '    .then(function(r) { return r.json(); })'
+        . '    .then(function(res) {'
+        . '      if (res && res.status === "ok") {'
+        . '        showAuditMsg(res.message || "Đã compact block thành công!", true);'
+        . '        loadAuditData();'
+        . '        refreshData();'
+        . '      } else {'
+        . '        showAuditMsg((res && res.error) ? res.error : "Chưa đủ điều kiện compact", false);'
+        . '      }'
+        . '    });'
+        . '}'
         . '</script>'
+        . '<div id="audit-modal" class="modal-overlay" style="display:none;" onclick="if(event.target === this) closeAuditModal()">'
+        . '<div class="modal-box">'
+        . '<div class="modal-header">'
+        . '<div style="display:flex; align-items:center; gap:10px;">'
+        . '<span style="font-size:18px;">🔍</span>'
+        . '<div>'
+        . '<div style="font-weight:700; font-size:15px; color:#f8fafc;">Pending Blocks Recheck & Status Audit</div>'
+        . '<div style="font-size:12px; color:#94a3b8;">Kiểm tra chi tiết dải range từng block và tạo lại range bị missing (status=0) cho worker xử lý</div>'
+        . '</div>'
+        . '</div>'
+        . '<button type="button" class="modal-close" onclick="closeAuditModal()">✕</button>'
+        . '</div>'
+        . '<div class="modal-body">'
+        . '<div id="audit-summary-bar" style="margin-bottom: 16px; padding: 12px 18px; border-radius: 10px; background: #0b0f19; border: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">'
+        . '<div id="audit-summary-text" style="font-size: 13px; color: #cbd5e1;">Đang tải danh sách block...</div>'
+        . '<div id="audit-summary-actions" style="display: flex; gap: 8px;"></div>'
+        . '</div>'
+        . '<div id="audit-msg" style="display:none; padding: 10px 14px; margin-bottom: 14px; border-radius: 8px; font-size: 13px;"></div>'
+        . '<div style="overflow-x:auto;">'
+        . '<table class="audit-table">'
+        . '<thead>'
+        . '<tr>'
+        . '<th style="width: 80px; text-align: left;">Block #</th>'
+        . '<th style="width: 150px; text-align: left;">Tiến độ (Done)</th>'
+        . '<th style="width: 60px; text-align: center;">Idle</th>'
+        . '<th style="width: 75px; text-align: center;">Scanning</th>'
+        . '<th style="width: 75px; text-align: center;">Missing</th>'
+        . '<th style="text-align: right;">Thao tác</th>'
+        . '</tr>'
+        . '</thead>'
+        . '<tbody id="audit-tbody">'
+        . '<tr><td colspan="6" style="text-align:center; padding:30px; color:#64748b;">Đang tải dữ liệu...</td></tr>'
+        . '</tbody>'
+        . '</table>'
+        . '</div>'
+        . '</div>'
+        . '<div class="modal-footer">'
+        . '<button type="button" class="tab" style="cursor:pointer;" onclick="loadAuditData()">🔄 Tải lại bảng Recheck</button>'
+        . '<div style="display: flex; gap: 10px;">'
+        . '<button type="button" id="btn-fix-all-modal" class="btn-sm-action btn-sm-create" style="display:none; font-size:12px; padding:6px 14px;" onclick="fixAllMissing()">➕ Tạo lại tất cả range thiếu</button>'
+        . '<button type="button" class="tab" style="cursor:pointer;" onclick="closeAuditModal()">Đóng</button>'
+        . '</div>'
+        . '</div>'
+        . '</div>'
+        . '</div>'
         . '</body></html>';
     exit;
 }
@@ -841,6 +1068,195 @@ switch ($action) {
         ]);
         break;
 
+    case 'audit_blocks':
+        $raw_puzzle = $_GET['puzzle'] ?? ($input['puzzle'] ?? null);
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
+        $pdo = get_puzzle_db($puzzle_id);
+        $now = time();
+        $expiry = $now - LEASE_TIMEOUT_SECS;
+
+        // Lấy danh sách toàn bộ block đang xử lý trong database
+        $st_b = $pdo->prepare("
+            SELECT DISTINCT block_id FROM (
+                SELECT block_id FROM blocks WHERE puzzle_id = ?
+                UNION
+                SELECT block_id FROM ranges WHERE puzzle_id = ?
+            ) ORDER BY block_id ASC
+        ");
+        $st_b->execute([$puzzle_id, $puzzle_id]);
+        $active_block_ids = $st_b->fetchAll(PDO::FETCH_COLUMN);
+
+        $st_stat = $pdo->prepare("
+            SELECT 
+                COUNT(range_idx) as total_ranges,
+                SUM(CASE WHEN status IN (2, 3) THEN 1 ELSE 0 END) as done_cnt,
+                SUM(CASE WHEN status = 0 THEN 1 ELSE 0 END) as idle_cnt,
+                SUM(CASE WHEN status = 1 AND claimed_at >= ? THEN 1 ELSE 0 END) as scanning_cnt,
+                SUM(CASE WHEN status = 1 AND claimed_at < ? THEN 1 ELSE 0 END) as expired_cnt
+            FROM ranges 
+            WHERE puzzle_id = ? AND block_id = ?
+        ");
+
+        $report = [];
+        $total_missing_all = 0;
+        $total_done_all = 0;
+        $total_idle_all = 0;
+        $total_scanning_all = 0;
+        $total_expired_all = 0;
+
+        foreach ($active_block_ids as $b_id) {
+            $b_id = (int)$b_id;
+            $st_stat->execute([$expiry, $expiry, $puzzle_id, $b_id]);
+            $row = $st_stat->fetch();
+
+            $total_in_db = (int)($row['total_ranges'] ?? 0);
+            $done = (int)($row['done_cnt'] ?? 0);
+            $idle = (int)($row['idle_cnt'] ?? 0);
+            $scanning = (int)($row['scanning_cnt'] ?? 0);
+            $expired = (int)($row['expired_cnt'] ?? 0);
+            $missing = max(0, RANGES_PER_BLOCK - $total_in_db);
+
+            $total_missing_all += $missing;
+            $total_done_all += $done;
+            $total_idle_all += $idle;
+            $total_scanning_all += $scanning;
+            $total_expired_all += $expired;
+
+            $report[] = [
+                'block_id'   => $b_id,
+                'done'       => $done,
+                'idle'       => $idle,
+                'scanning'   => $scanning,
+                'expired'    => $expired,
+                'existing'   => $total_in_db,
+                'missing'    => $missing,
+                'expected'   => RANGES_PER_BLOCK,
+                'pct'        => round(($done / RANGES_PER_BLOCK) * 100, 2),
+            ];
+        }
+
+        respond([
+            'status'            => 'ok',
+            'puzzle'            => $puzzle_id,
+            'total_blocks'      => count($report),
+            'total_done'        => $total_done_all,
+            'total_idle'        => $total_idle_all,
+            'total_scanning'    => $total_scanning_all,
+            'total_expired'     => $total_expired_all,
+            'total_missing_all' => $total_missing_all,
+            'ranges_per_block'  => RANGES_PER_BLOCK,
+            'blocks'            => $report,
+        ]);
+        break;
+
+    case 'recreate_missing_ranges':
+        $raw_puzzle = $_GET['puzzle'] ?? ($input['puzzle'] ?? null);
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
+        $pdo = get_puzzle_db($puzzle_id);
+        $block_id = isset($_GET['block']) ? (int)$_GET['block'] : (int)($input['block'] ?? -1);
+
+        $target_blocks = [];
+        if ($block_id >= 0) {
+            $target_blocks[] = $block_id;
+        } else {
+            $st_b = $pdo->prepare("
+                SELECT DISTINCT block_id FROM (
+                    SELECT block_id FROM blocks WHERE puzzle_id = ?
+                    UNION
+                    SELECT block_id FROM ranges WHERE puzzle_id = ?
+                ) ORDER BY block_id ASC
+            ");
+            $st_b->execute([$puzzle_id, $puzzle_id]);
+            $target_blocks = $st_b->fetchAll(PDO::FETCH_COLUMN);
+        }
+
+        $now = time();
+        $ins_blk = $pdo->prepare("INSERT OR IGNORE INTO blocks (puzzle_id, block_id, status, done_count, created_at) VALUES (?, ?, 1, 0, ?)");
+        $ins_rng = $pdo->prepare("INSERT OR IGNORE INTO ranges (puzzle_id, block_id, range_idx, status, worker, claimed_at) VALUES (?, ?, ?, 0, '', 0)");
+        $st_ex = $pdo->prepare("SELECT range_idx FROM ranges WHERE puzzle_id = ? AND block_id = ?");
+        $st_upd = $pdo->prepare("UPDATE blocks SET done_count = (SELECT COUNT(*) FROM ranges WHERE puzzle_id = ? AND block_id = ? AND status IN (2, 3)) WHERE puzzle_id = ? AND block_id = ?");
+
+        $total_recreated = 0;
+        $pdo->beginTransaction();
+        try {
+            foreach ($target_blocks as $tb) {
+                $tb = (int)$tb;
+                $ins_blk->execute([$puzzle_id, $tb, $now]);
+                $st_ex->execute([$puzzle_id, $tb]);
+                $ex_idxs = $st_ex->fetchAll(PDO::FETCH_COLUMN);
+                $ex_map = array_flip($ex_idxs);
+
+                for ($i = 0; $i < RANGES_PER_BLOCK; $i++) {
+                    if (!isset($ex_map[$i])) {
+                        $ins_rng->execute([$puzzle_id, $tb, $i]);
+                        $total_recreated++;
+                    }
+                }
+                $st_upd->execute([$puzzle_id, $tb, $puzzle_id, $tb]);
+            }
+            $pdo->commit();
+            respond([
+                'status'         => 'ok',
+                'recreated'      => $total_recreated,
+                'blocks_checked' => count($target_blocks),
+                'message'        => "Đã tạo lại $total_recreated range bị thiếu với status = 0"
+            ]);
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_resp('Lỗi khi tạo lại range: ' . $e->getMessage(), 500);
+        }
+        break;
+
+    case 'reset_stuck_ranges':
+        $raw_puzzle = $_GET['puzzle'] ?? ($input['puzzle'] ?? null);
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
+        $pdo = get_puzzle_db($puzzle_id);
+        $block_id = isset($_GET['block']) ? (int)$_GET['block'] : (int)($input['block'] ?? -1);
+
+        try {
+            if ($block_id >= 0) {
+                $stmt = $pdo->prepare("UPDATE ranges SET status = 0, worker = '', claimed_at = 0 WHERE puzzle_id = ? AND block_id = ? AND status = 1");
+                $stmt->execute([$puzzle_id, $block_id]);
+                $affected = $stmt->rowCount();
+            } else {
+                $stmt = $pdo->prepare("UPDATE ranges SET status = 0, worker = '', claimed_at = 0 WHERE puzzle_id = ? AND status = 1");
+                $stmt->execute([$puzzle_id]);
+                $affected = $stmt->rowCount();
+            }
+            respond([
+                'status'   => 'ok',
+                'affected' => $affected,
+                'message'  => "Đã reset $affected range đang quét (status=1) về Idle (status=0)"
+            ]);
+        } catch (Throwable $e) {
+            error_resp('Lỗi khi reset range: ' . $e->getMessage(), 500);
+        }
+        break;
+
+    case 'force_compact':
+        $raw_puzzle = $_GET['puzzle'] ?? ($input['puzzle'] ?? null);
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
+        $pdo = get_puzzle_db($puzzle_id);
+        $block_id = isset($_GET['block']) ? (int)$_GET['block'] : (int)($input['block'] ?? -1);
+
+        if ($block_id < 0) error_resp('Missing block id');
+
+        $st = $pdo->prepare("SELECT COUNT(*) FROM ranges WHERE puzzle_id = ? AND block_id = ? AND status IN (2, 3)");
+        $st->execute([$puzzle_id, $block_id]);
+        $done_count = (int)$st->fetchColumn();
+
+        if ($done_count >= RANGES_PER_BLOCK) {
+            compact_completed_block($pdo, $puzzle_id, $block_id);
+            respond([
+                'status'    => 'ok',
+                'compacted' => true,
+                'message'   => "Block #$block_id đã đủ $done_count/" . RANGES_PER_BLOCK . " và được compact thành công!"
+            ]);
+        } else {
+            error_resp("Block #$block_id mới hoàn thành $done_count/" . RANGES_PER_BLOCK . " range, chưa đủ điều kiện compact", 400);
+        }
+        break;
+
     case 'range':
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') error_resp('Method not allowed', 405);
         $raw_puzzle = $_GET['puzzle'] ?? null;
@@ -896,12 +1312,13 @@ switch ($action) {
         // khi nhiều worker cùng xin range trong cùng một mili-giây
         $pdo->exec("BEGIN IMMEDIATE");
         try {
-            // Ưu tiên dứt điểm từng block: block_id ASC, range_idx ASC
+            // Ưu tiên block tạo trước (FIFO: b.created_at ASC), giải quyết triệt để nguy cơ bỏ quên block ID lớn
             $stmt = $pdo->prepare("
-                SELECT block_id, range_idx 
-                FROM ranges 
-                WHERE puzzle_id = ? AND (status = 0 OR (status = 1 AND claimed_at < ?))
-                ORDER BY block_id ASC, range_idx ASC
+                SELECT r.block_id, r.range_idx 
+                FROM ranges r
+                LEFT JOIN blocks b ON b.puzzle_id = r.puzzle_id AND b.block_id = r.block_id
+                WHERE r.puzzle_id = ? AND (r.status = 0 OR (r.status = 1 AND r.claimed_at < ?))
+                ORDER BY b.created_at ASC, r.block_id ASC, r.range_idx ASC
                 LIMIT 1
             ");
             $stmt->execute([$puzzle_id, $expiry]);

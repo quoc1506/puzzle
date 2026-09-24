@@ -30,20 +30,17 @@
 #endif
 #endif
 
-#ifdef __CUDACC__
-#include <cuda_runtime.h>
-#define CUDA_HOSTDEV __host__ __device__
-#define CUDA_DEV __device__
-#define CUDA_GLOBAL __global__
-#define CUDA_INLINE __forceinline__
-#define CUDA_CONSTANT static constexpr
-#else
+// ============================================================================
+// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED CPU WORKER (C++17 / AVX2 / BMI2)
+// Designed for multi-core parallelism, AVX2 8-way SIMD hashing,
+// and 1024-element Montgomery Batch Elliptic Curve Addition.
+// ============================================================================
+
 #define CUDA_HOSTDEV
 #define CUDA_DEV
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT static constexpr
-#endif
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -1702,132 +1699,6 @@ CUDA_INLINE int fast_sha256_ripemd160_8x_avx2(
 }
 #endif
 
-#ifdef __CUDACC__
-__constant__ AffinePoint dev_G_table[16];
-__device__ int dev_found_flag = 0;
-__device__ uint64_t dev_found_offset = 0;
-__constant__ uint32_t dev_target_w[5];
-__constant__ uint64_t dev_target_h64;
-__constant__ AffinePoint dev_batch_G[16];
-
-CUDA_DEV CUDA_INLINE AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4]) {
-    JacobianPoint res;
-    res.infinity = true;
-    int top_limb = 3;
-    while (top_limb > 0 && scalar[top_limb] == 0) {
-        top_limb--;
-    }
-    for (int limb = top_limb; limb >= 0; --limb) {
-        uint64_t w = scalar[limb];
-        for (int b = 60; b >= 0; b -= 4) {
-            uint32_t window = (uint32_t)((w >> b) & 0xF);
-            for (int i = 0; i < 4; ++i) {
-                if (!res.infinity) {
-                    res = jacobian_double(res);
-                }
-            }
-            if (window != 0) {
-                res = jacobian_add_affine(res, dev_G_table[window]);
-            }
-        }
-    }
-    return jacobian_to_affine(res);
-}
-
-CUDA_DEV CUDA_INLINE bool fast_hash160_check(uint8_t prefix, const Fe& x, const uint32_t target_w[5]) {
-    uint32_t X[8];
-    fast_sha256_into_ripemd_X(prefix, x, X);
-    return fast_ripemd160_32_check(X, target_w);
-}
-
-CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& P, const uint32_t target_w[5], uint64_t target_h64 = 0) {
-    uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
-    return fast_hash160_check(prefix, P.x, target_w);
-}
-
-// 16-way Lockstep SIMD Montgomery Batch Addition Kernel (Zero warp shuffles, zero branch divergence)
-CUDA_GLOBAL __launch_bounds__(128, 2) void cuda_scan_kernel(
-    u256 base_start,
-    uint64_t total_keys,
-    uint32_t grid_threads,
-    uint32_t num_batches
-) {
-    uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-
-    u256 start_k = base_start + tid;
-    uint64_t limbs[4] = {
-        (uint64_t)start_k.low,
-        (uint64_t)(start_k.low >> 64),
-        (uint64_t)start_k.high,
-        (uint64_t)(start_k.high >> 64)
-    };
-    AffinePoint P = scalar_mul_G_windowed(limbs);
-
-    for (uint32_t b = 0; b < num_batches; ++b) {
-        if (__any_sync(0xFFFFFFFF, dev_found_flag != 0)) break;
-
-        uint64_t base_offset = tid + (uint64_t)b * 16 * grid_threads;
-
-        if (base_offset < total_keys) {
-            if (check_point_hash160(P, dev_target_w, dev_target_h64)) {
-                if (atomicExch(&dev_found_flag, 1) == 0) {
-                    dev_found_offset = base_offset;
-                }
-            }
-        }
-
-        // 1. Prefix scan across 16 point additions
-        Fe cum[15];
-        cum[0] = fe_sub(dev_batch_G[0].x, P.x);
-        #pragma unroll
-        for (int i = 1; i < 15; ++i) {
-            Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
-            cum[i] = fe_mul(cum[i - 1], cur_dx);
-        }
-        Fe dx15 = fe_sub(dev_batch_G[15].x, P.x);
-        Fe last_cum = fe_mul(cum[14], dx15);
-
-        // 2. Exact 1 inversion per 16 keys (lockstep across warp, 0 divergence, 0 cross-lane stalls)
-        Fe u = fe_inv(last_cum);
-
-        // 3. Backward sweep: compute all 16 affine point coordinates and verify Hash160 immediately
-        AffinePoint next_P;
-        #pragma unroll 1
-        for (int i = 15; i >= 0; --i) {
-            Fe inv_dx = (i > 0) ? fe_mul(u, cum[i - 1]) : u;
-            if (i > 0) {
-                Fe cur_dx = fe_sub(dev_batch_G[i].x, P.x);
-                u = fe_mul(u, cur_dx);
-            }
-
-            Fe dy = fe_sub(dev_batch_G[i].y, P.y);
-            Fe lambda = fe_mul(dy, inv_dx);
-            Fe lambda2 = fe_sqr(lambda);
-            Fe xi = fe_sub(fe_sub(lambda2, P.x), dev_batch_G[i].x);
-            Fe yi = fe_sub(fe_mul(lambda, fe_sub(P.x, xi)), P.y);
-
-            if (i == 15) {
-                next_P.x = xi;
-                next_P.y = yi;
-            }
-
-            if (i < 15 || b + 1 == num_batches) {
-                uint64_t pt_offset = base_offset + (uint64_t)(i + 1) * grid_threads;
-                if (pt_offset < total_keys) {
-                    uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (fast_hash160_check(prefix, xi, dev_target_w)) {
-                        if (atomicExch(&dev_found_flag, 1) == 0) {
-                            dev_found_offset = pt_offset;
-                        }
-                    }
-                }
-            }
-        }
-        P = next_P;
-    }
-}
-#endif
-
 static AffinePoint G_TABLE[1024];
 static bool g_table_initialized = false;
 static std::mutex g_table_mtx;
@@ -2082,19 +1953,11 @@ int main(int argc, char* argv[]) {
     int requested_multiple = 1;
 
     unsigned int hw = std::thread::hardware_concurrency();
-    int threads = 1;
+    int threads = (hw > 0) ? (int)hw : 4;
     bool threads_specified = false;
     int custom_threads = 1;
-    bool force_cpu = false;
-    bool is_fast = false;
+    bool is_fast = true;
 
-    // Check environment variable
-    const char* env_cpu = std::getenv("FORCE_CPU");
-    if (env_cpu && (std::string(env_cpu) == "1" || std::string(env_cpu) == "true" || std::string(env_cpu) == "cpu")) {
-        force_cpu = true;
-    }
-
-    // Unified single-pass command-line argument parsing
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
@@ -2110,20 +1973,17 @@ int main(int argc, char* argv[]) {
             threads_specified = true;
         } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
             is_fast = true;
-        } else if (arg == "-cpu" || arg == "--cpu" || arg == "-c") {
-            force_cpu = true;
-        } else if (arg == "-gpu" || arg == "--gpu" || arg == "-g" || arg == "--cuda") {
-            force_cpu = false;
         } else if (arg == "-h" || arg == "--help" || arg == "-help") {
-            std::cout << "Usage: " << argv[0] << " [options]\n"
+            std::cout << "========================================================\n"
+                      << "  Bitcoin Puzzle Extreme CPU Solver (AVX2 / Multi-Thread)\n"
+                      << "========================================================\n"
+                      << "Usage: " << argv[0] << " [options]\n"
                       << "  -s, --server <url>     Server API URL\n"
                       << "  -p, --puzzle <num>     Puzzle number (e.g. 71)\n"
                       << "  -u, -w, --user <name>  Worker/User name\n"
-                      << "  -m, -b, --multiple <n> Multiple chunks batch size\n"
-                      << "  -t, --threads <n>      Number of CPU threads\n"
-                      << "  -f, --fast             Fast high-performance mode\n"
-                      << "  -gpu, --gpu, --cuda    Prioritize NVIDIA CUDA GPU\n"
-                      << "  -cpu, --cpu, -c        Force CPU mode\n"
+                      << "  -m, -b, --multiple <n> Multiple chunks batch size (1..128)\n"
+                      << "  -t, --threads <n>      Number of CPU threads (default: all cores)\n"
+                      << "  -f, --fast             Fast high-throughput mode\n"
                       << "  -h, --help             Show this help\n";
             return 0;
         }
@@ -2131,68 +1991,16 @@ int main(int argc, char* argv[]) {
 
     if (threads_specified) {
         threads = custom_threads;
-    } else if (is_fast) {
-        threads = (hw > 0) ? (int)hw : 1;
-    } else {
-        threads = 1;
     }
 
-#ifdef __CUDACC__
-    bool use_cuda = !force_cpu;
-    if (use_cuda) {
-        int deviceCount = 0;
-        cudaError_t err = cudaGetDeviceCount(&deviceCount);
-        if (err != cudaSuccess || deviceCount == 0) {
-            std::cerr << "[WARN] CUDA initialization error or no GPU found. Running in CPU mode.\n";
-            use_cuda = false;
-        } else {
-            cudaDeviceProp prop;
-            cudaGetDeviceProperties(&prop, 0);
-            std::cout << "[CUDA] Detected GPU: " << prop.name
-                      << " (SMs: " << prop.multiProcessorCount
-                      << ", Compute: " << prop.major << "." << prop.minor
-                      << ") -> Running High-Speed GPU Worker\n";
-        }
-    }
+    std::cout << "[CPU SOLVER] Starting with " << threads << " worker threads.\n";
+#if defined(__AVX2__)
+    std::cout << "[CPU SIMD] AVX2 + BMI2 8-lane parallel vectorized hashing enabled.\n";
+#else
+    std::cout << "[CPU SIMD] Standard 64-bit scalar engine enabled.\n";
 #endif
 
     init_generator_table();
-
-#ifdef __CUDACC__
-    uint32_t num_sms = 40;
-    uint32_t threadsPerBlock = 128;
-    uint32_t numBlocks = 640;
-    uint32_t grid_threads = numBlocks * threadsPerBlock;
-    uint32_t steps_per_launch = is_fast ? 65536 : 32768;
-    uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
-
-    if (use_cuda) {
-        AffinePoint h_table[16];
-        std::memset(&h_table[0], 0, sizeof(AffinePoint));
-        for (int i = 1; i < 16; ++i) {
-            uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
-            h_table[i] = scalar_mul_G(s);
-        }
-        cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
-
-        cudaDeviceProp prop;
-        cudaGetDeviceProperties(&prop, 0);
-        num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-        threadsPerBlock = 128;
-        numBlocks = num_sms * (is_fast ? 32 : 16);
-        grid_threads = numBlocks * threadsPerBlock;
-        steps_per_launch = is_fast ? 65536 : 32768;
-        chunk_size = (uint64_t)grid_threads * steps_per_launch;
-
-        AffinePoint h_batch_G[16];
-        for (int i = 0; i < 16; ++i) {
-            uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
-            uint64_t s[4] = { step_mult, 0, 0, 0 };
-            h_batch_G[i] = scalar_mul_G(s);
-        }
-        cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
-    }
-#endif
 
     int completed_ranges = 0;
 
@@ -2203,6 +2011,7 @@ int main(int argc, char* argv[]) {
 
         std::string resp;
         if (!http_get(req_url.str(), &resp)) {
+            std::cerr << "[WARN] Failed to connect to server. Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -2213,10 +2022,12 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (status == "solved") {
+            std::cout << "[INFO] Puzzle " << current_puzzle << " is solved! Exiting.\n";
             break;
         }
         std::string server_err = json_get_string(resp, "error");
         if (!server_err.empty()) {
+            std::cerr << "[SERVER ERROR] " << server_err << ". Retrying in 3s...\n";
             portable_sleep_ms(3000);
             continue;
         }
@@ -2254,11 +2065,11 @@ int main(int argc, char* argv[]) {
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
+            std::cerr << "[ERROR] Invalid target address: " << str_target << "\n";
             portable_sleep_ms(3000);
             continue;
         }
 
-        // Exact Synchronized Word and 64-bit Representation
         uint32_t target_w[5];
         for (int i = 0; i < 5; ++i) {
             target_w[i] = (uint32_t)target_h160[i * 4] |
@@ -2271,83 +2082,45 @@ int main(int argc, char* argv[]) {
         bool hit = false;
         u256 found_key = 0;
         uint64_t checked = 0;
-        std::chrono::high_resolution_clock::time_point t_start;
 
-#ifdef __CUDACC__
-        if (use_cuda) {
-            cudaMemcpyToSymbol(dev_target_w, target_w, sizeof(target_w));
-            cudaMemcpyToSymbol(dev_target_h64, &target_h64, sizeof(uint64_t));
+        alignas(64) std::atomic<uint64_t> work_offset(0);
+        uint64_t slice_size = is_fast ? 1048576 : 524288;
+        alignas(64) std::atomic<bool> found_flag(false);
+        alignas(64) std::mutex found_mtx;
+        alignas(64) std::atomic<uint64_t> checked_counter(0);
 
-            int zero = 0;
-            cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
+        auto t_start = std::chrono::high_resolution_clock::now();
 
-            t_start = std::chrono::high_resolution_clock::now();
-
-            uint64_t actual_checked = 0;
-            while (actual_checked < total_keys_count && g_running.load() && !hit) {
-                int zero = 0;
-                cudaMemcpyToSymbol(dev_found_flag, &zero, sizeof(int));
-
-                uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
-                uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-                uint32_t cur_batches = (cur_steps + 15) / 16;
-                u256 cur_start = start_k + actual_checked;
-
-                cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                    cur_start, cur_chunk, grid_threads, cur_batches
-                );
-                cudaError_t k_err = cudaGetLastError();
-                if (k_err != cudaSuccess) {
-                    std::cerr << "[CUDA ERROR] Kernel launch failed: " << cudaGetErrorString(k_err) << "\n";
-                }
-                cudaError_t s_err = cudaDeviceSynchronize();
-                if (s_err != cudaSuccess) {
-                    std::cerr << "[CUDA ERROR] Kernel execution failed: " << cudaGetErrorString(s_err) << "\n";
-                }
-
-                int h_found = 0;
-                cudaMemcpyFromSymbol(&h_found, dev_found_flag, sizeof(int));
-                if (h_found != 0) {
-                    uint64_t h_offset = 0;
-                    cudaMemcpyFromSymbol(&h_offset, dev_found_offset, sizeof(uint64_t));
-                    hit = true;
-                    found_key = cur_start + h_offset;
-                    actual_checked += h_offset + 1;
-                    break;
-                }
-                actual_checked += cur_chunk;
-            }
-            checked = actual_checked;
-        } else
-#endif
-        {
-            alignas(64) std::atomic<uint64_t> work_offset(0);
-            uint64_t slice_size = is_fast ? 1048576 : 524288;
-            alignas(64) std::atomic<bool> found_flag(false);
-            alignas(64) std::mutex found_mtx;
-            alignas(64) std::atomic<uint64_t> checked_counter(0);
-
-            t_start = std::chrono::high_resolution_clock::now();
-
-            std::vector<std::thread> pool;
-            for (int i = 0; i < threads; ++i) {
-                pool.emplace_back(scan_worker_montgomery, start_k, std::ref(work_offset),
-                                  total_keys_count, slice_size, target_h160, target_h64,
-                                  target_w, std::ref(found_flag), std::ref(found_key),
-                                  std::ref(found_mtx), std::ref(checked_counter));
-            }
-            for (auto& th : pool) if (th.joinable()) th.join();
-
-            hit = found_flag.load();
-            checked = checked_counter.load();
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
+        for (int i = 0; i < threads; ++i) {
+            pool.emplace_back(scan_worker_montgomery, start_k, std::ref(work_offset),
+                              total_keys_count, slice_size, target_h160, target_h64,
+                              target_w, std::ref(found_flag), std::ref(found_key),
+                              std::ref(found_mtx), std::ref(checked_counter));
         }
+        for (auto& th : pool) {
+            if (th.joinable()) th.join();
+        }
+
+        hit = found_flag.load();
+        checked = checked_counter.load();
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         if (elapsed <= 0.0) elapsed = 0.001;
         double speed = (double)checked / elapsed;
 
+        std::cout << "[PROGRESS] Block #" << block_idx << " Range " << range_idx
+                  << " (x" << range_count << ") -> " << std::fixed << std::setprecision(2)
+                  << (speed / 1e6) << " Mkeys/s | Time: " << std::setprecision(2) << elapsed << "s\n";
 
+        if (hit) {
+            std::cout << "\n=======================================================\n"
+                      << "  [SUCCESS] PRIVATE KEY FOUND!\n"
+                      << "  Key: 0x" << u256_to_hex64(found_key) << "\n"
+                      << "=======================================================\n";
+        }
 
         if (!hit && !g_running.load()) break;
 
