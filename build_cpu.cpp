@@ -1723,6 +1723,27 @@ void init_generator_table() {
     g_table_initialized = true;
 }
 
+AffinePoint scalar_mul_G_windowed(const uint64_t scalar[4]) {
+    JacobianPoint res;
+    res.infinity = true;
+    for (int limb = 3; limb >= 0; --limb) {
+        uint64_t w = scalar[limb];
+        for (int b = 60; b >= 0; b -= 4) {
+            if (!res.infinity) {
+                res = jacobian_double(res);
+                res = jacobian_double(res);
+                res = jacobian_double(res);
+                res = jacobian_double(res);
+            }
+            uint32_t nibble = (w >> b) & 0x0F;
+            if (nibble > 0) {
+                res = jacobian_add_affine(res, G_TABLE[nibble - 1]);
+            }
+        }
+    }
+    return jacobian_to_affine(res);
+}
+
 void scan_worker_montgomery(
     u256 base_start,
     std::atomic<uint64_t>& work_offset,
@@ -1768,7 +1789,7 @@ void scan_worker_montgomery(
                     (uint64_t)base_k.high,
                     (uint64_t)(base_k.high >> 64)
                 };
-                cur_base = scalar_mul_G(limbs);
+                cur_base = scalar_mul_G_windowed(limbs);
                 cur_base_valid = true;
             }
         }
@@ -1962,6 +1983,9 @@ int main(int argc, char* argv[]) {
         } else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
             custom_threads = std::max(1, std::atoi(argv[++i]));
             threads_specified = true;
+        } else if (arg == "-d" || arg == "-double" || arg == "--double") {
+            custom_threads = 2;
+            threads_specified = true;
         } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
             is_fast = true;
         } else if (arg == "-h" || arg == "--help" || arg == "-help") {
@@ -2056,7 +2080,7 @@ int main(int argc, char* argv[]) {
         uint64_t checked = 0;
 
         alignas(64) std::atomic<uint64_t> work_offset(0);
-        uint64_t slice_size = is_fast ? 1048576 : 524288;
+        uint64_t slice_size = std::max((uint64_t)4194304, total_keys_count / (uint64_t)(threads * 2));
         alignas(64) std::atomic<bool> found_flag(false);
         alignas(64) std::mutex found_mtx;
         alignas(64) std::atomic<uint64_t> checked_counter(0);
