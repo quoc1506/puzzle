@@ -1633,8 +1633,7 @@ static u256 parse_hex_u256(const std::string& s) {
 int run_gpu_verify(int target_puzzle = 0, int target_device_id = 0) {
     cudaError_t dev_err = cudaSetDevice(target_device_id);
     if (dev_err != cudaSuccess) {
-        std::cerr << "[ERROR] Failed to set CUDA device " << target_device_id << "
-";
+        std::cerr << "[ERROR] Failed to set CUDA device " << target_device_id << "\n";
         return 1;
     }
 
