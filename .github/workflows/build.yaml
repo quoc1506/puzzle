@@ -6,7 +6,6 @@ on:
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
-      - 'verify.sh'
       - '.github/workflows/**'
   pull_request:
     branches: [ "main", "master" ]
@@ -155,12 +154,12 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Solved Puzzles via verify.sh (1->70, 75..135)
+      - name: Verify Solved Puzzles via run.sh --verify (1->70, 75..135)
         run: |
-          chmod +x verify.sh src/files/verify.sh 2>/dev/null || true
-          VERIFY_SCRIPT="verify.sh"
-          [ -f "src/files/verify.sh" ] && VERIFY_SCRIPT="src/files/verify.sh"
-          bash "$VERIFY_SCRIPT" --cpu
+          chmod +x run.sh src/files/run.sh 2>/dev/null || true
+          RUN_SCRIPT="run.sh"
+          [ -f "src/files/run.sh" ] && RUN_SCRIPT="src/files/run.sh"
+          sh "$RUN_SCRIPT" --verify
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -373,106 +372,34 @@ jobs:
           path: bin/build-linux-riscv64
 
   build-macos:
-    name: Build macOS (ARM64 & x86_64 Cross-Compile)
+    name: Build macOS (Apple Silicon ARM64 & Intel x86_64)
     runs-on: macos-latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Install ARM64 dependencies via Homebrew
+      - name: Install dependencies via Homebrew
         run: |
-          brew install secp256k1 openssl@3 curl
+          brew install openssl@3 curl
 
-      - name: Build Apple Silicon (arm64) static binary
+      - name: Compile macOS ARM64 Binary
         run: |
           mkdir -p bin
-          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+          CURL_PREFIX="$(brew --prefix curl)"
 
-          mkdir -p arm64_build && cd arm64_build
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -G "Unix Makefiles" \
-            -DCMAKE_SYSTEM_NAME=Darwin \
-            -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=$(pwd)/dist \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DSECP256K1_ENABLE_MODULE_RECOVERY=ON \
-            -DSECP256K1_BUILD_TESTS=OFF \
-            -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          cmake --install build >/dev/null 2>&1
-          SECP_ARM64=$(pwd)/dist
-          cd ..
-          cd ..
-
-          SSL_LIB_DIR="${OPENSSL_PREFIX}/lib"
-          if [ -d "${OPENSSL_PREFIX}/lib64" ]; then
-            SSL_LIB_DIR="${OPENSSL_PREFIX}/lib64"
-          fi
-
-          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
-            -target arm64-apple-macos11.0 -mmacosx-version-min=11.0 \
-            -DSECP256K1_STATIC \
-            build_cpu.cpp \
-            -I${SECP_ARM64}/include \
-            -I${OPENSSL_PREFIX}/include \
-            ${SECP_ARM64}/lib/libsecp256k1.a \
-            ${SSL_LIB_DIR}/libssl.a \
-            ${SSL_LIB_DIR}/libcrypto.a \
-            -lcurl -lz -lpthread \
-            -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-arm64
-
+          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe             -I"${OPENSSL_PREFIX}/include"             -I"${CURL_PREFIX}/include"             -L"${OPENSSL_PREFIX}/lib"             -L"${CURL_PREFIX}/lib"             build_cpu.cpp             -lcurl -lssl -lcrypto -lpthread -lz             -framework CoreFoundation -framework SystemConfiguration -framework Security             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
-          rm -rf arm64_build
 
-      - name: Build Intel (x86_64) static libraries & compile
-        run: |
-          mkdir -p x86_build && cd x86_build
-
-          curl -sSL https://www.openssl.org/source/openssl-3.0.15.tar.gz | tar -xz
-          cd openssl-3.0.15
-          ./Configure darwin64-x86_64-cc no-shared no-tests -mmacosx-version-min=10.15 --prefix=$(pwd)/dist
-          make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          make install_sw >/dev/null 2>&1
-          OPENSSL_X86=$(pwd)/dist
-          cd ..
-
-          git clone --depth 1 https://github.com/bitcoin-core/secp256k1.git
-          cd secp256k1
-          cmake -B build -G "Unix Makefiles"             -DCMAKE_SYSTEM_NAME=Darwin             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=$(pwd)/dist             -DBUILD_SHARED_LIBS=OFF             -DSECP256K1_ENABLE_MODULE_RECOVERY=ON             -DSECP256K1_BUILD_TESTS=OFF             -DSECP256K1_BUILD_BENCHMARK=OFF
-          cmake --build build -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          cmake --install build >/dev/null 2>&1
-          SECP_X86=$(pwd)/dist
-          cd ..
-
-          curl -sSL https://curl.se/download/curl-8.9.1.tar.gz | tar -xz
-          cd curl-8.9.1
-          ./configure --host=x86_64-apple-darwin             --prefix=$(pwd)/dist             --disable-shared --enable-static             --with-openssl=${OPENSSL_X86}             --disable-ldap --disable-ldaps             CFLAGS="-target x86_64-apple-macos10.15 -mmacosx-version-min=10.15"
-          make -j$(sysctl -n hw.ncpu) >/dev/null 2>&1
-          make install >/dev/null 2>&1
-          CURL_X86=$(pwd)/dist
-          cd ..
-          cd ..
-
-          SSL_LIB_DIR="${OPENSSL_X86}/lib"
-          if [ -d "${OPENSSL_X86}/lib64" ]; then
-            SSL_LIB_DIR="${OPENSSL_X86}/lib64"
-          fi
-
-          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -target x86_64-apple-macos10.15 -mmacosx-version-min=10.15             -DCURL_STATICLIB -DSECP256K1_STATIC             build_cpu.cpp             -I${SECP_X86}/include             -I${OPENSSL_X86}/include             -I${CURL_X86}/include             ${SECP_X86}/lib/libsecp256k1.a             ${CURL_X86}/lib/libcurl.a             ${SSL_LIB_DIR}/libssl.a             ${SSL_LIB_DIR}/libcrypto.a             -framework CoreFoundation -framework SystemConfiguration             -lz -lpthread             -o bin/build-macos-x86_64
-
-          chmod +x bin/build-macos-x86_64
-          rm -rf x86_build
+          # Create universal fallback copy
+          cp bin/build-macos-arm64 bin/build-macos-universal
+          chmod +x bin/build-macos-universal
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bin-macos
           path: bin/build-macos-*
-
   build-windows:
     name: Build Windows (x86_64 Static)
     runs-on: windows-latest

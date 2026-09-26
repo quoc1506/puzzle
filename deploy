@@ -3,6 +3,8 @@ set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
+
+# Locate bin folder
 if [ -d "bin" ]; then
     :
 elif [ -d "../bin" ]; then
@@ -13,19 +15,6 @@ fi
 
 OS="$(uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")"
 ARCH="$(uname -m 2>/dev/null | tr "[:upper:]" "[:lower:]")"
-
-can_run() {
-    [ -n "$1" ] || return 1
-    [ -f "$1" ] || return 1
-    chmod +x "$1" 2>/dev/null || true
-    if command -v ldd >/dev/null 2>&1; then
-        LDD_OUT="$(ldd "$1" 2>&1)"
-        if echo "$LDD_OUT" | grep -q -E "(=> not found|version .* not found)"; then
-            return 1
-        fi
-    fi
-    return 0
-}
 
 TARGET_BIN=""
 FORCE_CPU=0
@@ -41,30 +30,34 @@ for arg in "$@"; do
 done
 
 case "$OS" in
+    darwin*)
+        # macOS: prioritize native macOS binary
+        if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
+            for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64" "bin/build"; do
+                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
+            done
+        else
+            for f in "bin/build-macos-x86_64" "bin/build-macos-universal" "bin/build"; do
+                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
+            done
+        fi
+        ;;
     linux*)
         case "$ARCH" in
             riscv64|riscv)
                 for f in "bin/build-linux-riscv64" "bin/build"; do
-                    if can_run "$f"; then
-                        TARGET_BIN="$f"
-                        break
-                    fi
+                    if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
                 done
                 ;;
             aarch64|arm64)
                 for f in "bin/build-linux-arm64" "bin/build"; do
-                    if can_run "$f"; then
-                        TARGET_BIN="$f"
-                        break
-                    fi
+                    if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
                 done
                 ;;
             x86_64|amd64|*)
                 if [ "$FORCE_CPU" != "1" ]; then
                     if command -v nvidia-smi >/dev/null 2>&1 && [ -f "bin/build_cuda" ]; then
-                        if can_run "bin/build_cuda"; then
-                            TARGET_BIN="bin/build_cuda"
-                        fi
+                        TARGET_BIN="bin/build_cuda"
                     fi
                 fi
 
@@ -74,7 +67,6 @@ case "$OS" in
                         HAS_AVX2=1
                     fi
 
-                    CANDIDATES=""
                     if [ "$HAS_AVX2" = "1" ]; then
                         CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     else
@@ -82,7 +74,7 @@ case "$OS" in
                     fi
 
                     for c in $CANDIDATES; do
-                        if can_run "$c"; then
+                        if [ -f "$c" ]; then
                             TARGET_BIN="$c"
                             break
                         fi
@@ -91,37 +83,21 @@ case "$OS" in
                 ;;
         esac
         ;;
-    darwin*)
-        if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
-            for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64"; do
-                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
-            done
-        else
-            for f in "bin/build-macos-x86_64" "bin/build-macos-universal"; do
-                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
-            done
-        fi
-        ;;
     msys*|mingw*|cygwin*)
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
             if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
         done
         ;;
     *)
-        TARGET_BIN="bin/build"
+        if [ -f "bin/build" ]; then TARGET_BIN="bin/build"; fi
         ;;
 esac
 
+# If a compatible binary is found, run it immediately
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
     echo "[RUN]: $TARGET_BIN"
     exec "./$TARGET_BIN" "$@"
-fi
-
-if [ -f "bin/build" ]; then
-    chmod +x "bin/build" 2>/dev/null || true
-    echo "[RUN]: bin/build"
-    exec "./bin/build" "$@"
 fi
 
 echo "[ERROR] No compatible binary found in bin/ for this platform ($OS-$ARCH)." >&2
