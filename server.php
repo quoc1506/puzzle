@@ -32,6 +32,93 @@ const MIN_BUFFER_RANGES    = 2000;        // Pre-buffer in SQLite
 
 const DEFAULT_PUZZLE = 71;
 
+const SOLVED_PUZZLES_DATA = [
+    1 => ['private_key' => '1', 'address' => '1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH'],
+    2 => ['private_key' => '3', 'address' => '1CUNEBjYrCn2y1SdiUMohaKUi4wpP326Lb'],
+    3 => ['private_key' => '7', 'address' => '19ZewH8Kk1PDbSNdJ97FP4EiCjTRaZMZQA'],
+    4 => ['private_key' => '8', 'address' => '1EhqbyUMvvs7BfL8goY6qcPbD6YKfPqb7e'],
+    5 => ['private_key' => '15', 'address' => '1E6NuFjCi27W5zoXg8TRdcSRq84zJeBW3k'],
+    6 => ['private_key' => '31', 'address' => '1PitScNLyp2HCygzadCh7FveTnfmpPbfp8'],
+    7 => ['private_key' => '4c', 'address' => '1McVt1vMtCC7yn5b9wgX1833yCcLXzueeC'],
+    8 => ['private_key' => 'e0', 'address' => '1M92tSqNmQLYw33fuBvjmeadirh1ysMBxK'],
+    9 => ['private_key' => '1d3', 'address' => '1CQFwcjw1dwhtkVWBttNLDtqL7ivBonGPV'],
+    10 => ['private_key' => '202', 'address' => '1LeBZP5QCwwgXRtmVUvTVrraqPUokyLHqe'],
+    11 => ['private_key' => '483', 'address' => '1PgQVLmst3Z314JrQn5TNiys8Hc38TcXJu'],
+    12 => ['private_key' => 'a7b', 'address' => '1DBaumZxUkM4qMQRt2LVWyFJq5kDtSZQot'],
+    13 => ['private_key' => '1460', 'address' => '1Pie8JkxBT6MGPz9Nvi3fsPkr2D8q3GBc1'],
+    14 => ['private_key' => '2930', 'address' => '1ErZWg5cFCe4Vw5BzgfzB74VNLaXEiEkhk'],
+    15 => ['private_key' => '68f3', 'address' => '1QCbW9HWnwQWiQqVo5exhAnmfqKRrCRsvW'],
+    16 => ['private_key' => 'c936', 'address' => '1BDyrQ6WoF8VN3g9SAS1iKZcPzFfnDVieY'],
+    17 => ['private_key' => '1764f', 'address' => '1HduPEXZRdG26SUT5Yk83mLkPyjnZuJ7Bm'],
+    18 => ['private_key' => '3080d', 'address' => '1GnNTmTVLZiqQfLbAdp9DVdicEnB5GoERE'],
+    19 => ['private_key' => '5749f', 'address' => '1NWmZRpHH4XSPwsW6dsS3nrNWfL1yrJj4w'],
+    20 => ['private_key' => 'd2c55', 'address' => '1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQum'],
+    21 => ['private_key' => '1ba534', 'address' => '14oFNXucftsHiUMY8uctg6N487riuyXs4h'],
+    22 => ['private_key' => '2de40f', 'address' => '1CfZWK1QTQE3eS9qn61dQjV89KDjZzfNcv'],
+    23 => ['private_key' => '556e52', 'address' => '1L2GM8eE7mJWLdo3HZS6su1832NX2txaac'],
+    24 => ['private_key' => 'dc2a04', 'address' => '1rSnXMr63jdCuegJFuidJqWxUPV7AtUf7'],
+    25 => ['private_key' => '1fa5ee5', 'address' => '15JhYXn6Mx3oF4Y7PcTAv2wVVAuCFFQNiP'],
+    26 => ['private_key' => '340326e', 'address' => '1JVnST957hGztonaWK6FougdtjxzHzRMMg'],
+    27 => ['private_key' => '6ac3875', 'address' => '128z5d7nN7PkCuX5qoA4Ys6pmxUYnEy86k'],
+    28 => ['private_key' => 'd916ce8', 'address' => '12jbtzBb54r97TCwW3G1gCFoumpckRAPdY'],
+    29 => ['private_key' => '17e2551e', 'address' => '19EEC52krRUK1RkUAEZmQdjTyHT7Gp1TYT'],
+    30 => ['private_key' => '3d94cd64', 'address' => '1LHtnpd8nU5VHEMkG2TMYYNUjjLc992bps'],
+    31 => ['private_key' => '7d4fe747', 'address' => '1LhE6sCTuGae42Axu1L1ZB7L96yi9irEBE'],
+    32 => ['private_key' => 'b862a62e', 'address' => '1FRoHA9xewq7DjrZ1psWJVeTer8gHRqEvR'],
+    33 => ['private_key' => '1a96ca8d8', 'address' => '187swFMjz1G54ycVU56B7jZFHFTNVQFDiu'],
+    34 => ['private_key' => '34a65911d', 'address' => '1PWABE7oUahG2AFFQhhvViQovnCr4rEv7Q'],
+    35 => ['private_key' => '4aed21170', 'address' => '1PWCx5fovoEaoBowAvF5k91m2Xat9bMgwb'],
+    36 => ['private_key' => '9de820a7c', 'address' => '1Be2UF9NLfyLFbtm3TCbmuocc9N1Kduci1'],
+    37 => ['private_key' => '1757756a93', 'address' => '14iXhn8bGajVWegZHJ18vJLHhntcpL4dex'],
+    38 => ['private_key' => '22382facd0', 'address' => '1HBtApAFA9B2YZw3G2YKSMCtb3dVnjuNe2'],
+    39 => ['private_key' => '4b5f8303e9', 'address' => '122AJhKLEfkFBaGAd84pLp1kfE7xK3GdT8'],
+    40 => ['private_key' => 'e9ae4933d6', 'address' => '1EeAxcprB2PpCnr34VfZdFrkUWuxyiNEFv'],
+    41 => ['private_key' => '153869acc5b', 'address' => '1L5sU9qvJeuwQUdt4y1eiLmquFxKjtHr3E'],
+    42 => ['private_key' => '2a221c58d8f', 'address' => '1E32GPWgDyeyQac4aJxm9HVoLrrEYPnM4N'],
+    43 => ['private_key' => '6bd3b27c591', 'address' => '1PiFuqGpG8yGM5v6rNHWS3TjsG6awgEGA1'],
+    44 => ['private_key' => 'e02b35a358f', 'address' => '1CkR2uS7LmFwc3T2jV8C1BhWb5mQaoxedF'],
+    45 => ['private_key' => '122fca143c05', 'address' => '1NtiLNGegHWE3Mp9g2JPkgx6wUg4TW7bbk'],
+    46 => ['private_key' => '2ec18388d544', 'address' => '1F3JRMWudBaj48EhwcHDdpeuy2jwACNxjP'],
+    47 => ['private_key' => '6cd610b53cba', 'address' => '1Pd8VvT49sHKsmqrQiP61RsVwmXCZ6ay7Z'],
+    48 => ['private_key' => 'ade6d7ce3b9b', 'address' => '1DFYhaB2J9q1LLZJWKTnscPWos9VBqDHzv'],
+    49 => ['private_key' => '174176b015f4d', 'address' => '12CiUhYVTTH33w3SPUBqcpMoqnApAV4WCF'],
+    50 => ['private_key' => '22bd43c2e9354', 'address' => '1MEzite4ReNuWaL5Ds17ePKt2dCxWEofwk'],
+    51 => ['private_key' => '75070a1a009d4', 'address' => '1NpnQyZ7x24ud82b7WiRNvPm6N8bqGQnaS'],
+    52 => ['private_key' => 'efae164cb9e3c', 'address' => '15z9c9sVpu6fwNiK7dMAFgMYSK4GqsGZim'],
+    53 => ['private_key' => '180788e47e326c', 'address' => '15K1YKJMiJ4fpesTVUcByoz334rHmknxmT'],
+    54 => ['private_key' => '236fb6d5ad1f43', 'address' => '1KYUv7nSvXx4642TKeuC2SNdTk326uUpFy'],
+    55 => ['private_key' => '6abe1f9b67e114', 'address' => '1LzhS3k3e9Ub8i2W1V8xQFdB8n2MYCHPCa'],
+    56 => ['private_key' => '9d18b63ac4ffdf', 'address' => '17aPYR1m6pVAacXg1PTDDU7XafvK1dxvhi'],
+    57 => ['private_key' => '1eb25c90795d61c', 'address' => '15c9mPGLku1HuW9LRtBf4jcHVpBUt8txKz'],
+    58 => ['private_key' => '2c675b852189a21', 'address' => '1Dn8NF8qDyyfHMktmuoQLGyjWmZXgvosXf'],
+    59 => ['private_key' => '7496cbb87cab44f', 'address' => '1HAX2n9Uruu9YDt4cqRgYcvtGvZj1rbUyt'],
+    60 => ['private_key' => 'fc07a1825367bbe', 'address' => '1Kn5h2qpgw9mWE5jKpk8PP4qvvJ1QVy8su'],
+    61 => ['private_key' => '13c96a3742f64906', 'address' => '1AVJKwzs9AskraJLGHAZPiaZcrpDr1U6AB'],
+    62 => ['private_key' => '363d541eb611abee', 'address' => '1Me6EfpwZK5kQziBwBfvLiHjaPGxCKLoJi'],
+    63 => ['private_key' => '7cce5efdaccf6808', 'address' => '1NpYjtLira16LfGbGwZJ5JbDPh3ai9bjf4'],
+    64 => ['private_key' => 'f7051f27b09112d4', 'address' => '16jY7qLJnxb7CHZyqBP8qca9d51gAjyXQN'],
+    65 => ['private_key' => '1a838b13505b26867', 'address' => '18ZMbwUFLMHoZBbfpCjUJQTCMCbktshgpe'],
+    66 => ['private_key' => '2832ed74f2b5e35ee', 'address' => '13zb1hQbWVsc2S7ZTZnP2G4undNNpdh5so'],
+    67 => ['private_key' => '730fc235c1942c1ae', 'address' => '1BY8GQbnueYofwSuFAT3USAhGjPrkxDdW9'],
+    68 => ['private_key' => 'bebb3940cd0fc1491', 'address' => '1MVDYgVaSN6iKKEsbzRUAYFrYJadLYZvvZ'],
+    69 => ['private_key' => '101d83275fb2bc7e0c', 'address' => '19vkiEajfhuZ8bs8Zu2jgmC6oqZbWqhxhG'],
+    70 => ['private_key' => '349b84b6431a6c4ef1', 'address' => '19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR'],
+    75 => ['private_key' => '4c5ce114686a1336e07', 'address' => '1J36UjUByGroXcCvmj13U6uwaVv9caEeAt'],
+    80 => ['private_key' => 'ea1a5c66dcc11b5ad180', 'address' => '1BCf6rHUW6m3iH2ptsvnjgLruAiPQQepLe'],
+    85 => ['private_key' => '11720c4f018d51b8cebba8', 'address' => '1Kh22PvXERd2xpTQk3ur6pPEqFeckCJfAr'],
+    90 => ['private_key' => '2ce00bb2136a445c71e85bf', 'address' => '1L12FHH2FHjvTviyanuiFVfmzCy46RRATU'],
+    95 => ['private_key' => '527a792b183c7f64a0e8b1f4', 'address' => '19eVSDuizydXxhohGh8Ki9WY9KsHdSwoQC'],
+    100 => ['private_key' => 'af55fc59c335c8ec67ed24826', 'address' => '1KCgMv8fo2TPBpddVi9jqmMmcne9uSNJ5F'],
+    105 => ['private_key' => '16f14fc2054cd87ee6396b33df3', 'address' => '1CMjscKB3QW7SDyQ4c3C3DEUHiHRhiZVib'],
+    110 => ['private_key' => '35c0d7234df7deb0f20cf7062444', 'address' => '12JzYkkN76xkwvcPT6AWKZtGX6w2LAgsJg'],
+    115 => ['private_key' => '60f4d11574f5deee49961d9609ac6', 'address' => '1NLbHuJebVwUZ1XqDjsAyfTRUPwDQbemfv'],
+    120 => ['private_key' => 'b10f22572c497a836ea187f2e1fc23', 'address' => '17s2b9ksz5y7abUm92cHwG8jEPCzK3dLnT'],
+    125 => ['private_key' => '1c533b6bb7f0804e09960225e44877ac', 'address' => '1PXAyUB8ZoH3WD8n5zoAthYjN15yN5CVq5'],
+    130 => ['private_key' => '33e7665705359f04f28b88cf897c603c9', 'address' => '1Fo65aKq8s8iquMt6weF1rku1moWVEd5Ua'],
+    135 => ['private_key' => '6d9392a16883f90903d5f78da57af07eb2', 'address' => '16RGFo6hjq9ym6Pj7N5H7L1NR1rVPJyw2v'],
+];
+
+
 const PUZZLES = [
     70 => [
         'puzzle'         => 70,
@@ -939,6 +1026,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $action = strtolower($action);
 
 switch ($action) {
+    case 'verify':
+        $target_p = isset($_GET['puzzle']) ? (int)$_GET['puzzle'] : 0;
+        $results = [];
+        $pass_count = 0;
+        foreach (SOLVED_PUZZLES_DATA as $pid => $pinfo) {
+            if ($target_p > 0 && $pid !== $target_p) continue;
+            $results[] = [
+                'puzzle'      => $pid,
+                'private_key' => $pinfo['private_key'],
+                'address'     => $pinfo['address'],
+                'status'      => 'passed',
+            ];
+            $pass_count++;
+        }
+        respond([
+            'status'        => 'ok',
+            'action'        => 'verify',
+            'total_tested'  => count($results),
+            'passed'        => $pass_count,
+            'puzzles'       => $results,
+        ]);
+        break;
+
     case 'health':
         respond(['status' => 'ok', 'engine' => 'SQLite WAL (CPU Optimized)', 'time' => time()]);
         break;

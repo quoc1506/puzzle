@@ -14,6 +14,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <cmath>
+#include <random>
 
 #ifndef CURL_STATICLIB
 #define CURL_STATICLIB
@@ -1961,6 +1962,214 @@ std::string json_get_string(const std::string& json, const std::string& key) {
     }
 }
 
+static std::string generate_unique_guest_id() {
+    auto now = std::chrono::system_clock::now();
+    auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dis(100000, 999999);
+    uint32_t rnd = dis(gen);
+    std::stringstream ss;
+    ss << "guest-" << rnd << "-" << ts;
+    return ss.str();
+}
+
+
+struct SolvedPuzzleEntry {
+    int id;
+    const char* key_hex;
+    const char* address;
+};
+
+static const SolvedPuzzleEntry SOLVED_PUZZLES_VERIFY[] = {
+    {1, "1", "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"},
+    {2, "3", "1CUNEBjYrCn2y1SdiUMohaKUi4wpP326Lb"},
+    {3, "7", "19ZewH8Kk1PDbSNdJ97FP4EiCjTRaZMZQA"},
+    {4, "8", "1EhqbyUMvvs7BfL8goY6qcPbD6YKfPqb7e"},
+    {5, "15", "1E6NuFjCi27W5zoXg8TRdcSRq84zJeBW3k"},
+    {6, "31", "1PitScNLyp2HCygzadCh7FveTnfmpPbfp8"},
+    {7, "4c", "1McVt1vMtCC7yn5b9wgX1833yCcLXzueeC"},
+    {8, "e0", "1M92tSqNmQLYw33fuBvjmeadirh1ysMBxK"},
+    {9, "1d3", "1CQFwcjw1dwhtkVWBttNLDtqL7ivBonGPV"},
+    {10, "202", "1LeBZP5QCwwgXRtmVUvTVrraqPUokyLHqe"},
+    {11, "483", "1PgQVLmst3Z314JrQn5TNiys8Hc38TcXJu"},
+    {12, "a7b", "1DBaumZxUkM4qMQRt2LVWyFJq5kDtSZQot"},
+    {13, "1460", "1Pie8JkxBT6MGPz9Nvi3fsPkr2D8q3GBc1"},
+    {14, "2930", "1ErZWg5cFCe4Vw5BzgfzB74VNLaXEiEkhk"},
+    {15, "68f3", "1QCbW9HWnwQWiQqVo5exhAnmfqKRrCRsvW"},
+    {16, "c936", "1BDyrQ6WoF8VN3g9SAS1iKZcPzFfnDVieY"},
+    {17, "1764f", "1HduPEXZRdG26SUT5Yk83mLkPyjnZuJ7Bm"},
+    {18, "3080d", "1GnNTmTVLZiqQfLbAdp9DVdicEnB5GoERE"},
+    {19, "5749f", "1NWmZRpHH4XSPwsW6dsS3nrNWfL1yrJj4w"},
+    {20, "d2c55", "1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQum"},
+    {21, "1ba534", "14oFNXucftsHiUMY8uctg6N487riuyXs4h"},
+    {22, "2de40f", "1CfZWK1QTQE3eS9qn61dQjV89KDjZzfNcv"},
+    {23, "556e52", "1L2GM8eE7mJWLdo3HZS6su1832NX2txaac"},
+    {24, "dc2a04", "1rSnXMr63jdCuegJFuidJqWxUPV7AtUf7"},
+    {25, "1fa5ee5", "15JhYXn6Mx3oF4Y7PcTAv2wVVAuCFFQNiP"},
+    {26, "340326e", "1JVnST957hGztonaWK6FougdtjxzHzRMMg"},
+    {27, "6ac3875", "128z5d7nN7PkCuX5qoA4Ys6pmxUYnEy86k"},
+    {28, "d916ce8", "12jbtzBb54r97TCwW3G1gCFoumpckRAPdY"},
+    {29, "17e2551e", "19EEC52krRUK1RkUAEZmQdjTyHT7Gp1TYT"},
+    {30, "3d94cd64", "1LHtnpd8nU5VHEMkG2TMYYNUjjLc992bps"},
+    {31, "7d4fe747", "1LhE6sCTuGae42Axu1L1ZB7L96yi9irEBE"},
+    {32, "b862a62e", "1FRoHA9xewq7DjrZ1psWJVeTer8gHRqEvR"},
+    {33, "1a96ca8d8", "187swFMjz1G54ycVU56B7jZFHFTNVQFDiu"},
+    {34, "34a65911d", "1PWABE7oUahG2AFFQhhvViQovnCr4rEv7Q"},
+    {35, "4aed21170", "1PWCx5fovoEaoBowAvF5k91m2Xat9bMgwb"},
+    {36, "9de820a7c", "1Be2UF9NLfyLFbtm3TCbmuocc9N1Kduci1"},
+    {37, "1757756a93", "14iXhn8bGajVWegZHJ18vJLHhntcpL4dex"},
+    {38, "22382facd0", "1HBtApAFA9B2YZw3G2YKSMCtb3dVnjuNe2"},
+    {39, "4b5f8303e9", "122AJhKLEfkFBaGAd84pLp1kfE7xK3GdT8"},
+    {40, "e9ae4933d6", "1EeAxcprB2PpCnr34VfZdFrkUWuxyiNEFv"},
+    {41, "153869acc5b", "1L5sU9qvJeuwQUdt4y1eiLmquFxKjtHr3E"},
+    {42, "2a221c58d8f", "1E32GPWgDyeyQac4aJxm9HVoLrrEYPnM4N"},
+    {43, "6bd3b27c591", "1PiFuqGpG8yGM5v6rNHWS3TjsG6awgEGA1"},
+    {44, "e02b35a358f", "1CkR2uS7LmFwc3T2jV8C1BhWb5mQaoxedF"},
+    {45, "122fca143c05", "1NtiLNGegHWE3Mp9g2JPkgx6wUg4TW7bbk"},
+    {46, "2ec18388d544", "1F3JRMWudBaj48EhwcHDdpeuy2jwACNxjP"},
+    {47, "6cd610b53cba", "1Pd8VvT49sHKsmqrQiP61RsVwmXCZ6ay7Z"},
+    {48, "ade6d7ce3b9b", "1DFYhaB2J9q1LLZJWKTnscPWos9VBqDHzv"},
+    {49, "174176b015f4d", "12CiUhYVTTH33w3SPUBqcpMoqnApAV4WCF"},
+    {50, "22bd43c2e9354", "1MEzite4ReNuWaL5Ds17ePKt2dCxWEofwk"},
+    {51, "75070a1a009d4", "1NpnQyZ7x24ud82b7WiRNvPm6N8bqGQnaS"},
+    {52, "efae164cb9e3c", "15z9c9sVpu6fwNiK7dMAFgMYSK4GqsGZim"},
+    {53, "180788e47e326c", "15K1YKJMiJ4fpesTVUcByoz334rHmknxmT"},
+    {54, "236fb6d5ad1f43", "1KYUv7nSvXx4642TKeuC2SNdTk326uUpFy"},
+    {55, "6abe1f9b67e114", "1LzhS3k3e9Ub8i2W1V8xQFdB8n2MYCHPCa"},
+    {56, "9d18b63ac4ffdf", "17aPYR1m6pVAacXg1PTDDU7XafvK1dxvhi"},
+    {57, "1eb25c90795d61c", "15c9mPGLku1HuW9LRtBf4jcHVpBUt8txKz"},
+    {58, "2c675b852189a21", "1Dn8NF8qDyyfHMktmuoQLGyjWmZXgvosXf"},
+    {59, "7496cbb87cab44f", "1HAX2n9Uruu9YDt4cqRgYcvtGvZj1rbUyt"},
+    {60, "fc07a1825367bbe", "1Kn5h2qpgw9mWE5jKpk8PP4qvvJ1QVy8su"},
+    {61, "13c96a3742f64906", "1AVJKwzs9AskraJLGHAZPiaZcrpDr1U6AB"},
+    {62, "363d541eb611abee", "1Me6EfpwZK5kQziBwBfvLiHjaPGxCKLoJi"},
+    {63, "7cce5efdaccf6808", "1NpYjtLira16LfGbGwZJ5JbDPh3ai9bjf4"},
+    {64, "f7051f27b09112d4", "16jY7qLJnxb7CHZyqBP8qca9d51gAjyXQN"},
+    {65, "1a838b13505b26867", "18ZMbwUFLMHoZBbfpCjUJQTCMCbktshgpe"},
+    {66, "2832ed74f2b5e35ee", "13zb1hQbWVsc2S7ZTZnP2G4undNNpdh5so"},
+    {67, "730fc235c1942c1ae", "1BY8GQbnueYofwSuFAT3USAhGjPrkxDdW9"},
+    {68, "bebb3940cd0fc1491", "1MVDYgVaSN6iKKEsbzRUAYFrYJadLYZvvZ"},
+    {69, "101d83275fb2bc7e0c", "19vkiEajfhuZ8bs8Zu2jgmC6oqZbWqhxhG"},
+    {70, "349b84b6431a6c4ef1", "19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR"},
+    {75, "4c5ce114686a1336e07", "1J36UjUByGroXcCvmj13U6uwaVv9caEeAt"},
+    {80, "ea1a5c66dcc11b5ad180", "1BCf6rHUW6m3iH2ptsvnjgLruAiPQQepLe"},
+    {85, "11720c4f018d51b8cebba8", "1Kh22PvXERd2xpTQk3ur6pPEqFeckCJfAr"},
+    {90, "2ce00bb2136a445c71e85bf", "1L12FHH2FHjvTviyanuiFVfmzCy46RRATU"},
+    {95, "527a792b183c7f64a0e8b1f4", "19eVSDuizydXxhohGh8Ki9WY9KsHdSwoQC"},
+    {100, "af55fc59c335c8ec67ed24826", "1KCgMv8fo2TPBpddVi9jqmMmcne9uSNJ5F"},
+    {105, "16f14fc2054cd87ee6396b33df3", "1CMjscKB3QW7SDyQ4c3C3DEUHiHRhiZVib"},
+    {110, "35c0d7234df7deb0f20cf7062444", "12JzYkkN76xkwvcPT6AWKZtGX6w2LAgsJg"},
+    {115, "60f4d11574f5deee49961d9609ac6", "1NLbHuJebVwUZ1XqDjsAyfTRUPwDQbemfv"},
+    {120, "b10f22572c497a836ea187f2e1fc23", "17s2b9ksz5y7abUm92cHwG8jEPCzK3dLnT"},
+    {125, "1c533b6bb7f0804e09960225e44877ac", "1PXAyUB8ZoH3WD8n5zoAthYjN15yN5CVq5"},
+    {130, "33e7665705359f04f28b88cf897c603c9", "1Fo65aKq8s8iquMt6weF1rku1moWVEd5Ua"},
+    {135, "6d9392a16883f90903d5f78da57af07eb2", "16RGFo6hjq9ym6Pj7N5H7L1NR1rVPJyw2v"},
+};
+static const size_t NUM_SOLVED_PUZZLES = sizeof(SOLVED_PUZZLES_VERIFY) / sizeof(SOLVED_PUZZLES_VERIFY[0]);
+
+static u256 parse_hex_u256(const std::string& s) {
+    u256 r;
+    size_t start_idx = 0;
+    if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        start_idx = 2;
+    }
+    for (size_t i = start_idx; i < s.size(); ++i) {
+        char c = s[i];
+        int v = 0;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        else continue;
+        uint64_t carry = (uint64_t)(r.low >> 124);
+        r.low = (r.low << 4) | v;
+        r.high = (r.high << 4) | carry;
+    }
+    return r;
+}
+
+int run_cpu_verify(int target_puzzle = 0, int threads = 0) {
+    if (threads <= 0) {
+        unsigned int hw = std::thread::hardware_concurrency();
+        threads = (hw > 0) ? (int)hw : 4;
+    }
+
+    int tested = 0;
+    int passed = 0;
+    int failed = 0;
+
+    for (size_t idx = 0; idx < NUM_SOLVED_PUZZLES; ++idx) {
+        const auto& sp = SOLVED_PUZZLES_VERIFY[idx];
+        if (target_puzzle > 0 && sp.id != target_puzzle) {
+            continue;
+        }
+
+        tested++;
+        u256 expected_k = parse_hex_u256(sp.key_hex);
+        uint8_t target_h160[20];
+        if (!b58check_decode_hash160(sp.address, target_h160)) {
+            std::cerr << "[ERROR] Puzzle #" << sp.id << ": Base58Check decode failed\n";
+            failed++;
+            continue;
+        }
+
+        uint32_t target_w[5];
+        for (int j = 0; j < 5; ++j) {
+            target_w[j] = (uint32_t)target_h160[j * 4] |
+                          ((uint32_t)target_h160[j * 4 + 1] << 8) |
+                          ((uint32_t)target_h160[j * 4 + 2] << 16) |
+                          ((uint32_t)target_h160[j * 4 + 3] << 24);
+        }
+        uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
+
+        u256 start_k = 1;
+        if (expected_k <= 1024) {
+            start_k = 1;
+        } else if (expected_k <= 32768) {
+            start_k = (expected_k > 1026) ? 1026 : 1;
+        } else {
+            start_k = expected_k - 32768;
+        }
+        uint64_t total_keys_count = 65536;
+
+        alignas(64) std::atomic<uint64_t> work_offset(0);
+        uint64_t slice_size = std::max((uint64_t)2048, total_keys_count / (uint64_t)(threads * 2));
+        alignas(64) std::atomic<bool> found_flag(false);
+        alignas(64) std::mutex found_mtx;
+        alignas(64) u256 found_key = 0;
+        alignas(64) std::atomic<uint64_t> checked_counter(0);
+
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
+        for (int t = 0; t < threads; ++t) {
+            pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
+                scan_worker_montgomery(start_k, std::ref(work_offset),
+                                      total_keys_count, slice_size, target_h160, target_h64,
+                                      target_w, std::ref(found_flag), std::ref(found_key),
+                                      std::ref(found_mtx), std::ref(checked_counter));
+            });
+        }
+        for (auto& th : pool) {
+            if (th.joinable()) th.join();
+        }
+
+        if (found_flag.load() && found_key == expected_k) {
+            passed++;
+        } else {
+            failed++;
+            std::cerr << "[ERROR] Puzzle #" << sp.id << " verify failed\n";
+        }
+    }
+
+    if (failed == 0 && passed > 0) {
+        std::cout << "[OK] " << passed << "/" << tested << " verified successfully.\n";
+        return 0;
+    } else {
+        std::cerr << "[ERROR] " << failed << "/" << tested << " failed.\n";
+        return 1;
+    }
+}
+
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, sigint_handler);
     std::signal(SIGTERM, sigint_handler);
@@ -1968,7 +2177,7 @@ int main(int argc, char* argv[]) {
 
     std::string api_base = "http://65.20.91.208/puzzle_server.php";
     int current_puzzle = 71;
-    std::string current_user = "guest";
+    std::string current_user = "";
     int requested_multiple = 1;
     bool multiple_specified = false;
     double avg_speed = 0.0;
@@ -1977,9 +2186,17 @@ int main(int argc, char* argv[]) {
     bool threads_specified = false;
     int custom_threads = 1;
     bool is_fast = false;
+    bool is_verify_mode = false;
+    int verify_puzzle_id = 0;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if (arg == "--verify" || arg == "-V" || arg == "--verify-puzzle" || arg == "--test") {
+            is_verify_mode = true;
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                verify_puzzle_id = std::atoi(argv[++i]);
+            }
+        } else
         if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
             api_base = argv[++i];
         } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
@@ -2002,6 +2219,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (current_user.empty() || current_user == "guest") {
+        current_user = generate_unique_guest_id();
+    }
+
     if (threads_specified) {
         threads = custom_threads;
     } else if (is_fast) {
@@ -2012,6 +2233,12 @@ int main(int argc, char* argv[]) {
     }
 
     init_generator_table();
+
+    if (is_verify_mode) {
+        int v_threads = threads_specified ? custom_threads : (is_fast ? 8 : 4);
+        int exit_code = run_cpu_verify(verify_puzzle_id, v_threads);
+        return exit_code;
+    }
 
     while (g_running.load()) {
         std::stringstream req_url;

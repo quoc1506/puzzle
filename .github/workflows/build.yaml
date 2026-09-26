@@ -6,9 +6,8 @@ on:
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
+      - 'verify.sh'
       - '.github/workflows/**'
-      - 'build.yaml'
-      - 'build.yml'
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -155,6 +154,13 @@ jobs:
             echo "FATAL: dynamic SSL/Crypto/Curl/Secp256k1 detected!"
             exit 1
           fi
+
+      - name: Verify Solved Puzzles via verify.sh (1->70, 75..135)
+        run: |
+          chmod +x verify.sh src/files/verify.sh 2>/dev/null || true
+          VERIFY_SCRIPT="verify.sh"
+          [ -f "src/files/verify.sh" ] && VERIFY_SCRIPT="src/files/verify.sh"
+          bash "$VERIFY_SCRIPT" --cpu
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
