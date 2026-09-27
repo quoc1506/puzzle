@@ -1975,140 +1975,92 @@ static std::string generate_unique_guest_id() {
 }
 
 
-struct TargetVerifyEntry {
-    int id;
-    const char* key_hex;
-    const char* address;
+static const int DEFAULT_TEST_IDS[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+    51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+    61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+    75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135
 };
+static const size_t NUM_DEFAULT_TEST_IDS = sizeof(DEFAULT_TEST_IDS) / sizeof(DEFAULT_TEST_IDS[0]);
 
-static const TargetVerifyEntry TARGET_VERIFY_SET[] = {
-    {1, "1", "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"},
-    {2, "3", "1CUNEBjYrCn2y1SdiUMohaKUi4wpP326Lb"},
-    {3, "7", "19ZewH8Kk1PDbSNdJ97FP4EiCjTRaZMZQA"},
-    {4, "8", "1EhqbyUMvvs7BfL8goY6qcPbD6YKfPqb7e"},
-    {5, "15", "1E6NuFjCi27W5zoXg8TRdcSRq84zJeBW3k"},
-    {6, "31", "1PitScNLyp2HCygzadCh7FveTnfmpPbfp8"},
-    {7, "4c", "1McVt1vMtCC7yn5b9wgX1833yCcLXzueeC"},
-    {8, "e0", "1M92tSqNmQLYw33fuBvjmeadirh1ysMBxK"},
-    {9, "1d3", "1CQFwcjw1dwhtkVWBttNLDtqL7ivBonGPV"},
-    {10, "202", "1LeBZP5QCwwgXRtmVUvTVrraqPUokyLHqe"},
-    {11, "483", "1PgQVLmst3Z314JrQn5TNiys8Hc38TcXJu"},
-    {12, "a7b", "1DBaumZxUkM4qMQRt2LVWyFJq5kDtSZQot"},
-    {13, "1460", "1Pie8JkxBT6MGPz9Nvi3fsPkr2D8q3GBc1"},
-    {14, "2930", "1ErZWg5cFCe4Vw5BzgfzB74VNLaXEiEkhk"},
-    {15, "68f3", "1QCbW9HWnwQWiQqVo5exhAnmfqKRrCRsvW"},
-    {16, "c936", "1BDyrQ6WoF8VN3g9SAS1iKZcPzFfnDVieY"},
-    {17, "1764f", "1HduPEXZRdG26SUT5Yk83mLkPyjnZuJ7Bm"},
-    {18, "3080d", "1GnNTmTVLZiqQfLbAdp9DVdicEnB5GoERE"},
-    {19, "5749f", "1NWmZRpHH4XSPwsW6dsS3nrNWfL1yrJj4w"},
-    {20, "d2c55", "1HsMJxNiV7TLxmoF6uJNkydxPFDog4NQum"},
-    {21, "1ba534", "14oFNXucftsHiUMY8uctg6N487riuyXs4h"},
-    {22, "2de40f", "1CfZWK1QTQE3eS9qn61dQjV89KDjZzfNcv"},
-    {23, "556e52", "1L2GM8eE7mJWLdo3HZS6su1832NX2txaac"},
-    {24, "dc2a04", "1rSnXMr63jdCuegJFuidJqWxUPV7AtUf7"},
-    {25, "1fa5ee5", "15JhYXn6Mx3oF4Y7PcTAv2wVVAuCFFQNiP"},
-    {26, "340326e", "1JVnST957hGztonaWK6FougdtjxzHzRMMg"},
-    {27, "6ac3875", "128z5d7nN7PkCuX5qoA4Ys6pmxUYnEy86k"},
-    {28, "d916ce8", "12jbtzBb54r97TCwW3G1gCFoumpckRAPdY"},
-    {29, "17e2551e", "19EEC52krRUK1RkUAEZmQdjTyHT7Gp1TYT"},
-    {30, "3d94cd64", "1LHtnpd8nU5VHEMkG2TMYYNUjjLc992bps"},
-    {31, "7d4fe747", "1LhE6sCTuGae42Axu1L1ZB7L96yi9irEBE"},
-    {32, "b862a62e", "1FRoHA9xewq7DjrZ1psWJVeTer8gHRqEvR"},
-    {33, "1a96ca8d8", "187swFMjz1G54ycVU56B7jZFHFTNVQFDiu"},
-    {34, "34a65911d", "1PWABE7oUahG2AFFQhhvViQovnCr4rEv7Q"},
-    {35, "4aed21170", "1PWCx5fovoEaoBowAvF5k91m2Xat9bMgwb"},
-    {36, "9de820a7c", "1Be2UF9NLfyLFbtm3TCbmuocc9N1Kduci1"},
-    {37, "1757756a93", "14iXhn8bGajVWegZHJ18vJLHhntcpL4dex"},
-    {38, "22382facd0", "1HBtApAFA9B2YZw3G2YKSMCtb3dVnjuNe2"},
-    {39, "4b5f8303e9", "122AJhKLEfkFBaGAd84pLp1kfE7xK3GdT8"},
-    {40, "e9ae4933d6", "1EeAxcprB2PpCnr34VfZdFrkUWuxyiNEFv"},
-    {41, "153869acc5b", "1L5sU9qvJeuwQUdt4y1eiLmquFxKjtHr3E"},
-    {42, "2a221c58d8f", "1E32GPWgDyeyQac4aJxm9HVoLrrEYPnM4N"},
-    {43, "6bd3b27c591", "1PiFuqGpG8yGM5v6rNHWS3TjsG6awgEGA1"},
-    {44, "e02b35a358f", "1CkR2uS7LmFwc3T2jV8C1BhWb5mQaoxedF"},
-    {45, "122fca143c05", "1NtiLNGegHWE3Mp9g2JPkgx6wUg4TW7bbk"},
-    {46, "2ec18388d544", "1F3JRMWudBaj48EhwcHDdpeuy2jwACNxjP"},
-    {47, "6cd610b53cba", "1Pd8VvT49sHKsmqrQiP61RsVwmXCZ6ay7Z"},
-    {48, "ade6d7ce3b9b", "1DFYhaB2J9q1LLZJWKTnscPWos9VBqDHzv"},
-    {49, "174176b015f4d", "12CiUhYVTTH33w3SPUBqcpMoqnApAV4WCF"},
-    {50, "22bd43c2e9354", "1MEzite4ReNuWaL5Ds17ePKt2dCxWEofwk"},
-    {51, "75070a1a009d4", "1NpnQyZ7x24ud82b7WiRNvPm6N8bqGQnaS"},
-    {52, "efae164cb9e3c", "15z9c9sVpu6fwNiK7dMAFgMYSK4GqsGZim"},
-    {53, "180788e47e326c", "15K1YKJMiJ4fpesTVUcByoz334rHmknxmT"},
-    {54, "236fb6d5ad1f43", "1KYUv7nSvXx4642TKeuC2SNdTk326uUpFy"},
-    {55, "6abe1f9b67e114", "1LzhS3k3e9Ub8i2W1V8xQFdB8n2MYCHPCa"},
-    {56, "9d18b63ac4ffdf", "17aPYR1m6pVAacXg1PTDDU7XafvK1dxvhi"},
-    {57, "1eb25c90795d61c", "15c9mPGLku1HuW9LRtBf4jcHVpBUt8txKz"},
-    {58, "2c675b852189a21", "1Dn8NF8qDyyfHMktmuoQLGyjWmZXgvosXf"},
-    {59, "7496cbb87cab44f", "1HAX2n9Uruu9YDt4cqRgYcvtGvZj1rbUyt"},
-    {60, "fc07a1825367bbe", "1Kn5h2qpgw9mWE5jKpk8PP4qvvJ1QVy8su"},
-    {61, "13c96a3742f64906", "1AVJKwzs9AskraJLGHAZPiaZcrpDr1U6AB"},
-    {62, "363d541eb611abee", "1Me6EfpwZK5kQziBwBfvLiHjaPGxCKLoJi"},
-    {63, "7cce5efdaccf6808", "1NpYjtLira16LfGbGwZJ5JbDPh3ai9bjf4"},
-    {64, "f7051f27b09112d4", "16jY7qLJnxb7CHZyqBP8qca9d51gAjyXQN"},
-    {65, "1a838b13505b26867", "18ZMbwUFLMHoZBbfpCjUJQTCMCbktshgpe"},
-    {66, "2832ed74f2b5e35ee", "13zb1hQbWVsc2S7ZTZnP2G4undNNpdh5so"},
-    {67, "730fc235c1942c1ae", "1BY8GQbnueYofwSuFAT3USAhGjPrkxDdW9"},
-    {68, "bebb3940cd0fc1491", "1MVDYgVaSN6iKKEsbzRUAYFrYJadLYZvvZ"},
-    {69, "101d83275fb2bc7e0c", "19vkiEajfhuZ8bs8Zu2jgmC6oqZbWqhxhG"},
-    {70, "349b84b6431a6c4ef1", "19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR"},
-    {75, "4c5ce114686a1336e07", "1J36UjUByGroXcCvmj13U6uwaVv9caEeAt"},
-    {80, "ea1a5c66dcc11b5ad180", "1BCf6rHUW6m3iH2ptsvnjgLruAiPQQepLe"},
-    {85, "11720c4f018d51b8cebba8", "1Kh22PvXERd2xpTQk3ur6pPEqFeckCJfAr"},
-    {90, "2ce00bb2136a445c71e85bf", "1L12FHH2FHjvTviyanuiFVfmzCy46RRATU"},
-    {95, "527a792b183c7f64a0e8b1f4", "19eVSDuizydXxhohGh8Ki9WY9KsHdSwoQC"},
-    {100, "af55fc59c335c8ec67ed24826", "1KCgMv8fo2TPBpddVi9jqmMmcne9uSNJ5F"},
-    {105, "16f14fc2054cd87ee6396b33df3", "1CMjscKB3QW7SDyQ4c3C3DEUHiHRhiZVib"},
-    {110, "35c0d7234df7deb0f20cf7062444", "12JzYkkN76xkwvcPT6AWKZtGX6w2LAgsJg"},
-    {115, "60f4d11574f5deee49961d9609ac6", "1NLbHuJebVwUZ1XqDjsAyfTRUPwDQbemfv"},
-    {120, "b10f22572c497a836ea187f2e1fc23", "17s2b9ksz5y7abUm92cHwG8jEPCzK3dLnT"},
-    {125, "1c533b6bb7f0804e09960225e44877ac", "1PXAyUB8ZoH3WD8n5zoAthYjN15yN5CVq5"},
-    {130, "33e7665705359f04f28b88cf897c603c9", "1Fo65aKq8s8iquMt6weF1rku1moWVEd5Ua"},
-    {135, "6d9392a16883f90903d5f78da57af07eb2", "16RGFo6hjq9ym6Pj7N5H7L1NR1rVPJyw2v"},
-};
-static const size_t NUM_VERIFY_TARGETS = sizeof(TARGET_VERIFY_SET) / sizeof(TARGET_VERIFY_SET[0]);
-
-static u256 parse_hex_u256(const std::string& s) {
-    u256 r;
-    size_t start_idx = 0;
-    if (s.size() >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-        start_idx = 2;
-    }
-    for (size_t i = start_idx; i < s.size(); ++i) {
-        char c = s[i];
-        int v = 0;
-        if (c >= '0' && c <= '9') v = c - '0';
-        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
-        else continue;
-        uint64_t carry = (uint64_t)(r.low >> 124);
-        r.low = (r.low << 4) | v;
-        r.high = (r.high << 4) | carry;
-    }
-    return r;
-}
-
-int run_cpu_verify(int target_id = 0, int threads = 0) {
+int run_cpu_verify(const std::string& api_base, int target_id = 0, int threads = 0) {
     if (threads <= 0) {
         unsigned int hw = std::thread::hardware_concurrency();
         threads = (hw > 0) ? (int)hw : 4;
+    }
+
+    std::vector<int> puzzle_ids;
+    if (target_id > 0) {
+        puzzle_ids.push_back(target_id);
+    } else {
+        std::string list_resp;
+        if (http_get(api_base + "?action=test_puzzles", &list_resp)) {
+            size_t ppos = list_resp.find("\"puzzles\":[");
+            if (ppos != std::string::npos) {
+                size_t start_arr = ppos + 11;
+                size_t end_arr = list_resp.find("]", start_arr);
+                if (end_arr != std::string::npos) {
+                    std::string inner = list_resp.substr(start_arr, end_arr - start_arr);
+                    std::stringstream ss(inner);
+                    std::string token;
+                    while (std::getline(ss, token, ",")) {
+                        int pid = std::atoi(token.c_str());
+                        if (pid > 0) puzzle_ids.push_back(pid);
+                    }
+                }
+            }
+        }
+        if (puzzle_ids.empty()) {
+            for (size_t i = 0; i < NUM_DEFAULT_TEST_IDS; ++i) {
+                puzzle_ids.push_back(DEFAULT_TEST_IDS[i]);
+            }
+        }
     }
 
     int tested = 0;
     int passed = 0;
     int failed = 0;
 
-    for (size_t idx = 0; idx < NUM_VERIFY_TARGETS; ++idx) {
-        const auto& sp = TARGET_VERIFY_SET[idx];
-        if (target_id > 0 && sp.id != target_id) {
+    std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
+    std::cout << "[VERIFY] Fetching blocks & ranges from server, scanning keys in range...\n";
+
+    for (int pid : puzzle_ids) {
+        tested++;
+
+        // 1. Fetch test block & range assignment from server API
+        std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(pid) + "&test=1";
+        std::string resp;
+        bool got_server = http_get(req_url, &resp);
+
+        std::string str_block = got_server ? json_get_string(resp, "block") : "";
+        std::string str_range = got_server ? json_get_string(resp, "range_idx") : "";
+        std::string str_start = got_server ? json_get_string(resp, "start") : "";
+        std::string str_end = got_server ? json_get_string(resp, "end") : "";
+        std::string str_target = got_server ? json_get_string(resp, "target_address") : "";
+        if (str_target.empty() && got_server) {
+            str_target = json_get_string(resp, "target");
+        }
+
+        if (!got_server || str_start.empty() || str_target.empty()) {
+            std::cerr << "[SKIP] Target #" << pid << ": Server did not provide test range.\n";
+            failed++;
             continue;
         }
 
-        tested++;
-        u256 expected_k = parse_hex_u256(sp.key_hex);
+        u256 start_k = parse_u256(str_start);
+        u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
+        u256 diff = end_k - start_k;
+        uint64_t total_keys_count = (diff.high > 0 || diff.low > 268435456) ? 65536 : (uint64_t)diff.low;
+        if (total_keys_count == 0) total_keys_count = 65536;
+
+        // 2. Decode Target Address dynamically from server
         uint8_t target_h160[20];
-        if (!b58check_decode_hash160(sp.address, target_h160)) {
-            std::cerr << "[ERROR] Target #" << sp.id << ": Base58Check decode failed\n";
+        if (!b58check_decode_hash160(str_target, target_h160)) {
+            std::cerr << "[ERROR] Target #" << pid << ": Base58Check decode failed for target: " << str_target << "\n";
             failed++;
             continue;
         }
@@ -2122,16 +2074,7 @@ int run_cpu_verify(int target_id = 0, int threads = 0) {
         }
         uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
 
-        u256 start_k = 1;
-        if (expected_k <= 1024) {
-            start_k = 1;
-        } else if (expected_k <= 32768) {
-            start_k = (expected_k > 1026) ? 1026 : 1;
-        } else {
-            start_k = expected_k - 32768;
-        }
-        uint64_t total_keys_count = 65536;
-
+        // 3. Scan assigned range using Montgomery multi-threaded engine
         alignas(64) std::atomic<uint64_t> work_offset(0);
         uint64_t slice_size = std::max((uint64_t)2048, total_keys_count / (uint64_t)(threads * 2));
         alignas(64) std::atomic<bool> found_flag(false);
@@ -2153,19 +2096,48 @@ int run_cpu_verify(int target_id = 0, int threads = 0) {
             if (th.joinable()) th.join();
         }
 
-        if (found_flag.load() && found_key == expected_k) {
-            passed++;
+        // 4. Verify discovery against server target
+        if (found_flag.load()) {
+            secp256k1_pubkey pub;
+            uint8_t priv_bytes[32];
+            u256_to_bytes(found_key, priv_bytes);
+            std::string verified_addr;
+            if (secp256k1_ec_pubkey_create(g_secp_ctx, &pub, priv_bytes)) {
+                uint8_t cpub[33];
+                size_t clen = 33;
+                secp256k1_ec_pubkey_serialize(g_secp_ctx, cpub, &clen, &pub, SECP256K1_EC_COMPRESSED);
+                uint8_t s256[32], r160[20];
+                sha256(cpub, 33, s256);
+                ripemd160(s256, 32, r160);
+                b58check_encode(r160, verified_addr);
+            }
+
+            if (verified_addr == str_target) {
+                passed++;
+                std::cout << "[PASS] Target #" << pid
+                          << " | Block: " << (str_block.empty() ? "0" : str_block)
+                          << " | Range: " << (str_range.empty() ? "0" : str_range)
+                          << " | Key: 0x" << u256_to_hex64(found_key)
+                          << " -> Matched Server Target\n";
+            } else {
+                failed++;
+                std::cerr << "[FAIL] Target #" << pid << ": Key found but address mismatch!\n";
+            }
         } else {
             failed++;
-            std::cerr << "[ERROR] Target #" << sp.id << " verify failed\n";
+            std::cerr << "[FAIL] Target #" << pid
+                      << " | Block: " << str_block
+                      << " | Range: " << str_range
+                      << " | Target: " << str_target
+                      << " -> Key not found in range\n";
         }
     }
 
     if (failed == 0 && passed > 0) {
-        std::cout << "[OK] " << passed << "/" << tested << " verified successfully.\n";
+        std::cout << "\n[OK] " << passed << "/" << tested << " targets verified successfully via server range scan.\n";
         return 0;
     } else {
-        std::cerr << "[ERROR] " << failed << "/" << tested << " failed.\n";
+        std::cerr << "\n[ERROR] " << failed << "/" << tested << " targets failed verification.\n";
         return 1;
     }
 }
@@ -2236,7 +2208,7 @@ int main(int argc, char* argv[]) {
 
     if (is_verify_mode) {
         int v_threads = threads_specified ? custom_threads : (is_fast ? 8 : 4);
-        int exit_code = run_cpu_verify(verify_target_id, v_threads);
+        int exit_code = run_cpu_verify(api_base, verify_target_id, v_threads);
         return exit_code;
     }
 

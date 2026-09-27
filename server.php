@@ -142,6 +142,16 @@ const PUZZLES = [
     ],
 ];
 
+function bchexdec($hex) {
+    $hex = ltrim((string)$hex, "0x");
+    $dec = "0";
+    $len = strlen($hex);
+    for ($i = 0; $i < $len; $i++) {
+        $dec = bcadd(bcmul($dec, "16"), (string)hexdec($hex[$i]));
+    }
+    return $dec;
+}
+
 function resolve_puzzle_id($raw_id = null): int {
     if ($raw_id === null || $raw_id === '' || !is_numeric($raw_id)) {
         return DEFAULT_PUZZLE;
@@ -1026,6 +1036,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $action = strtolower($action);
 
 switch ($action) {
+    case 'test_puzzles':
+    case 'verify_list':
+        respond([
+            'status'  => 'ok',
+            'puzzles' => array_keys(SOLVED_PUZZLES_DATA),
+        ]);
+        break;
     case 'verify':
         $target_p = isset($_GET['puzzle']) ? (int)$_GET['puzzle'] : 0;
         $results = [];
@@ -1373,22 +1390,32 @@ switch ($action) {
         $puzzle_id = resolve_puzzle_id($raw_puzzle);
         $config = PUZZLES[$puzzle_id];
 
-        if ($puzzle_id === 70 || (isset($_GET['test']) && $_GET['test'] == 1)) {
-            $test_block    = 1382945497;
-            $test_range    = 49;
-            $test_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
-            $test_start    = '970436974004848820224';
-            $test_span     = bcmul((string)$test_multiple, RANGE_SIZE);
-            $test_end      = bcadd($test_start, $test_span);
-            if (!empty($_GET['user'])) {
-                $test_user = trim((string)$_GET['user']);
-            } else {
-                $test_user = ($test_multiple > 1) ? "user-{$test_block}-{$test_range}-m{$test_multiple}" : "user-{$test_block}-{$test_range}";
-            }
+        if (isset(SOLVED_PUZZLES_DATA[$puzzle_id]) || (isset($_GET['test']) && $_GET['test'] == 1)) {
+            $target_p = isset(SOLVED_PUZZLES_DATA[$puzzle_id]) ? $puzzle_id : 70;
+            $pinfo = SOLVED_PUZZLES_DATA[$target_p];
+            $k_dec = bchexdec($pinfo['private_key']);
+            $lower = bcpow('2', (string)max(0, $target_p - 1));
+            $offset = bcsub($k_dec, $lower);
+            if (bccomp($offset, '0') < 0) $offset = '0';
 
+            $block_size = bcmul((string)RANGE_SIZE, (string)RANGES_PER_BLOCK);
+            $test_block = (int)bcdiv($offset, $block_size, 0);
+            $range_in_block = bcdiv($offset, (string)RANGE_SIZE, 0);
+            $test_range = (int)bcmod($range_in_block, (string)RANGES_PER_BLOCK);
+
+            $test_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
+            $span = '65536';
+            if (bccomp($k_dec, $span) <= 0) {
+                $test_start = (bccomp($lower, '1') > 0) ? $lower : '1';
+            } else {
+                $test_start = bcsub($k_dec, '32768');
+            }
+            $test_end = bcadd($test_start, $span);
+
+            $test_user = !empty($_GET['user']) ? trim((string)$_GET['user']) : "verify-node-{$target_p}";
             respond([
                 'status'           => 'ok',
-                'puzzle'           => 70,
+                'puzzle'           => $target_p,
                 'user'             => $test_user,
                 'block'            => $test_block,
                 'range_idx'        => $test_range,
@@ -1396,13 +1423,13 @@ switch ($action) {
                 'multiple'         => $test_multiple,
                 'start'            => $test_start,
                 'end'              => $test_end,
-                'range_size'       => (int)$test_span,
-                'single_range_size'=> (int)RANGE_SIZE,
-                'target_address'   => '19YZECXj3SxEZMoUeJ1yiPsw8xANe7M7QR',
+                'range_size'       => (int)$span,
+                'single_range_size'=> (int)$span,
+                'target_address'   => $pinfo['address'],
                 'version_byte'     => 0,
-                'lower'            => '590295810358705651712',
-                'total'            => '590295810358705651712',
-                'total_blocks'     => 2147483648,
+                'lower'            => $lower,
+                'total'            => $lower,
+                'total_blocks'     => 1,
                 'ranges_per_block' => RANGES_PER_BLOCK,
                 'is_test'          => true,
             ]);
