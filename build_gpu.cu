@@ -1336,7 +1336,11 @@ CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& pt, const uint3
     return fast_ripemd160_32_check(X, target_w);
 }
 
-CUDA_GLOBAL void cuda_scan_kernel(
+CUDA_GLOBAL void 
+#if defined(__CUDACC__) || defined(__NVCC__)
+__launch_bounds__(256, 2)
+#endif
+cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
@@ -1383,20 +1387,17 @@ CUDA_GLOBAL void cuda_scan_kernel(
         Fe dx[64];
         Fe prod[64];
 
-        #pragma unroll
         for (int i = 0; i < 64; ++i) {
             dx[i] = fe_sub(dev_batch_G[i].x, cur_P.x);
         }
 
         prod[0] = dx[0];
-        #pragma unroll
         for (int i = 1; i < 64; ++i) {
             prod[i] = fe_mul(prod[i - 1], dx[i]);
         }
 
         Fe inv_all = fe_inv(prod[63]);
 
-        #pragma unroll
         for (int i = 63; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             inv_all = fe_mul(inv_all, dx[i]);
@@ -1405,7 +1406,6 @@ CUDA_GLOBAL void cuda_scan_kernel(
         prod[0] = inv_all; // prod[0] reused as inv_dx[0]
 
         AffinePoint next_cur_P;
-        #pragma unroll
         for (int i = 0; i < 64; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
