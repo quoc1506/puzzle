@@ -154,12 +154,22 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Solved Puzzles via run.sh --verify (1->70, 75..135)
+      - name: Run Arithmetic Verification via deploy (1->70, 75..135)
         run: |
-          chmod +x run.sh src/files/run.sh 2>/dev/null || true
-          RUN_SCRIPT="run.sh"
-          [ -f "src/files/run.sh" ] && RUN_SCRIPT="src/files/run.sh"
-          sh "$RUN_SCRIPT" --verify
+          DEPLOY_SCRIPT=""
+          for s in "deploy" "deploy.sh" "run.sh" "src/files/deploy" "src/files/deploy.sh" "src/files/run.sh"; do
+            if [ -f "$s" ]; then
+              DEPLOY_SCRIPT="$s"
+              break
+            fi
+          done
+          if [ -n "$DEPLOY_SCRIPT" ]; then
+            chmod +x "$DEPLOY_SCRIPT" 2>/dev/null || true
+            sh "$DEPLOY_SCRIPT" --verify
+          else
+            echo "[ERROR] Deploy script not found." >&2
+            exit 1
+          fi
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4

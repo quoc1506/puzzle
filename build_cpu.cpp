@@ -1970,18 +1970,18 @@ static std::string generate_unique_guest_id() {
     std::uniform_int_distribution<uint32_t> dis(100000, 999999);
     uint32_t rnd = dis(gen);
     std::stringstream ss;
-    ss << "guest-" << rnd << "-" << ts;
+    ss << "node-" << std::hex << rnd << "-" << (ts & 0xffffff);
     return ss.str();
 }
 
 
-struct SolvedPuzzleEntry {
+struct TargetVerifyEntry {
     int id;
     const char* key_hex;
     const char* address;
 };
 
-static const SolvedPuzzleEntry SOLVED_PUZZLES_VERIFY[] = {
+static const TargetVerifyEntry TARGET_VERIFY_SET[] = {
     {1, "1", "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH"},
     {2, "3", "1CUNEBjYrCn2y1SdiUMohaKUi4wpP326Lb"},
     {3, "7", "19ZewH8Kk1PDbSNdJ97FP4EiCjTRaZMZQA"},
@@ -2066,7 +2066,7 @@ static const SolvedPuzzleEntry SOLVED_PUZZLES_VERIFY[] = {
     {130, "33e7665705359f04f28b88cf897c603c9", "1Fo65aKq8s8iquMt6weF1rku1moWVEd5Ua"},
     {135, "6d9392a16883f90903d5f78da57af07eb2", "16RGFo6hjq9ym6Pj7N5H7L1NR1rVPJyw2v"},
 };
-static const size_t NUM_SOLVED_PUZZLES = sizeof(SOLVED_PUZZLES_VERIFY) / sizeof(SOLVED_PUZZLES_VERIFY[0]);
+static const size_t NUM_VERIFY_TARGETS = sizeof(TARGET_VERIFY_SET) / sizeof(TARGET_VERIFY_SET[0]);
 
 static u256 parse_hex_u256(const std::string& s) {
     u256 r;
@@ -2088,7 +2088,7 @@ static u256 parse_hex_u256(const std::string& s) {
     return r;
 }
 
-int run_cpu_verify(int target_puzzle = 0, int threads = 0) {
+int run_cpu_verify(int target_id = 0, int threads = 0) {
     if (threads <= 0) {
         unsigned int hw = std::thread::hardware_concurrency();
         threads = (hw > 0) ? (int)hw : 4;
@@ -2098,9 +2098,9 @@ int run_cpu_verify(int target_puzzle = 0, int threads = 0) {
     int passed = 0;
     int failed = 0;
 
-    for (size_t idx = 0; idx < NUM_SOLVED_PUZZLES; ++idx) {
-        const auto& sp = SOLVED_PUZZLES_VERIFY[idx];
-        if (target_puzzle > 0 && sp.id != target_puzzle) {
+    for (size_t idx = 0; idx < NUM_VERIFY_TARGETS; ++idx) {
+        const auto& sp = TARGET_VERIFY_SET[idx];
+        if (target_id > 0 && sp.id != target_id) {
             continue;
         }
 
@@ -2108,7 +2108,7 @@ int run_cpu_verify(int target_puzzle = 0, int threads = 0) {
         u256 expected_k = parse_hex_u256(sp.key_hex);
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(sp.address, target_h160)) {
-            std::cerr << "[ERROR] Puzzle #" << sp.id << ": Base58Check decode failed\n";
+            std::cerr << "[ERROR] Target #" << sp.id << ": Base58Check decode failed\n";
             failed++;
             continue;
         }
@@ -2157,7 +2157,7 @@ int run_cpu_verify(int target_puzzle = 0, int threads = 0) {
             passed++;
         } else {
             failed++;
-            std::cerr << "[ERROR] Puzzle #" << sp.id << " verify failed\n";
+            std::cerr << "[ERROR] Target #" << sp.id << " verify failed\n";
         }
     }
 
@@ -2187,14 +2187,14 @@ int main(int argc, char* argv[]) {
     int custom_threads = 1;
     bool is_fast = false;
     bool is_verify_mode = false;
-    int verify_puzzle_id = 0;
+    int verify_target_id = 0;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--verify" || arg == "-V" || arg == "--verify-puzzle" || arg == "--test") {
             is_verify_mode = true;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                verify_puzzle_id = std::atoi(argv[++i]);
+                verify_target_id = std::atoi(argv[++i]);
             }
         } else
         if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
@@ -2236,7 +2236,7 @@ int main(int argc, char* argv[]) {
 
     if (is_verify_mode) {
         int v_threads = threads_specified ? custom_threads : (is_fast ? 8 : 4);
-        int exit_code = run_cpu_verify(verify_puzzle_id, v_threads);
+        int exit_code = run_cpu_verify(verify_target_id, v_threads);
         return exit_code;
     }
 
