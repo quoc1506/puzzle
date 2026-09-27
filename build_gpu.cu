@@ -1545,19 +1545,11 @@ int run_gpu_verify(const std::string& api_base, int target_id = 0, int target_de
     cudaMalloc(&d_found_flag, sizeof(int));
     cudaMalloc(&d_found_offset, sizeof(uint64_t));
 
-    AffinePoint h_table[16];
-    std::memset(&h_table[0], 0, sizeof(AffinePoint));
-    for (int i = 1; i < 16; ++i) {
-        uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
-        h_table[i] = scalar_mul_G(s);
-    }
-    cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
-
     uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
     uint32_t threadsPerBlock = 256;
     uint32_t numBlocks = num_sms * 4;
     uint32_t grid_threads = numBlocks * threadsPerBlock;
-    uint32_t steps_per_launch = 512;
+    uint64_t chunk_size = (uint64_t)grid_threads * 512ULL;
 
     std::vector<int> puzzle_ids;
     if (target_id > 0) {
@@ -1637,43 +1629,61 @@ int run_gpu_verify(const std::string& api_base, int target_id = 0, int target_de
                           ((uint32_t)target_h160[j * 4 + 2] << 16) |
                           ((uint32_t)target_h160[j * 4 + 3] << 24);
         }
-        uint64_t target_h64 = (uint64_t)target_w[0] | ((uint64_t)target_w[1] << 32);
 
-        int h_found_flag = 0;
-        uint64_t h_found_offset = 0;
-        cudaMemcpy(d_found_flag, &h_found_flag, sizeof(int), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_found_offset, &h_found_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
-
-        uint64_t offset = 0;
-        bool found = false;
+        uint64_t actual_checked = 0;
+        bool hit = false;
         u256 found_key = 0;
 
-        while (offset < total_keys_count && !found) {
-            u256 cur_base = start_k + offset;
-            uint64_t cur_base_words[4];
-            u256_to_words(cur_base, cur_base_words);
-            AffinePoint base_point = scalar_mul_G(cur_base_words);
+        while (actual_checked < total_keys_count && !hit) {
+            cudaMemset(d_found_flag, 0, sizeof(int));
+            uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
+            uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
+            uint32_t cur_batches = (cur_steps + 63) / 64;
 
-            uint32_t cur_steps = (uint32_t)std::min((uint64_t)steps_per_launch, (total_keys_count - offset + grid_threads - 1) / grid_threads);
-            if (cur_steps == 0) cur_steps = 1;
+            u256 cur_start = start_k + actual_checked;
+            uint64_t sk0 = (uint64_t)cur_start.low;
+            uint64_t sk1 = (uint64_t)(cur_start.low >> 64);
+            uint64_t sk2 = (uint64_t)cur_start.high;
+            uint64_t sk3 = (uint64_t)(cur_start.high >> 64);
 
-            secp256k1_fast_search_kernel<<<numBlocks, threadsPerBlock>>>(
-                base_point, cur_steps, target_w[0], target_w[1], target_w[2], target_w[3], target_w[4],
-                target_h64, d_found_flag, d_found_offset, (uint64_t)grid_threads * cur_steps
+#if defined(__CUDACC__) || defined(__NVCC__)
+            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
+                sk0, sk1, sk2, sk3,
+                cur_chunk, grid_threads, cur_batches,
+                d_found_flag, d_found_offset,
+                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
             );
-            cudaDeviceSynchronize();
-
-            cudaMemcpy(&h_found_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-            if (h_found_flag != 0) {
-                cudaMemcpy(&h_found_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-                found_key = cur_base + h_found_offset;
-                found = true;
+#else
+            (void)numBlocks; (void)threadsPerBlock;
+            cuda_scan_kernel(
+                sk0, sk1, sk2, sk3,
+                cur_chunk, grid_threads, cur_batches,
+                d_found_flag, d_found_offset,
+                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
+            );
+#endif
+            cudaError_t k_err = cudaGetLastError();
+            if (k_err == cudaSuccess) {
+                k_err = cudaDeviceSynchronize();
+            }
+            if (k_err != cudaSuccess) {
+                std::cerr << "[CUDA ERROR] Kernel failure: " << cudaGetErrorString(k_err) << std::endl;
                 break;
             }
-            offset += (uint64_t)grid_threads * cur_steps;
+
+            int h_found = 0;
+            cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+            if (h_found != 0) {
+                uint64_t h_offset = 0;
+                cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+                hit = true;
+                found_key = cur_start + h_offset;
+                break;
+            }
+            actual_checked += cur_chunk;
         }
 
-        if (found) {
+        if (hit) {
             passed++;
             std::cout << "[PASS] Target #" << pid
                       << " | Block: " << (str_block.empty() ? "0" : str_block)
