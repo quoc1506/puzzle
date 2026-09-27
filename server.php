@@ -488,6 +488,7 @@ function calculate_probability_and_eta(int $puzzle_id, array $config, int $block
     return [
         'odds_str'        => $odds_str,
         'odds_24h'        => $odds_24h,
+        'odds_24h_val'    => ($odds_24h_val ?? $odds_24h),
         'probability_pct' => $pct_str,
         'keys_checked'    => $keys_fmt,
         'eta_100_str'     => $eta_str,
@@ -651,9 +652,9 @@ function render_html_dashboard(int $puzzle_id, array $config, array $stat, array
         . '<div class="stat-sub">From online workers</div>'
         . '</div>'
         . '<div class="stat-card">'
-        . '<div class="stat-title">🎯 Probability (24h)</div>'
-        . '<div class="stat-value" id="val-prob" style="color: #38bdf8; font-size: 19px;">' . htmlspecialchars($prob_info['odds_str']) . '</div>'
-        . '<div class="stat-sub" id="val-prob-sub">' . htmlspecialchars($prob_info['odds_24h']) . '</div>'
+        . '<div class="stat-title">🎯 Hit Probability (24h)</div>'
+        . '<div class="stat-value" id="val-prob" style="color: #38bdf8; font-size: 19px;">' . htmlspecialchars($prob_info['odds_24h_val'] ?? $prob_info['odds_str']) . '</div>'
+        . '<div class="stat-sub" id="val-prob-sub">Scanned so far: <strong>' . htmlspecialchars($prob_info['odds_str']) . '</strong></div>'
         . '</div>'
         . '<div class="stat-card">'
         . '<div class="stat-title">⏳ Estimated to 100%</div>'
