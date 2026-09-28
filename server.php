@@ -1388,22 +1388,20 @@ switch ($action) {
     case 'range':
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') error_resp('Method not allowed', 405);
         $raw_puzzle = $_GET['puzzle'] ?? null;
-        $puzzle_id = resolve_puzzle_id($raw_puzzle);
-        $config = PUZZLES[$puzzle_id];
+        $req_p = is_numeric($raw_puzzle) ? (int)$raw_puzzle : 0;
+        $is_test = isset($_GET['test']) && $_GET['test'] == 1;
 
-        if (isset(SOLVED_PUZZLES_DATA[$puzzle_id]) || (isset($_GET['test']) && $_GET['test'] == 1)) {
-            $target_p = isset(SOLVED_PUZZLES_DATA[$puzzle_id]) ? $puzzle_id : 70;
+        if ($is_test || isset(SOLVED_PUZZLES_DATA[$req_p])) {
+            $target_p = isset(SOLVED_PUZZLES_DATA[$req_p]) ? $req_p : 70;
             $pinfo = SOLVED_PUZZLES_DATA[$target_p];
             $k_dec = bchexdec($pinfo['private_key']);
             $lower = bcpow('2', (string)max(0, $target_p - 1));
             $offset = bcsub($k_dec, $lower);
             if (bccomp($offset, '0') < 0) $offset = '0';
-
             $block_size = bcmul((string)RANGE_SIZE, (string)RANGES_PER_BLOCK);
             $test_block = (int)bcdiv($offset, $block_size, 0);
             $range_in_block = bcdiv($offset, (string)RANGE_SIZE, 0);
             $test_range = (int)bcmod($range_in_block, (string)RANGES_PER_BLOCK);
-
             $test_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
             $span = '65536';
             if (bccomp($k_dec, $span) <= 0) {
@@ -1412,7 +1410,6 @@ switch ($action) {
                 $test_start = bcsub($k_dec, '32768');
             }
             $test_end = bcadd($test_start, $span);
-
             $test_user = !empty($_GET['user']) ? trim((string)$_GET['user']) : "verify-node-{$target_p}";
             respond([
                 'status'           => 'ok',
@@ -1436,6 +1433,8 @@ switch ($action) {
             ]);
         }
 
+        $puzzle_id = resolve_puzzle_id($raw_puzzle);
+        $config = PUZZLES[$puzzle_id];
         $pdo = get_puzzle_db($puzzle_id);
         if (random_int(1, 50) === 1) {
             cleanup_stale_workers($pdo, 86400);
