@@ -40,20 +40,15 @@ jobs:
           echo "Using host compiler flag: ${CCBIN_ARG}"
 
           GENCODES=""
-          # Support Pascal, Volta, Turing (Colab T4), Ampere, Ada Lovelace, and Hopper
-          for arch in 60 61 70 75 80 86 89 90; do
+          # Target modern GPUs: T4 (75), A100 (80), RTX 30xx/A10 (86), RTX 40xx/L4 (89)
+          for arch in 75 80 86 89; do
             if nvcc ${CCBIN_ARG} -gencode arch=compute_${arch},code=sm_${arch} -E -x cu /dev/null -o /dev/null 2>/dev/null; then
               GENCODES="${GENCODES} -gencode arch=compute_${arch},code=sm_${arch}"
             fi
           done
 
-          # Always include PTX JIT for forward compatibility
-          if nvcc ${CCBIN_ARG} -gencode arch=compute_60,code=compute_60 -E -x cu /dev/null -o /dev/null 2>/dev/null; then
-            GENCODES="${GENCODES} -gencode arch=compute_60,code=compute_60"
-          else
-            GENCODES="${GENCODES} -gencode arch=compute_75,code=compute_75"
-          fi
-
+          # PTX JIT for automatic forward compatibility with H100, Blackwell & all other architectures
+          GENCODES="${GENCODES} -gencode arch=compute_75,code=compute_75"
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
           SRC_FILE="build_gpu.cu"
@@ -68,7 +63,7 @@ jobs:
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
-          nvcc ${CCBIN_ARG} -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v ${GENCODES} \
+          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v ${GENCODES} \
             -Xcompiler -O3,-mavx2,-mbmi2,-madx,-funroll-loops \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl -lssl -lcrypto
           strip bin/build_cuda
@@ -381,8 +376,8 @@ jobs:
           name: bin-linux-riscv64
           path: bin/build-linux-riscv64
 
-  build-macos-arm64:
-    name: Build macOS (Apple Silicon ARM64)
+  build-macos:
+    name: Build macOS (Apple Silicon ARM64 & Intel x86_64)
     runs-on: macos-latest
     steps:
       - name: Checkout source code
@@ -390,58 +385,52 @@ jobs:
       - name: Install dependencies via Homebrew
         run: |
           brew install openssl@3 curl
-      - name: Compile macOS ARM64 Binary
+          # Attempt Rosetta x86_64 brew install if available
+          arch -x86_64 /usr/local/bin/brew install openssl@3 curl 2>/dev/null || arch -x86_64 brew install openssl@3 curl 2>/dev/null || true
+      - name: Compile macOS Binaries
         run: |
           mkdir -p bin
-          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
-          CURL_PREFIX="$(brew --prefix curl)"
+          OPENSSL_ARM64="$(brew --prefix openssl@3)"
+          CURL_ARM64="$(brew --prefix curl)"
+          
+          # 1. Native Apple Silicon ARM64
           clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe \
-            -I"${OPENSSL_PREFIX}/include" \
-            -I"${CURL_PREFIX}/include" \
-            -L"${OPENSSL_PREFIX}/lib" \
-            -L"${CURL_PREFIX}/lib" \
+            -I"${OPENSSL_ARM64}/include" \
+            -I"${CURL_ARM64}/include" \
+            -L"${OPENSSL_ARM64}/lib" \
+            -L"${CURL_ARM64}/lib" \
             build_cpu.cpp \
             -lcurl -lssl -lcrypto -lpthread -lz \
             -framework CoreFoundation -framework SystemConfiguration -framework Security \
             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
-          cp bin/build-macos-arm64 bin/build-macos-universal
-          chmod +x bin/build-macos-universal
-      - name: Upload macOS ARM64 artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bin-macos-arm64
-          path: bin/build-macos-*
 
-  build-macos-x86_64:
-    name: Build macOS (Intel x86_64)
-    runs-on: macos-13
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-      - name: Install dependencies via Homebrew
-        run: |
-          brew install openssl@3 curl
-      - name: Compile macOS Intel x86_64 Binary
-        run: |
-          mkdir -p bin
-          OPENSSL_PREFIX="$(brew --prefix openssl@3)"
-          CURL_PREFIX="$(brew --prefix curl)"
-          clang++ -std=c++17 -O3 -march=core2 -msse4.2 -mavx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe \
-            -I"${OPENSSL_PREFIX}/include" \
-            -I"${CURL_PREFIX}/include" \
-            -L"${OPENSSL_PREFIX}/lib" \
-            -L"${CURL_PREFIX}/lib" \
+          # 2. Intel x86_64 (using Rosetta /usr/local or target flag)
+          OPENSSL_X86="$(arch -x86_64 /usr/local/bin/brew --prefix openssl@3 2>/dev/null || echo /usr/local/opt/openssl@3)"
+          CURL_X86="$(arch -x86_64 /usr/local/bin/brew --prefix curl 2>/dev/null || echo /usr/local/opt/curl)"
+          arch -x86_64 clang++ -std=c++17 -O3 -march=core2 -msse4.2 -mavx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe \
+            -I"${OPENSSL_X86}/include" \
+            -I"${CURL_X86}/include" \
+            -L"${OPENSSL_X86}/lib" \
+            -L"${CURL_X86}/lib" \
             build_cpu.cpp \
             -lcurl -lssl -lcrypto -lpthread -lz \
             -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-x86_64
-          chmod +x bin/build-macos-x86_64
-      - name: Upload macOS Intel artifacts
+            -o bin/build-macos-x86_64 2>/dev/null || true
+          [ -f bin/build-macos-x86_64 ] && chmod +x bin/build-macos-x86_64 || true
+
+          # 3. Universal binary via lipo
+          if [ -f bin/build-macos-arm64 ] && [ -f bin/build-macos-x86_64 ]; then
+            lipo -create -output bin/build-macos-universal bin/build-macos-arm64 bin/build-macos-x86_64
+          else
+            cp bin/build-macos-arm64 bin/build-macos-universal
+          fi
+          chmod +x bin/build-macos-universal
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bin-macos-x86_64
-          path: bin/build-macos-x86_64
+          name: bin-macos
+          path: bin/build-macos-*
 
   build-windows:
     name: Build Windows (x86_64 Static)
@@ -492,7 +481,7 @@ jobs:
 
   publish-bin-folder:
     name: Consolidate Binaries into bin/
-    needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos-arm64, build-macos-x86_64, build-windows]
+    needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
