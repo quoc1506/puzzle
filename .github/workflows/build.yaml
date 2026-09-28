@@ -65,7 +65,7 @@ jobs:
 
           nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v ${GENCODES} \
             -Xcompiler -O3,-mavx2,-mbmi2,-madx,-funroll-loops \
-            -x cu ${SRC_FILE} -o bin/build_cuda -lcurl -lssl -lcrypto
+            -x cu ${SRC_FILE} -o bin/build_cuda -lcurl
           strip bin/build_cuda
           chmod +x bin/build_cuda
 
@@ -377,55 +377,36 @@ jobs:
           path: bin/build-linux-riscv64
 
   build-macos:
-    name: Build macOS (Apple Silicon ARM64 & Intel x86_64)
+    name: Build macOS (Universal arm64 & x86_64)
     runs-on: macos-latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
-      - name: Install dependencies via Homebrew
-        run: |
-          brew install openssl@3 curl
-          # Attempt Rosetta x86_64 brew install if available
-          arch -x86_64 /usr/local/bin/brew install openssl@3 curl 2>/dev/null || arch -x86_64 brew install openssl@3 curl 2>/dev/null || true
-      - name: Compile macOS Binaries
+
+      - name: Compile Universal macOS Binaries (Apple Silicon & Intel)
         run: |
           mkdir -p bin
-          OPENSSL_ARM64="$(brew --prefix openssl@3)"
-          CURL_ARM64="$(brew --prefix curl)"
           
-          # 1. Native Apple Silicon ARM64
-          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe \
-            -I"${OPENSSL_ARM64}/include" \
-            -I"${CURL_ARM64}/include" \
-            -L"${OPENSSL_ARM64}/lib" \
-            -L"${CURL_ARM64}/lib" \
+          # Clang compiles genuine Universal binary for both Apple Silicon (arm64) and Intel (x86_64)
+          clang++ -std=c++17 -O3 \
+            -arch arm64 -arch x86_64 \
             build_cpu.cpp \
-            -lcurl -lssl -lcrypto -lpthread -lz \
+            -lcurl -lpthread -lz \
             -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-arm64
+            -o bin/build-macos-universal
+          chmod +x bin/build-macos-universal
+
+          # Extract thin binaries for each architecture to guarantee exact match for deploy script
+          lipo -thin arm64 bin/build-macos-universal -output bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
 
-          # 2. Intel x86_64 (using Rosetta /usr/local or target flag)
-          OPENSSL_X86="$(arch -x86_64 /usr/local/bin/brew --prefix openssl@3 2>/dev/null || echo /usr/local/opt/openssl@3)"
-          CURL_X86="$(arch -x86_64 /usr/local/bin/brew --prefix curl 2>/dev/null || echo /usr/local/opt/curl)"
-          arch -x86_64 clang++ -std=c++17 -O3 -march=core2 -msse4.2 -mavx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe \
-            -I"${OPENSSL_X86}/include" \
-            -I"${CURL_X86}/include" \
-            -L"${OPENSSL_X86}/lib" \
-            -L"${CURL_X86}/lib" \
-            build_cpu.cpp \
-            -lcurl -lssl -lcrypto -lpthread -lz \
-            -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-x86_64 2>/dev/null || true
-          [ -f bin/build-macos-x86_64 ] && chmod +x bin/build-macos-x86_64 || true
+          lipo -thin x86_64 bin/build-macos-universal -output bin/build-macos-x86_64
+          chmod +x bin/build-macos-x86_64
 
-          # 3. Universal binary via lipo
-          if [ -f bin/build-macos-arm64 ] && [ -f bin/build-macos-x86_64 ]; then
-            lipo -create -output bin/build-macos-universal bin/build-macos-arm64 bin/build-macos-x86_64
-          else
-            cp bin/build-macos-arm64 bin/build-macos-universal
-          fi
-          chmod +x bin/build-macos-universal
+          echo "=== Verifying macOS binaries ==="
+          file bin/build-macos-*
+          lipo -info bin/build-macos-universal
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:

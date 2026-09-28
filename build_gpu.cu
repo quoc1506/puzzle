@@ -99,9 +99,6 @@ template<typename T> inline T atomicExch(T* address, T val) {
 #endif
 
 #include <curl/curl.h>
-#include <openssl/sha.h>
-#include <openssl/ripemd.h>
-#include <openssl/bn.h>
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -270,51 +267,98 @@ std::string u256_to_hex64(u256 val) {
     return ss.str();
 }
 
-static const char* B58_DIGITS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+// Standalone SHA-256 for Base58Check decoding (Zero OpenSSL dependency)
+static inline uint32_t b58_rotr(uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); }
+
+static void b58_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
+    static const uint32_t K[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t h[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+    std::vector<uint8_t> msg(data, data + len);
+    msg.push_back(0x80);
+    while ((msg.size() % 64) != 56) msg.push_back(0x00);
+    uint64_t bit_len = (uint64_t)len * 8ULL;
+    for (int i = 7; i >= 0; --i) msg.push_back((uint8_t)((bit_len >> (i * 8)) & 0xff));
+
+    for (size_t chunk = 0; chunk < msg.size(); chunk += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            w[i] = ((uint32_t)msg[chunk + i * 4] << 24) |
+                   ((uint32_t)msg[chunk + i * 4 + 1] << 16) |
+                   ((uint32_t)msg[chunk + i * 4 + 2] << 8) |
+                   ((uint32_t)msg[chunk + i * 4 + 3]);
+        }
+        for (int i = 16; i < 64; ++i) {
+            uint32_t s0 = b58_rotr(w[i - 15], 7) ^ b58_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint32_t s1 = b58_rotr(w[i - 2], 17) ^ b58_rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+        uint32_t e = h[4], f = h[5], g = h[6], h_val = h[7];
+        for (int i = 0; i < 64; ++i) {
+            uint32_t S1 = b58_rotr(e, 6) ^ b58_rotr(e, 11) ^ b58_rotr(e, 25);
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t temp1 = h_val + S1 + ch + K[i] + w[i];
+            uint32_t S0 = b58_rotr(a, 2) ^ b58_rotr(a, 13) ^ b58_rotr(a, 22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t temp2 = S0 + maj;
+            h_val = g; g = f; f = e; e = d + temp1;
+            d = c; c = b; b = a; a = temp1 + temp2;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += h_val;
+    }
+    for (int i = 0; i < 8; ++i) {
+        out[i * 4]     = (uint8_t)(h[i] >> 24);
+        out[i * 4 + 1] = (uint8_t)(h[i] >> 16);
+        out[i * 4 + 2] = (uint8_t)(h[i] >> 8);
+        out[i * 4 + 3] = (uint8_t)(h[i]);
+    }
+}
 
 bool b58check_decode_hash160(const std::string& addr, uint8_t out_hash160[20]) {
-    BIGNUM* bn = BN_new();
-    BN_zero(bn);
-    BIGNUM* bn58 = BN_new();
-    BN_set_word(bn58, 58);
-    BIGNUM* bn_char = BN_new();
-    BN_CTX* ctx = BN_CTX_new();
-
-    for (char c : addr) {
-        const char* p = strchr(B58_DIGITS, c);
-        if (!p) {
-            BN_free(bn); BN_free(bn58); BN_free(bn_char); BN_CTX_free(ctx);
-            return false;
-        }
-        BN_set_word(bn_char, p - B58_DIGITS);
-        BN_mul(bn, bn, bn58, ctx);
-        BN_add(bn, bn, bn_char);
-    }
-
-    int len = BN_num_bytes(bn);
-    std::vector<uint8_t> bin(len, 0);
-    BN_bn2bin(bn, bin.data());
-
+    static const char* B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    std::vector<uint8_t> bytes = {0};
     int leading_zeros = 0;
     for (char c : addr) {
-        if (c == '1') leading_zeros++;
+        if (c == '1' && bytes.size() == 1 && bytes[0] == 0) leading_zeros++;
         else break;
     }
-
-    std::vector<uint8_t> full_bytes;
-    full_bytes.insert(full_bytes.end(), leading_zeros, 0);
-    full_bytes.insert(full_bytes.end(), bin.begin(), bin.end());
-
-    BN_free(bn); BN_free(bn58); BN_free(bn_char); BN_CTX_free(ctx);
-
-    if (full_bytes.size() != 25) return false;
-
+    for (char c : addr) {
+        const char* p = std::strchr(B58, c);
+        if (!p) return false;
+        int carry = (int)(p - B58);
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            int cur = (int)bytes[i] * 58 + carry;
+            bytes[i] = (uint8_t)(cur & 0xff);
+            carry = cur >> 8;
+        }
+        while (carry > 0) {
+            bytes.push_back((uint8_t)(carry & 0xff));
+            carry >>= 8;
+        }
+    }
+    std::vector<uint8_t> full(leading_zeros, 0);
+    for (int i = (int)bytes.size() - 1; i >= 0; --i) {
+        full.push_back(bytes[i]);
+    }
+    if (full.size() != 25) return false;
     uint8_t h1[32], h2[32];
-    SHA256(full_bytes.data(), 21, h1);
-    SHA256(h1, 32, h2);
-    if (std::memcmp(h2, &full_bytes[21], 4) != 0) return false;
-
-    std::memcpy(out_hash160, &full_bytes[1], 20);
+    b58_sha256(full.data(), 21, h1);
+    b58_sha256(h1, 32, h2);
+    if (std::memcmp(h2, full.data() + 21, 4) != 0) return false;
+    std::memcpy(out_hash160, full.data() + 1, 20);
     return true;
 }
 
