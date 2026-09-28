@@ -1573,6 +1573,20 @@ static const int DEFAULT_TEST_IDS[] = {
 };
 static const size_t NUM_DEFAULT_TEST_IDS = sizeof(DEFAULT_TEST_IDS) / sizeof(DEFAULT_TEST_IDS[0]);
 
+
+static inline std::string format_speed(double speed) {
+    std::stringstream ss;
+    if (speed >= 1e9) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e9) << " Gkey/s";
+    } else if (speed >= 1e6) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e6) << " Mkey/s";
+    } else if (speed >= 1e3) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e3) << " Kkey/s";
+    } else {
+        ss << std::fixed << std::setprecision(1) << speed << " key/s";
+    }
+    return ss.str();
+}
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-gpu-node", int target_id = 0, int target_device_id = 0) {
     cudaError_t dev_err = cudaSetDevice(target_device_id);
     if (dev_err != cudaSuccess) {

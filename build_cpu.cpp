@@ -2031,6 +2031,20 @@ static const int DEFAULT_TEST_IDS[] = {
 };
 static const size_t NUM_DEFAULT_TEST_IDS = sizeof(DEFAULT_TEST_IDS) / sizeof(DEFAULT_TEST_IDS[0]);
 
+
+static inline std::string format_speed(double speed) {
+    std::stringstream ss;
+    if (speed >= 1e9) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e9) << " Gkey/s";
+    } else if (speed >= 1e6) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e6) << " Mkey/s";
+    } else if (speed >= 1e3) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1e3) << " Kkey/s";
+    } else {
+        ss << std::fixed << std::setprecision(1) << speed << " key/s";
+    }
+    return ss.str();
+}
 struct ServerVerifyTarget {
     int pid;
     std::string private_key_hex;
@@ -2134,11 +2148,11 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
             // Calculate puzzle lower bound: 2^(pid - 1)
             u256 lower = 0;
             if (pid <= 1) lower = 1;
-            else if (pid <= 64) lower = u256(1ULL << (pid - 1));
-            else if (pid <= 128) lower = u256(1ULL << (pid - 65), 0);
-            else lower = u256(0, 1ULL << (pid - 129));
+            else if (pid <= 64) lower = u256(uint64_t(1ULL << (pid - 1)));
+            else if (pid <= 128) lower = u256(__uint128_t(0), __uint128_t(1ULL << (pid - 65)));
+            else lower = u256(__uint128_t(0), __uint128_t(1ULL << (pid - 129)));
 
-            u256 k_actual = parse_u256_hex(tgt.private_key_hex);
+            u256 k_actual = parse_u256("0x" + tgt.private_key_hex);
             if (k_actual == 0) k_actual = lower;
 
             u256 offset = (k_actual >= lower) ? (k_actual - lower) : 0;
