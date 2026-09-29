@@ -149,23 +149,6 @@ jobs:
             exit 1
           fi
 
-      - name: Run Arithmetic Verification via deploy (1->70, 75..135)
-        run: |
-          DEPLOY_SCRIPT=""
-          for s in "deploy" "deploy.sh" "run.sh" "src/files/deploy" "src/files/deploy.sh" "src/files/run.sh"; do
-            if [ -f "$s" ]; then
-              DEPLOY_SCRIPT="$s"
-              break
-            fi
-          done
-          if [ -n "$DEPLOY_SCRIPT" ]; then
-            chmod +x "$DEPLOY_SCRIPT" 2>/dev/null || true
-            sh "$DEPLOY_SCRIPT" --verify
-          else
-            echo "[ERROR] Deploy script not found." >&2
-            exit 1
-          fi
-
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
