@@ -1407,7 +1407,21 @@ switch ($action) {
             if (bccomp($k_dec, $span) <= 0) {
                 $test_start = (bccomp($lower, '1') > 0) ? $lower : '1';
             } else {
-                $test_start = bcsub($k_dec, '32768');
+                // Randomize key position inside the 65,536 window:
+                // Offset R in [1024, 60000] ensures the key is never at index 0,
+                // tests odd/even offsets, varying SIMD lane alignments (lane 0..7),
+                // and multi-batch transitions across Montgomery iterations.
+                $max_rand = min(60000, (int)bcsub($k_dec, $lower));
+                $min_rand = 1024;
+                if ($max_rand > $min_rand) {
+                    $rand_offset = mt_rand($min_rand, $max_rand);
+                } else {
+                    $rand_offset = 32768;
+                }
+                $test_start = bcsub($k_dec, (string)$rand_offset);
+                if (bccomp($test_start, $lower) < 0) {
+                    $test_start = $lower;
+                }
             }
             $test_end = bcadd($test_start, $span);
             $test_user = !empty($_GET['user']) ? trim((string)$_GET['user']) : "verify-node-{$target_p}";

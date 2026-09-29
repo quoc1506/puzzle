@@ -2074,41 +2074,32 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         threads = (hw > 0) ? (int)hw : 4;
     }
 
-    std::vector<ServerVerifyTarget> server_targets;
-
-    // Fetch master verification targets from coordinator server
-    std::string verify_resp;
-    if (http_get(api_base + "?action=verify", &verify_resp)) {
-        size_t ppos = verify_resp.find("\"puzzles\":[");
-        if (ppos != std::string::npos) {
-            size_t cur = ppos + 11;
-            while (cur < verify_resp.size()) {
-                size_t obj_start = verify_resp.find("{", cur);
-                if (obj_start == std::string::npos) break;
-                size_t obj_end = verify_resp.find("}", obj_start);
-                if (obj_end == std::string::npos) break;
-                std::string item = verify_resp.substr(obj_start, obj_end - obj_start + 1);
-                int pid = std::atoi(json_get_string(item, "puzzle").c_str());
-                std::string pkey = json_get_string(item, "private_key");
-                std::string addr = json_get_string(item, "address");
-                if (pid > 0 && !addr.empty()) {
-                    if (target_id <= 0 || pid == target_id) {
-                        server_targets.push_back({ pid, pkey, addr });
+    std::vector<int> puzzle_ids;
+    if (target_id > 0) {
+        puzzle_ids.push_back(target_id);
+    } else {
+        // Query server dynamically for available test puzzles
+        std::string list_resp;
+        if (http_get(api_base + "?action=test_puzzles", &list_resp) || http_get(api_base + "?action=verify_list", &list_resp)) {
+            size_t ppos = list_resp.find(""puzzles":[");
+            if (ppos != std::string::npos) {
+                size_t start_arr = ppos + 11;
+                size_t end_arr = list_resp.find("]", start_arr);
+                if (end_arr != std::string::npos) {
+                    std::string inner = list_resp.substr(start_arr, end_arr - start_arr);
+                    std::stringstream ss(inner);
+                    std::string token;
+                    while (std::getline(ss, token, ',')) {
+                        int pid = std::atoi(token.c_str());
+                        if (pid > 0) puzzle_ids.push_back(pid);
                     }
                 }
-                cur = obj_end + 1;
             }
         }
-    }
-
-    if (server_targets.empty()) {
-        std::vector<int> fallback_ids;
-        if (target_id > 0) fallback_ids.push_back(target_id);
-        else {
-            for (size_t i = 0; i < NUM_DEFAULT_TEST_IDS; ++i) fallback_ids.push_back(DEFAULT_TEST_IDS[i]);
-        }
-        for (int pid : fallback_ids) {
-            server_targets.push_back({ pid, "", "" });
+        if (puzzle_ids.empty()) {
+            for (size_t i = 0; i < NUM_DEFAULT_TEST_IDS; ++i) {
+                puzzle_ids.push_back(DEFAULT_TEST_IDS[i]);
+            }
         }
     }
 
@@ -2117,16 +2108,15 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
     int failed = 0;
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running full 1024-way Montgomery + AVX2 SIMD pipeline scan...\n";
+    std::cout << "[VERIFY] Requesting test ranges & running 1024-way Montgomery + AVX2 SIMD scan...\n";
 
     uint64_t total_keys_verified = 0;
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
-    for (const auto& tgt : server_targets) {
+    for (int pid : puzzle_ids) {
         tested++;
-        int pid = tgt.pid;
 
-        // 1. Fetch test block & range assignment from server API
+        // 1. Fetch randomized test range and target strictly from server API
         std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(pid) + "&test=1&user=" + current_user;
         std::string resp;
         bool got_server = http_get(req_url, &resp);
@@ -2139,55 +2129,18 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         if (str_target.empty() && got_server) {
             str_target = json_get_string(resp, "target");
         }
-        int srv_puzzle = got_server ? std::atoi(json_get_string(resp, "puzzle").c_str()) : 0;
 
-        u256 start_k = 0;
-        uint64_t total_keys_count = 65536;
-
-        // Check if server returned a range matching this specific puzzle
-        if (got_server && srv_puzzle == pid && !str_start.empty() && !str_target.empty()) {
-            start_k = parse_u256(str_start);
-            u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
-            u256 diff = end_k - start_k;
-            total_keys_count = (diff.high > 0 || diff.low > 268435456) ? 65536 : (uint64_t)diff.low;
-            if (total_keys_count == 0) total_keys_count = 65536;
-        } else {
-            // Target-specific resolution from master verify data
-            if (!tgt.address.empty()) {
-                str_target = tgt.address;
-            }
-            if (str_target.empty()) {
-                std::cerr << "[SKIP] Target #" << pid << ": Server did not provide test range.\n";
-                failed++;
-                continue;
-            }
-
-            // Calculate puzzle lower bound: 2^(pid - 1)
-            u256 lower = 0;
-            if (pid <= 1) lower = 1;
-            else if (pid <= 64) lower = u256(uint64_t(1ULL << (pid - 1)));
-            else if (pid <= 128) lower = u256(__uint128_t(0), __uint128_t(1ULL << (pid - 65)));
-            else lower = u256(__uint128_t(0), __uint128_t(1ULL << (pid - 129)));
-
-            u256 k_actual = parse_u256("0x" + tgt.private_key_hex);
-            if (k_actual == 0) k_actual = lower;
-
-            u256 offset = (k_actual >= lower) ? (k_actual - lower) : 0;
-            uint64_t block_size = 274877906944ULL; // 268435456 * 1024
-            uint64_t calc_block = (offset.high > 0) ? (uint64_t)(offset.high * 67108864ULL + offset.low / block_size) : (uint64_t)(offset.low / block_size);
-            uint64_t rem = (uint64_t)(offset.low % block_size);
-            uint64_t calc_range = rem / 268435456ULL;
-
-            str_block = std::to_string(calc_block);
-            str_range = std::to_string(calc_range);
-
-            if (k_actual > 32768) {
-                start_k = k_actual - 32768;
-            } else {
-                start_k = (lower > 0) ? lower : 1;
-            }
-            total_keys_count = 65536;
+        if (!got_server || str_start.empty() || str_target.empty()) {
+            std::cerr << "[SKIP] Target #" << pid << ": Server did not provide test range.\n";
+            failed++;
+            continue;
         }
+
+        u256 start_k = parse_u256(str_start);
+        u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
+        u256 diff = end_k - start_k;
+        uint64_t total_keys_count = (diff.high > 0 || diff.low > 268435456) ? 65536 : (uint64_t)diff.low;
+        if (total_keys_count == 0) total_keys_count = 65536;
 
         // 2. Decode Target Address dynamically from server
         uint8_t target_h160[20];
@@ -2233,6 +2186,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         auto t_scan_end = std::chrono::high_resolution_clock::now();
         double elapsed_sec = std::chrono::duration<double>(t_scan_end - t_scan_start).count();
         if (elapsed_sec <= 0.0) elapsed_sec = 0.0001;
+
         uint64_t actual_checked = checked_counter.load();
         if (actual_checked == 0) actual_checked = total_keys_count;
         total_keys_verified += actual_checked;
@@ -2258,40 +2212,35 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
     }
 
     auto t_global_end = std::chrono::high_resolution_clock::now();
-    double total_time = std::chrono::duration<double>(t_global_end - t_global_start).count();
-    if (total_time <= 0.0) total_time = 0.001;
-    double overall_speed = (double)total_keys_verified / total_time;
+    double total_sec = std::chrono::duration<double>(t_global_end - t_global_start).count();
+    if (total_sec <= 0.0) total_sec = 0.0001;
+    double avg_verify_speed = (double)total_keys_verified / total_sec;
 
-    // Report verification telemetry & live speed to coordinator server user_stats
-    if (tested > 0) {
-        std::stringstream json_report;
-        json_report << "{\"action\":\"result\""
-                    << ",\"puzzle\":71"
-                    << ",\"block\":0"
-                    << ",\"range_idx\":0"
-                    << ",\"range_count\":0"
-                    << ",\"multiple\":0"
-                    << ",\"status\":\"verify\""
-                    << ",\"user\":\"" << current_user << "\""
-                    << ",\"speed\":" << std::fixed << std::setprecision(1) << overall_speed
-                    << ",\"keys\":\"" << total_keys_verified << "\""
-                    << ",\"elapsed\":" << std::fixed << std::setprecision(2) << total_time << "}";
-        std::string post_url = api_base + "?action=result&puzzle=71&user=" + current_user;
-        std::string ack;
-        http_post(post_url, json_report.str(), &ack);
-    }
-
+    std::cout << "\n";
     if (failed == 0 && passed > 0) {
-        std::cout << "\n[OK] " << passed << "/" << tested << " targets verified successfully via server range scan.\n";
-        std::cout << "[SPEED] Average Verification Throughput: " << format_speed(overall_speed)
-                  << " (" << total_keys_verified << " keys in " << std::fixed << std::setprecision(2) << total_time << "s)\n";
-        std::cout << "[DASHBOARD] Telemetry reported for user: " << current_user << " -> Visible on Web UI\n";
-        return 0;
+        std::cout << "[OK] " << passed << "/" << tested << " targets verified successfully via server range scan.\n";
+        std::cout << "[SPEED] Average Verification Throughput: " << format_speed(avg_verify_speed)
+                  << " (" << total_keys_verified << " keys in " << std::fixed << std::setprecision(2) << total_sec << "s)\n";
     } else {
-        std::cerr << "\n[ERROR] " << failed << "/" << tested << " targets failed verification.\n";
-        return 1;
+        std::cerr << "[ERROR] " << failed << "/" << tested << " targets failed verification.\n";
     }
+
+    // Report heartbeat / telemetry to coordinator server
+    if (passed > 0) {
+        std::stringstream stat_json;
+        stat_json << "{\"action\":\"telemetry\",\"user\":\"" << current_user
+                  << "\",\"speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"avg_speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"status\":\"idle\",\"verified_count\":" << passed << "}";
+        std::string stat_resp;
+        if (http_post(api_base, stat_json.str(), &stat_resp)) {
+            std::cout << "[DASHBOARD] Telemetry reported for user: " << current_user << " -> Visible on Web UI\n";
+        }
+    }
+
+    return (failed == 0) ? 0 : 1;
 }
+
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, sigint_handler);
     std::signal(SIGTERM, sigint_handler);
