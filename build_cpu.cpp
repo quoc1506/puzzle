@@ -2081,7 +2081,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         // Query server dynamically for available test puzzles
         std::string list_resp;
         if (http_get(api_base + "?action=test_puzzles", &list_resp) || http_get(api_base + "?action=verify_list", &list_resp)) {
-            size_t ppos = list_resp.find(""puzzles":[");
+            size_t ppos = list_resp.find("\"puzzles\":[");
             if (ppos != std::string::npos) {
                 size_t start_arr = ppos + 11;
                 size_t end_arr = list_resp.find("]", start_arr);
