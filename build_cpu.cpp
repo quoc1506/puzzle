@@ -1831,27 +1831,57 @@ void scan_worker_montgomery(
         // Base point is (cur_k - 1) * G, computed only ONCE at the start of the slice!
         AffinePoint cur_base;
         bool cur_base_valid = false;
-        if (!cur_k.is_zero()) {
+        // Points for keys <= 1024 are looked up directly from G_TABLE without batch addition
+        if (cur_k > 1024) {
             u256 base_k = cur_k - 1;
-            if (!base_k.is_zero()) {
-                uint64_t limbs[4] = {
-                    (uint64_t)base_k.low,
-                    (uint64_t)(base_k.low >> 64),
-                    (uint64_t)base_k.high,
-                    (uint64_t)(base_k.high >> 64)
-                };
-                cur_base = scalar_mul_G_windowed(limbs);
-                cur_base_valid = true;
-            }
+            uint64_t limbs[4] = {
+                (uint64_t)base_k.low,
+                (uint64_t)(base_k.low >> 64),
+                (uint64_t)base_k.high,
+                (uint64_t)(base_k.high >> 64)
+            };
+            cur_base = scalar_mul_G_windowed(limbs);
+            cur_base_valid = true;
         }
 
         while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
             uint32_t cur_batch = (uint32_t)host_min((uint64_t)BATCH_SIZE, remaining_in_slice);
 
-            if (cur_base_valid) {
+            if (cur_k <= 1024) {
+                // Direct lookup for small scalar keys: point for key k is G_TABLE[k - 1]
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    uint64_t idx = (uint64_t)(cur_k.low + i);
+                    if (idx >= 1 && idx <= 1024) {
+                        cur_x[i] = G_TABLE[idx - 1].x;
+                        cur_prefix[i] = (G_TABLE[idx - 1].y.d[0] & 1) ? 0x03 : 0x02;
+                    } else if (idx == 0) {
+                        cur_x[i] = G_TABLE[0].x;
+                        cur_prefix[i] = 0x02;
+                    } else {
+                        // Once idx > 1024, compute point via scalar multiplication
+                        uint64_t limbs[4] = { idx, 0, 0, 0 };
+                        AffinePoint pt = scalar_mul_G_windowed(limbs);
+                        cur_x[i] = pt.x;
+                        cur_prefix[i] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+                    }
+                }
+                cur_base_valid = false;
+            } else {
+                if (!cur_base_valid) {
+                    u256 base_k = cur_k - 1;
+                    uint64_t limbs[4] = {
+                        (uint64_t)base_k.low,
+                        (uint64_t)(base_k.low >> 64),
+                        (uint64_t)base_k.high,
+                        (uint64_t)(base_k.high >> 64)
+                    };
+                    cur_base = scalar_mul_G_windowed(limbs);
+                    cur_base_valid = true;
+                }
                 // Batch addition of cur_base + G_TABLE[i] for i = 0 .. cur_batch - 1
                 // G_TABLE[i] = (i + 1) * G
                 // Result point i is (cur_k - 1 + i + 1) * G = (cur_k + i) * G
+                // Since cur_k > 1024 and (i + 1) <= 1024, cur_base.x != G_TABLE[i].x strictly holds!
                 cum[0] = {{1, 0, 0, 0}};
                 for (uint32_t i = 0; i < cur_batch; ++i) {
                     dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
@@ -1859,22 +1889,17 @@ void scan_worker_montgomery(
                 }
 
                 Fe u = fe_inv(cum[cur_batch]);
-
                 AffinePoint next_base;
                 for (int i = (int)cur_batch - 1; i >= 0; --i) {
                     Fe inv_dx_i = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
-
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
                     Fe lambda = fe_mul(dy_i, inv_dx_i);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
-
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
-
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
-
                     if (__builtin_expect(i == (int)cur_batch - 1, 0)) {
                         next_base.x = xi;
                         next_base.y = yi;
@@ -1882,15 +1907,7 @@ void scan_worker_montgomery(
                 }
                 // Seamlessly advance cur_base to the next batch with ZERO scalar_mul_G!
                 cur_base = next_base;
-            } else {
-                for (uint32_t i = 0; i < cur_batch; ++i) {
-                    cur_x[i] = G_TABLE[i].x;
-                    cur_prefix[i] = (G_TABLE[i].y.d[0] & 1) ? 0x03 : 0x02;
-                }
-                cur_base = G_TABLE[cur_batch - 1];
-                cur_base_valid = true;
             }
-
             // High-speed SHA256 + RIPEMD160 hash checks
 #if defined(__AVX2__)
             uint32_t i = 0;
