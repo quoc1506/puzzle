@@ -1399,7 +1399,7 @@ switch ($action) {
             $offset = bcsub($k_dec, $lower);
             if (bccomp($offset, '0') < 0) $offset = '0';
             $block_size = bcmul((string)RANGE_SIZE, (string)RANGES_PER_BLOCK);
-            $test_block = (int)bcdiv($offset, $block_size, 0);
+            $test_block = bcdiv($offset, $block_size, 0);
             $range_in_block = bcdiv($offset, (string)RANGE_SIZE, 0);
             $test_range = (int)bcmod($range_in_block, (string)RANGES_PER_BLOCK);
             $test_multiple = max(1, min(128, (int)($_GET['multiple'] ?? ($_GET['batch'] ?? 1))));
