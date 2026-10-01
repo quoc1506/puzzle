@@ -2307,12 +2307,8 @@ int main(int argc, char* argv[]) {
 #endif
         threads = (detected > 0) ? detected : 4;
     } else {
-        int detected = (int)std::thread::hardware_concurrency();
-#if defined(_SC_NPROCESSORS_ONLN)
-        int sys_nproc = (int)sysconf(_SC_NPROCESSORS_ONLN);
-        if (sys_nproc > detected) detected = sys_nproc;
-#endif
-        threads = (detected > 0) ? detected : 1;
+        // Default when NOT passing --fast and NOT passing -t is STRICTLY 1 THREAD
+        threads = 1;
     }
 
     init_generator_table();
