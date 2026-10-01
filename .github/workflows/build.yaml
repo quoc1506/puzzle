@@ -370,8 +370,8 @@ jobs:
         run: |
           mkdir -p bin
           
-          # Compile native Apple Silicon arm64 binary with full NEON acceleration
-          clang++ -std=c++17 -O3 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
+          # Compile native Apple Silicon arm64 binary with maximum hardware vectorization
+          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
             -arch arm64 \
             build_cpu.cpp \
             -lcurl -lpthread -lz \
@@ -379,8 +379,8 @@ jobs:
             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
 
-          # Compile native Intel x86_64 macOS binary with AVX2 & BMI2 acceleration
-          clang++ -std=c++17 -O3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
+          # Compile native Intel x86_64 macOS binary with full AVX2, BMI2, ADX & x86-64-v3 acceleration
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
             -arch x86_64 \
             build_cpu.cpp \
             -lcurl -lpthread -lz \
