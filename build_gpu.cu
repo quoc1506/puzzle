@@ -306,7 +306,7 @@ static void b58_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
         }
         uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
         uint32_t e = h[4], f = h[5], g = h[6], h_val = h[7];
-        for (int i = 0; i < 32; ++i) {
+        for (int i = 0; i < 64; ++i) {
             uint32_t S1 = b58_rotr(e, 6) ^ b58_rotr(e, 11) ^ b58_rotr(e, 25);
             uint32_t ch = (e & f) ^ ((~e) & g);
             uint32_t temp1 = h_val + S1 + ch + K[i] + w[i];
@@ -327,7 +327,10 @@ static void b58_sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
     }
 }
 
-bool b58check_decode_hash160(const std::string& addr, uint8_t out_hash160[20]) {
+bool b58check_decode_hash160(const std::string& raw_addr, uint8_t out_hash160[20]) {
+    std::string addr = raw_addr;
+    while (!addr.empty() && (addr.back() == '\r' || addr.back() == '\n' || addr.back() == ' ' || addr.back() == '\"' || addr.back() == '\t')) addr.pop_back();
+    while (!addr.empty() && (addr.front() == ' ' || addr.front() == '\"' || addr.front() == '\t')) addr.erase(0, 1);
     static const char* B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     std::vector<uint8_t> bytes = {0};
     int leading_zeros = 0;
