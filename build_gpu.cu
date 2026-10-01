@@ -1652,6 +1652,15 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     std::cout << "[VERIFY] Requesting test ranges & running CUDA batch range scan...\n";
 
     
+    // Precompute Base G Lookup Table on Host & Copy to dev_G_table
+    AffinePoint h_table[16];
+    std::memset(&h_table[0], 0, sizeof(AffinePoint));
+    for (int i = 1; i < 16; ++i) {
+        uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
+        h_table[i] = scalar_mul_G(s);
+    }
+    cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
+
     // Initialize dev_batch_G constants for GPU Montgomery batch inversion
     AffinePoint h_batch_G[32];
     for (int i = 0; i < 32; ++i) {
