@@ -2318,7 +2318,6 @@ int main(int argc, char* argv[]) {
     init_generator_table();
 
     std::cout << "[WORKER] Worker: " << current_user
-              << " | Target Puzzle: #" << current_puzzle
               << " | Active Threads: " << threads << std::endl;
 
     if (is_verify_mode) {
