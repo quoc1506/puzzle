@@ -2300,13 +2300,26 @@ int main(int argc, char* argv[]) {
     if (threads_specified) {
         threads = custom_threads;
     } else if (is_fast) {
-        unsigned int hw = std::thread::hardware_concurrency();
-        threads = (hw > 0) ? (int)hw : 4;
+        int detected = (int)std::thread::hardware_concurrency();
+#if defined(_SC_NPROCESSORS_ONLN)
+        int sys_nproc = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        if (sys_nproc > detected) detected = sys_nproc;
+#endif
+        threads = (detected > 0) ? detected : 4;
     } else {
-        threads = 1;
+        int detected = (int)std::thread::hardware_concurrency();
+#if defined(_SC_NPROCESSORS_ONLN)
+        int sys_nproc = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        if (sys_nproc > detected) detected = sys_nproc;
+#endif
+        threads = (detected > 0) ? detected : 1;
     }
 
     init_generator_table();
+
+    std::cout << "[WORKER] Worker: " << current_user
+              << " | Target Puzzle: #" << current_puzzle
+              << " | Active Threads: " << threads << std::endl;
 
     if (is_verify_mode) {
         int v_threads = threads_specified ? custom_threads : (is_fast ? 8 : 4);
@@ -2401,15 +2414,8 @@ int main(int argc, char* argv[]) {
         pool.reserve(threads);
         for (int i = 0; i < threads; ++i) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-#if defined(__linux__) && !defined(__ANDROID__)
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                unsigned int num_hw = std::thread::hardware_concurrency();
-                if (num_hw > 0) {
-                    CPU_SET(i % num_hw, &cpuset);
-                    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-                }
-#endif
+// Let Linux OS scheduler dynamically dispatch threads across available vCPUs
+                // Avoiding strict CPU pinning which can bottleneck virtualized / VPS / cgroups cores
                 scan_worker_montgomery(start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
