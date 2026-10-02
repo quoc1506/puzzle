@@ -78,12 +78,23 @@ case "$OS" in
                 fi
 
                 if [ -z "$TARGET_BIN" ]; then
-                    # Check for fastest AVX2 builds first, only then compat
+                    # Check each binary candidate in order of speed.
+                    # Verify it doesn't crash on this CPU (handles Illegal Instruction / SIGILL gracefully).
                     for f in "bin/build-linux-x86_64" "bin/build-linux-u22-x86_64" "bin/build-linux-musl-x86_64" "bin/build" "bin/build-linux-x86_64-compat" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-musl-x86_64-compat"; do
                         if [ -f "$f" ]; then
-                            TARGET_BIN="$f"
-                            break
+                            chmod +x "$f" 2>/dev/null || true
+                            if "$f" -h >/dev/null 2>&1; then
+                                TARGET_BIN="$f"
+                                break
+                            fi
                         fi
+                    done
+                fi
+
+                # Ultimate fallback if -h failed on all
+                if [ -z "$TARGET_BIN" ]; then
+                    for f in "bin/build-linux-x86_64-compat" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-musl-x86_64-compat" "bin/build-linux-x86_64"; do
+                        if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
                     done
                 fi
                 ;;

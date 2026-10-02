@@ -992,16 +992,37 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
     asm("lop3.b32 %0, %1, %2, %3, %4;" : "=r"(res) : "r"(a), "r"(b), "r"(c), "n"(imm));
     return res;
 #else
-    uint32_t res = 0;
-    if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
-    if constexpr (imm & 0x02) res |= (~a & ~b &  c);
-    if constexpr (imm & 0x04) res |= (~a &  b & ~c);
-    if constexpr (imm & 0x08) res |= (~a &  b &  c);
-    if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
-    if constexpr (imm & 0x20) res |= ( a & ~b &  c);
-    if constexpr (imm & 0x40) res |= ( a &  b & ~c);
-    if constexpr (imm & 0x80) res |= ( a &  b &  c);
-    return res;
+    // Ultra-fast direct native x86 ALU boolean functions
+    if constexpr (imm == 0x96) {
+        // XOR3: a ^ b ^ c (RIPEMD round 1 / right round 5)
+        return a ^ b ^ c;
+    } else if constexpr (imm == 0xCA) {
+        // Ch / Selection: (a & b) | (~a & c) = c ^ (a & (b ^ c))
+        return c ^ (a & (b ^ c));
+    } else if constexpr (imm == 0xE8) {
+        // Maj: (a & b) | (a & c) | (b & c) = (a & b) | (c & (a ^ b))
+        return (a & b) | (c & (a ^ b));
+    } else if constexpr (imm == 0x59) {
+        // (a | ~b) ^ c (RIPEMD round 3 / right round 3)
+        return (a | ~b) ^ c;
+    } else if constexpr (imm == 0xE4) {
+        // (a & c) | (b & ~c) (RIPEMD round 4 / right round 2)
+        return b ^ (c & (a ^ b));
+    } else if constexpr (imm == 0x2D) {
+        // a ^ (b | ~c) (RIPEMD round 5 / right round 1)
+        return a ^ (b | ~c);
+    } else {
+        uint32_t res = 0;
+        if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
+        if constexpr (imm & 0x02) res |= (~a & ~b &  c);
+        if constexpr (imm & 0x04) res |= (~a &  b & ~c);
+        if constexpr (imm & 0x08) res |= (~a &  b &  c);
+        if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
+        if constexpr (imm & 0x20) res |= ( a & ~b &  c);
+        if constexpr (imm & 0x40) res |= ( a &  b & ~c);
+        if constexpr (imm & 0x80) res |= ( a &  b &  c);
+        return res;
+    }
 #endif
 }
 
