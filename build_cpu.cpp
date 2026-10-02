@@ -43,7 +43,11 @@
 #define CUDA_HOSTDEV
 #define CUDA_DEV
 #define CUDA_GLOBAL
+#if defined(__GNUC__) || defined(__clang__)
+#define CUDA_INLINE inline __attribute__((always_inline))
+#else
 #define CUDA_INLINE inline
+#endif
 #define CUDA_CONSTANT static constexpr
 
 #if defined(__clang__)
@@ -1817,6 +1821,7 @@ void scan_worker_montgomery(
     const uint32_t BATCH_SIZE = 1024;
     alignas(64) Fe dx[1024];
     alignas(64) Fe cum[1025];
+    alignas(64) Fe inv_dx[1024];
     alignas(64) Fe cur_x[1024];
     alignas(64) uint8_t cur_prefix[1024];
 
@@ -1892,18 +1897,25 @@ void scan_worker_montgomery(
                 }
 
                 Fe u = fe_inv(cum[cur_batch]);
-                AffinePoint next_base;
+                // Pass 1: Compute all inverses (breaking serial dependency with EC math)
+                #pragma GCC unroll 4
                 for (int i = (int)cur_batch - 1; i >= 0; --i) {
-                    Fe inv_dx_i = fe_mul(u, cum[i]);
+                    inv_dx[i] = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
+                }
+
+                // Pass 2: Fully independent & pipelined Elliptic Curve point additions
+                AffinePoint next_base;
+                #pragma GCC unroll 4
+                for (uint32_t i = 0; i < cur_batch; ++i) {
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx_i);
+                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (__builtin_expect(i == (int)cur_batch - 1, 0)) {
+                    if (__builtin_expect(i == cur_batch - 1, 0)) {
                         next_base.x = xi;
                         next_base.y = yi;
                     }
