@@ -123,7 +123,7 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -131,7 +131,7 @@ jobs:
             -lpthread -ldl \
             -o bin/build-linux-x86_64
 
-          g++ -std=c++17 -O3 -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+          g++ -std=c++17 -O3 -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -203,7 +203,7 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -211,7 +211,7 @@ jobs:
             -lpthread -ldl \
             -o bin/build-linux-u22-x86_64
 
-          g++ -std=c++17 -O3 -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto -pthread \
+          g++ -std=c++17 -O3 -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -281,14 +281,14 @@ jobs:
           mkdir -p bin
 
           # AVX2 optimized static binary
-          g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+          g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
             -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64
 
           # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
-          g++ -static -std=c++17 -O3 -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+          g++ -static -std=c++17 -O3 -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
             -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
