@@ -15,6 +15,7 @@ fi
 
 OS="$(uname -s 2>/dev/null | tr "[:upper:]" "[:lower:]")"
 ARCH="$(uname -m 2>/dev/null | tr "[:upper:]" "[:lower:]")"
+
 # If running on macOS under Rosetta translation, prioritize native Apple Silicon arm64
 if [ "$OS" = "darwin" ]; then
     if [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = "1" ] || sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -qi "Apple"; then
@@ -39,7 +40,6 @@ done
 
 case "$OS" in
     darwin*)
-        # macOS: Always detect underlying hardware to prevent catastrophic Rosetta 2 speed degradation
         IS_APPLE_SILICON=0
         if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then
             IS_APPLE_SILICON=1
@@ -47,34 +47,17 @@ case "$OS" in
             IS_APPLE_SILICON=1
         fi
 
-        # If native source build_cpu.cpp exists and clang++ is available, auto-build native binary with max hardware SIMD
-        if [ -f "build_cpu.cpp" ] && command -v clang++ >/dev/null 2>&1; then
-            NATIVE_BIN="bin/build-macos-native"
-            if [ ! -f "$NATIVE_BIN" ] || [ "build_cpu.cpp" -nt "$NATIVE_BIN" ]; then
-                mkdir -p bin
-                                clang++ -std=c++17 -O3 -march=native -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
-                    build_cpu.cpp -lcurl -lpthread -lz \
-                    -framework CoreFoundation -framework SystemConfiguration -framework Security \
-                    -o "$NATIVE_BIN" 2>/dev/null && chmod +x "$NATIVE_BIN" || true
-            fi
-            if [ -f "$NATIVE_BIN" ]; then
-                TARGET_BIN="$NATIVE_BIN"
-            fi
-        fi
-
-        if [ -z "$TARGET_BIN" ]; then
-            if [ "$IS_APPLE_SILICON" = "1" ]; then
-                # Run native ARM64 for full speed on Apple Silicon
-                for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64" "bin/build"; do
-                    if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
-                done
-            else
-                for f in "bin/build-macos-x86_64" "bin/build-macos-universal" "bin/build"; do
-                    if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
-                done
-            fi
+        if [ "$IS_APPLE_SILICON" = "1" ]; then
+            for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64" "bin/build"; do
+                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
+            done
+        else
+            for f in "bin/build-macos-x86_64" "bin/build-macos-universal" "bin/build"; do
+                if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
+            done
         fi
         ;;
+
     linux*)
         case "$ARCH" in
             riscv64|riscv)
@@ -116,11 +99,13 @@ case "$OS" in
                 ;;
         esac
         ;;
+
     msys*|mingw*|cygwin*)
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
             if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
         done
         ;;
+
     *)
         if [ -f "bin/build" ]; then TARGET_BIN="bin/build"; fi
         ;;
@@ -130,7 +115,7 @@ esac
 if [ -n "$TARGET_BIN" ] && [ -f "$TARGET_BIN" ]; then
     chmod +x "$TARGET_BIN" 2>/dev/null || true
     echo "[RUN]: $TARGET_BIN"
-    exec "./$TARGET_BIN" "$@"
+    exec "$TARGET_BIN" "$@"
 fi
 
 echo "[ERROR] No compatible binary found in bin/ for this platform ($OS-$ARCH)." >&2
