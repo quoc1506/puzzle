@@ -78,20 +78,10 @@ case "$OS" in
                 fi
 
                 if [ -z "$TARGET_BIN" ]; then
-                    HAS_AVX2=0
-                    if [ -f /proc/cpuinfo ] && grep -q -m1 "avx2" /proc/cpuinfo 2>/dev/null; then
-                        HAS_AVX2=1
-                    fi
-
-                    if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
-                    else
-                        CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64"
-                    fi
-
-                    for c in $CANDIDATES; do
-                        if [ -f "$c" ]; then
-                            TARGET_BIN="$c"
+                    # Check for fastest AVX2 builds first, only then compat
+                    for f in "bin/build-linux-x86_64" "bin/build-linux-u22-x86_64" "bin/build-linux-musl-x86_64" "bin/build" "bin/build-linux-x86_64-compat" "bin/build-linux-u22-x86_64-compat" "bin/build-linux-musl-x86_64-compat"; do
+                        if [ -f "$f" ]; then
+                            TARGET_BIN="$f"
                             break
                         fi
                     done
@@ -99,7 +89,6 @@ case "$OS" in
                 ;;
         esac
         ;;
-
     msys*|mingw*|cygwin*)
         for f in "bin/build-windows-x86_64.exe" "bin/build-windows-x86_64-compat.exe"; do
             if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
