@@ -2474,8 +2474,7 @@ int main(int argc, char* argv[]) {
         http_post(post_url, json.str(), &ack);
         completed_ranges_total += range_count;
 
-        std::cout << "[SCAN] Progress: " << std::fixed << std::setprecision(2) << (speed / 1e6)
-                  << " Mkeys/s (" << std::fixed << std::setprecision(2) << elapsed << "s)" << std::endl;
+
 
         // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
         if (!multiple_specified && speed > 0.0) {
