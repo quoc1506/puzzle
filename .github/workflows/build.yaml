@@ -371,30 +371,16 @@ jobs:
           mkdir -p bin
           
           # Compile native Apple Silicon arm64 binary with maximum hardware vectorization
-          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
-            -arch arm64 \
-            build_cpu.cpp \
-            -lcurl -lpthread -lz \
-            -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-arm64
+          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG             -arch arm64             build_cpu.cpp             -lcurl -lpthread -lz             -framework CoreFoundation -framework SystemConfiguration -framework Security             -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
 
           # Compile native Intel x86_64 macOS binary with full AVX2, BMI2, ADX & x86-64-v3 acceleration
-          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto \
-            -arch x86_64 \
-            build_cpu.cpp \
-            -lcurl -lpthread -lz \
-            -framework CoreFoundation -framework SystemConfiguration -framework Security \
-            -o bin/build-macos-x86_64
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mbmi2 -madx -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG             -arch x86_64             build_cpu.cpp             -lcurl -lpthread -lz             -framework CoreFoundation -framework SystemConfiguration -framework Security             -o bin/build-macos-x86_64
           chmod +x bin/build-macos-x86_64
 
           # Build Universal fat binary
           lipo -create bin/build-macos-arm64 bin/build-macos-x86_64 -output bin/build-macos-universal
           chmod +x bin/build-macos-universal
-
-          echo "=== Verifying macOS binaries ==="
-          file bin/build-macos-*
-          lipo -info bin/build-macos-universal
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4

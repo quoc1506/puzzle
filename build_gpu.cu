@@ -1845,6 +1845,9 @@ int main(int argc, char* argv[]) {
     bool is_fast = true;
     bool is_verify_mode = false;
     int verify_target_id = 0;
+    bool no_limit = false;
+    int max_ranges = 50;
+    bool limit_specified = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -1863,6 +1866,11 @@ int main(int argc, char* argv[]) {
         } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
             requested_multiple = std::atoi(argv[++i]);
             multiple_specified = true;
+        } else if (arg == "-nl" || arg == "--no-limit" || arg == "-nolimit") {
+            no_limit = true;
+        } else if ((arg == "-l" || arg == "--limit" || arg == "-n") && i + 1 < argc) {
+            max_ranges = std::max(1, std::atoi(argv[++i]));
+            limit_specified = true;
         } else if ((arg == "-d" || arg == "-double" || arg == "--double")) {
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
                 target_device_id = std::atoi(argv[++i]);
@@ -1934,7 +1942,14 @@ int main(int argc, char* argv[]) {
     }
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
 
+        std::cout << "[HARDWARE] GPU Device: " << prop.name << " (" << num_sms << " SMs, " << grid_threads << " threads)" << std::endl;
+
+    int completed_ranges_total = 0;
     while (g_running.load()) {
+        if (!no_limit && completed_ranges_total >= max_ranges) {
+            std::cout << "[STATUS] Reached execution limit. Exiting cleanly." << std::endl;
+            break;
+        }
         std::stringstream req_url;
         req_url << api_base << "?action=range&puzzle=" << current_puzzle
                 << "&user=" << current_user << "&multiple=" << requested_multiple;
@@ -2093,6 +2108,10 @@ int main(int argc, char* argv[]) {
         std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
         std::string ack;
         http_post(post_url, json.str(), &ack);
+        completed_ranges_total += range_count;
+
+        std::cout << "[SCAN] Progress: " << std::fixed << std::setprecision(2) << (speed / 1e6)
+                  << " Mkeys/s (" << std::fixed << std::setprecision(2) << elapsed << "s)" << std::endl;
 
         // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
         if (!multiple_specified && speed > 0.0) {

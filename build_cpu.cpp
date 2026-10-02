@@ -2262,6 +2262,9 @@ int main(int argc, char* argv[]) {
     bool is_fast = false;
     bool is_verify_mode = false;
     int verify_target_id = 0;
+    bool no_limit = false;
+    int max_ranges = 50;
+    bool limit_specified = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -2288,6 +2291,11 @@ int main(int argc, char* argv[]) {
             threads_specified = true;
         } else if (arg == "-f" || arg == "-fast" || arg == "--fast") {
             is_fast = true;
+        } else if (arg == "-nl" || arg == "--no-limit" || arg == "-nolimit") {
+            no_limit = true;
+        } else if ((arg == "-l" || arg == "--limit" || arg == "-n") && i + 1 < argc) {
+            max_ranges = std::max(1, std::atoi(argv[++i]));
+            limit_specified = true;
         } else if (arg == "-h" || arg == "--help" || arg == "-help") {
             return 0;
         }
@@ -2299,22 +2307,27 @@ int main(int argc, char* argv[]) {
 
     if (threads_specified) {
         threads = custom_threads;
-    } else if (is_fast) {
+    } else {
+        // Default to all available hardware cores on Linux / macOS / Windows
         int detected = (int)std::thread::hardware_concurrency();
 #if defined(_SC_NPROCESSORS_ONLN)
         int sys_nproc = (int)sysconf(_SC_NPROCESSORS_ONLN);
         if (sys_nproc > detected) detected = sys_nproc;
 #endif
         threads = (detected > 0) ? detected : 4;
-    } else {
-        // Default when NOT passing --fast and NOT passing -t is STRICTLY 1 THREAD
-        threads = 1;
     }
 
     init_generator_table();
 
-    std::cout << "[WORKER] Worker: " << current_user
-              << " | Active Threads: " << threads << std::endl;
+    std::cout << "[HARDWARE] Engine: Montgomery Batch 1024x"
+#if defined(__AVX2__)
+              << " (AVX2 + BMI2 Vectorized)"
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+              << " (ARM64 NEON Vectorized)"
+#else
+              << " (64-bit Scalar Fallback)"
+#endif
+              << " | Threads: " << threads << std::endl;
 
     if (is_verify_mode) {
         int v_threads = threads_specified ? custom_threads : (is_fast ? 8 : 4);
@@ -2322,7 +2335,12 @@ int main(int argc, char* argv[]) {
         return exit_code;
     }
 
+    int completed_ranges_total = 0;
     while (g_running.load()) {
+        if (!no_limit && completed_ranges_total >= max_ranges) {
+            std::cout << "[STATUS] Reached execution limit. Exiting cleanly." << std::endl;
+            break;
+        }
         std::stringstream req_url;
         req_url << api_base << "?action=range&puzzle=" << current_puzzle
                 << "&user=" << current_user << "&multiple=" << requested_multiple;
@@ -2454,6 +2472,10 @@ int main(int argc, char* argv[]) {
         std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
         std::string ack;
         http_post(post_url, json.str(), &ack);
+        completed_ranges_total += range_count;
+
+        std::cout << "[SCAN] Progress: " << std::fixed << std::setprecision(2) << (speed / 1e6)
+                  << " Mkeys/s (" << std::fixed << std::setprecision(2) << elapsed << "s)" << std::endl;
 
         // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
         if (!multiple_specified && speed > 0.0) {
