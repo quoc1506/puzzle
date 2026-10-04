@@ -994,7 +994,7 @@ static const AffinePoint G_POINT = {
     Fe{{0x9C47D08FFB10D4B8ULL, 0xFD17B448A6855419ULL, 0x5DA4FBFC0E1108A8ULL, 0x483ADA7726A3C465ULL}}
 };
 
-CUDA_HOSTDEV AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
+inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
     JacobianPoint res{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
     for (int limb = 3; limb >= 0; --limb) {
         uint64_t w = limbs[limb];
@@ -1108,7 +1108,8 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     X[7] = bswap32(0x5be0cd19 + h);
 }
 
-static const uint8_t host_rl_tab[80] = {
+#if defined(__CUDA_ARCH__)
+__constant__ const uint8_t dev_ripemd_rl[80] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
     3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
@@ -1116,7 +1117,7 @@ static const uint8_t host_rl_tab[80] = {
     4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
 };
 
-static const uint8_t host_sl_tab[80] = {
+__constant__ const uint8_t dev_ripemd_sl[80] = {
     11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
     7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
     11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
@@ -1124,7 +1125,7 @@ static const uint8_t host_sl_tab[80] = {
     9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
 };
 
-static const uint8_t host_rr_tab[80] = {
+__constant__ const uint8_t dev_ripemd_rr[80] = {
     5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
     6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
     15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
@@ -1132,13 +1133,46 @@ static const uint8_t host_rr_tab[80] = {
     12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
 };
 
-static const uint8_t host_sr_tab[80] = {
+__constant__ const uint8_t dev_ripemd_sr[80] = {
     8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
     9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
     9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
     15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
     8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
 };
+#else
+static const uint8_t dev_ripemd_rl[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+};
+
+static const uint8_t dev_ripemd_sl[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+};
+
+static const uint8_t dev_ripemd_rr[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+};
+
+static const uint8_t dev_ripemd_sr[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+};
+#endif
 
 CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
     auto rol32 = [](uint32_t val, int shift) -> uint32_t {
@@ -1154,9 +1188,9 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
         else if (j < 64) { f = (B & D) | (C & ~D); K = 0x8F1BBCD1U; }
         else { f = B ^ (C | ~D); K = 0xA953FD4EU; }
 
-        uint8_t rl = host_rl_tab[j];
+        uint8_t rl = dev_ripemd_rl[j];
         uint32_t x_val = (rl < 8) ? X[rl] : (rl == 8 ? 0x00000080U : (rl == 14 ? 256U : 0U));
-        uint32_t T = rol32(A + f + x_val + K, host_sl_tab[j]) + E;
+        uint32_t T = rol32(A + f + x_val + K, dev_ripemd_sl[j]) + E;
         A = E; E = D; D = rol32(C, 10); C = B; B = T;
     }
 
@@ -1169,9 +1203,9 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
         else if (j < 64) { fp = (Bp & Cp) | (~Bp & Dp); Kp = 0x7A6D76E9U; }
         else { fp = Bp ^ Cp ^ Dp; Kp = 0; }
 
-        uint8_t rr = host_rr_tab[j];
+        uint8_t rr = dev_ripemd_rr[j];
         uint32_t x_val = (rr < 8) ? X[rr] : (rr == 8 ? 0x00000080U : (rr == 14 ? 256U : 0U));
-        uint32_t Tp = rol32(Ap + fp + x_val + Kp, host_sr_tab[j]) + Ep;
+        uint32_t Tp = rol32(Ap + fp + x_val + Kp, dev_ripemd_sr[j]) + Ep;
         Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
     }
 
@@ -1349,7 +1383,7 @@ std::string format_speed(double speed) {
     return ss.str();
 }
 
-static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
 
 
 
