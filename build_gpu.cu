@@ -699,16 +699,16 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
-    unsigned char c = 0;
-    c = _addcarry_u64(c, t[0], k_lo, (unsigned long long*)&t[0]);
-    c = _addcarry_u64(c, t[1], k_hi, (unsigned long long*)&t[1]);
-    c = _addcarry_u64(c, t[2], 0,    (unsigned long long*)&t[2]);
-    c = _addcarry_u64(c, t[3], 0,    (unsigned long long*)&t[3]);
-    if (__builtin_expect(c != 0, 0)) {
-        c = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
-        c = _addcarry_u64(c, t[1], 0,      (unsigned long long*)&t[1]);
-        c = _addcarry_u64(c, t[2], 0,      (unsigned long long*)&t[2]);
-        _addcarry_u64(c, t[3], 0,          (unsigned long long*)&t[3]);
+    unsigned char carry_flag = 0;
+    carry_flag = _addcarry_u64(carry_flag, t[0], k_lo, (unsigned long long*)&t[0]);
+    carry_flag = _addcarry_u64(carry_flag, t[1], k_hi, (unsigned long long*)&t[1]);
+    carry_flag = _addcarry_u64(carry_flag, t[2], 0,    (unsigned long long*)&t[2]);
+    carry_flag = _addcarry_u64(carry_flag, t[3], 0,    (unsigned long long*)&t[3]);
+    if (__builtin_expect(carry_flag != 0, 0)) {
+        carry_flag = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
+        carry_flag = _addcarry_u64(carry_flag, t[1], 0,      (unsigned long long*)&t[1]);
+        carry_flag = _addcarry_u64(carry_flag, t[2], 0,      (unsigned long long*)&t[2]);
+        _addcarry_u64(carry_flag, t[3], 0,          (unsigned long long*)&t[3]);
     }
 #else
     u128 c2 = (u128)t[0] + (u128)carry * SECP_K;

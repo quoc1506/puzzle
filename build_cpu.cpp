@@ -645,32 +645,32 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
-    unsigned char c = 0;
-    c = _addcarry_u64(c, t[0], k_lo, (unsigned long long*)&t[0]);
-    c = _addcarry_u64(c, t[1], k_hi, (unsigned long long*)&t[1]);
-    c = _addcarry_u64(c, t[2], 0,    (unsigned long long*)&t[2]);
-    c = _addcarry_u64(c, t[3], 0,    (unsigned long long*)&t[3]);
-    if (__builtin_expect(c != 0, 0)) {
-        c = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
-        c = _addcarry_u64(c, t[1], 0,      (unsigned long long*)&t[1]);
-        c = _addcarry_u64(c, t[2], 0,      (unsigned long long*)&t[2]);
-        _addcarry_u64(c, t[3], 0,          (unsigned long long*)&t[3]);
+    unsigned char carry_flag = 0;
+    carry_flag = _addcarry_u64(carry_flag, t[0], k_lo, (unsigned long long*)&t[0]);
+    carry_flag = _addcarry_u64(carry_flag, t[1], k_hi, (unsigned long long*)&t[1]);
+    carry_flag = _addcarry_u64(carry_flag, t[2], 0,    (unsigned long long*)&t[2]);
+    carry_flag = _addcarry_u64(carry_flag, t[3], 0,    (unsigned long long*)&t[3]);
+    if (__builtin_expect(carry_flag != 0, 0)) {
+        carry_flag = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
+        carry_flag = _addcarry_u64(carry_flag, t[1], 0,      (unsigned long long*)&t[1]);
+        carry_flag = _addcarry_u64(carry_flag, t[2], 0,      (unsigned long long*)&t[2]);
+        _addcarry_u64(carry_flag, t[3], 0,          (unsigned long long*)&t[3]);
     }
 #else
 #if (defined(__x86_64__) || defined(_M_X64))
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
-    unsigned char c = 0;
-    c = _addcarry_u64(c, t[0], k_lo, (unsigned long long*)&t[0]);
-    c = _addcarry_u64(c, t[1], k_hi, (unsigned long long*)&t[1]);
-    c = _addcarry_u64(c, t[2], 0,    (unsigned long long*)&t[2]);
-    c = _addcarry_u64(c, t[3], 0,    (unsigned long long*)&t[3]);
-    if (__builtin_expect(c != 0, 0)) {
-        c = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
-        c = _addcarry_u64(c, t[1], 0,      (unsigned long long*)&t[1]);
-        c = _addcarry_u64(c, t[2], 0,      (unsigned long long*)&t[2]);
-        _addcarry_u64(c, t[3], 0,          (unsigned long long*)&t[3]);
+    unsigned char carry_flag = 0;
+    carry_flag = _addcarry_u64(carry_flag, t[0], k_lo, (unsigned long long*)&t[0]);
+    carry_flag = _addcarry_u64(carry_flag, t[1], k_hi, (unsigned long long*)&t[1]);
+    carry_flag = _addcarry_u64(carry_flag, t[2], 0,    (unsigned long long*)&t[2]);
+    carry_flag = _addcarry_u64(carry_flag, t[3], 0,    (unsigned long long*)&t[3]);
+    if (__builtin_expect(carry_flag != 0, 0)) {
+        carry_flag = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
+        carry_flag = _addcarry_u64(carry_flag, t[1], 0,      (unsigned long long*)&t[1]);
+        carry_flag = _addcarry_u64(carry_flag, t[2], 0,      (unsigned long long*)&t[2]);
+        _addcarry_u64(carry_flag, t[3], 0,          (unsigned long long*)&t[3]);
     }
 #else
     u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
@@ -1948,7 +1948,7 @@ void scan_worker_montgomery(
 
                 Fe u = fe_inv(cum[cur_batch]);
                 AffinePoint next_base;
-                for (int i = (int)cur_batch - 1; i >= 0; --i) {
+                for (int i = (int)cur_batch - 1; i >= 1; --i) {
                     Fe inv_dx_i = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
@@ -1973,6 +1973,30 @@ void scan_worker_montgomery(
                         found_flag.store(true, std::memory_order_release);
                         found_key = cur_k + (uint64_t)i;
                         checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                        return;
+                    }
+#endif
+                }
+                // Handle i = 0 without unnecessary fe_mul(u, cum[0]) and fe_mul(u, dx[0]):
+                {
+                    Fe inv_dx_0 = u;
+                    Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
+                    Fe lambda = fe_mul(dy_0, inv_dx_0);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
+                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
+                    uint8_t prefix = (y0.d[0] & 1) ? 0x03 : 0x02;
+#if defined(__AVX2__)
+                    cur_x[0] = x0;
+                    cur_prefix[0] = prefix;
+#else
+                    uint32_t X[8];
+                    fast_sha256_into_ripemd_X(prefix, x0, X);
+                    if (fast_ripemd160_32_check(X, target_w)) {
+                        std::lock_guard<std::mutex> lock(found_mtx);
+                        found_flag.store(true, std::memory_order_release);
+                        found_key = cur_k;
+                        checked_counter.fetch_add(local_counter + 1, std::memory_order_relaxed);
                         return;
                     }
 #endif
