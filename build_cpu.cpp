@@ -1922,12 +1922,26 @@ void scan_worker_montgomery(
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
-                    cur_x[i] = xi;
-                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
                     if (__builtin_expect(i == (int)cur_batch - 1, 0)) {
                         next_base.x = xi;
                         next_base.y = yi;
                     }
+#if defined(__AVX2__)
+                    cur_x[i] = xi;
+                    cur_prefix[i] = prefix;
+#else
+                    // Ultra-fast zero-memory-spill hash check: xi and prefix are already hot in CPU registers
+                    uint32_t X[8];
+                    fast_sha256_into_ripemd_X(prefix, xi, X);
+                    if (fast_ripemd160_32_check(X, target_w)) {
+                        std::lock_guard<std::mutex> lock(found_mtx);
+                        found_flag.store(true, std::memory_order_release);
+                        found_key = cur_k + (uint64_t)i;
+                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                        return;
+                    }
+#endif
                 }
                 // Seamlessly advance cur_base to the next batch with ZERO scalar_mul_G!
                 cur_base = next_base;
@@ -1958,15 +1972,17 @@ void scan_worker_montgomery(
                 }
             }
 #else
-            for (uint32_t i = 0; i < cur_batch; ++i) {
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
-                if (fast_ripemd160_32_check(X, target_w)) {
-                    std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)i;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                    return;
+            if (!cur_base_valid) {
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    uint32_t X[8];
+                    fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                    if (fast_ripemd160_32_check(X, target_w)) {
+                        std::lock_guard<std::mutex> lock(found_mtx);
+                        found_flag.store(true, std::memory_order_release);
+                        found_key = cur_k + (uint64_t)i;
+                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                        return;
+                    }
                 }
             }
 #endif

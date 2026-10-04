@@ -1046,16 +1046,24 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
     asm("lop3.b32 %0, %1, %2, %3, %4;" : "=r"(res) : "r"(a), "r"(b), "r"(c), "n"(imm));
     return res;
 #else
-    uint32_t res = 0;
-    if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
-    if constexpr (imm & 0x02) res |= (~a & ~b &  c);
-    if constexpr (imm & 0x04) res |= (~a &  b & ~c);
-    if constexpr (imm & 0x08) res |= (~a &  b &  c);
-    if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
-    if constexpr (imm & 0x20) res |= ( a & ~b &  c);
-    if constexpr (imm & 0x40) res |= ( a &  b & ~c);
-    if constexpr (imm & 0x80) res |= ( a &  b &  c);
-    return res;
+    if constexpr (imm == 0x96) return a ^ b ^ c;
+    else if constexpr (imm == 0xCA) return c ^ (a & (b ^ c));
+    else if constexpr (imm == 0xE8) return (a & b) | (c & (a ^ b));
+    else if constexpr (imm == 0x59) return (a | ~b) ^ c;
+    else if constexpr (imm == 0xE4) return b ^ (c & (a ^ b));
+    else if constexpr (imm == 0x2D) return a ^ (b | ~c);
+    else {
+        uint32_t res = 0;
+        if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
+        if constexpr (imm & 0x02) res |= (~a & ~b &  c);
+        if constexpr (imm & 0x04) res |= (~a &  b & ~c);
+        if constexpr (imm & 0x08) res |= (~a &  b &  c);
+        if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
+        if constexpr (imm & 0x20) res |= ( a & ~b &  c);
+        if constexpr (imm & 0x40) res |= ( a &  b & ~c);
+        if constexpr (imm & 0x80) res |= ( a &  b &  c);
+        return res;
+    }
 #endif
 }
 
@@ -1470,8 +1478,10 @@ cuda_scan_kernel(
                     next_cur_P = AffinePoint{next_x, next_y};
                 }
 
-                AffinePoint cand{next_x, next_y};
-                if (check_point_hash160(cand, tw)) {
+                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
+                uint32_t X[8];
+                fast_sha256_into_ripemd_X(prefix, next_x, X);
+                if (fast_ripemd160_32_check(X, tw)) {
                     if (atomicExch(d_found_flag, 1) == 0) {
                         *d_found_offset = key_offset;
                     }
