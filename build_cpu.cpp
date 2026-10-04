@@ -112,6 +112,27 @@ CUDA_HOSTDEV CUDA_INLINE bool operator>=(const u256& a, const u256& b) {
     return !(a < b);
 }
 
+CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, const u256& b) {
+    u256 r;
+    r.low = a.low + b.low;
+    r.high = a.high + b.high + (r.low < a.low ? 1 : 0);
+    return r;
+}
+
+CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, uint64_t b) {
+    u256 r;
+    r.low = a.low + b;
+    r.high = a.high + (r.low < a.low ? 1 : 0);
+    return r;
+}
+
+CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, const u256& b) {
+    u256 r;
+    r.low = a.low - b.low;
+    r.high = a.high - b.high - (a.low < b.low ? 1 : 0);
+    return r;
+}
+
 CUDA_HOSTDEV CUDA_INLINE u256 operator<<(const u256& a, int shift) {
     if (shift == 0) return a;
     if (shift >= 256) return u256(0);
@@ -136,12 +157,6 @@ CUDA_HOSTDEV CUDA_INLINE u256 operator*(const u256& a, uint64_t b) {
     return r;
 }
 
-CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, const u256& b) {
-    u256 r;
-    r.low = a.low + b.low;
-    r.high = a.high + b.high + (r.low < a.low ? 1 : 0);
-    return r;
-}
 CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, uint64_t b) {
     u256 r;
     r.low = a.low + b;
@@ -339,6 +354,15 @@ bool b58check_decode_hash160(const std::string& raw_addr, uint8_t out_hash160[20
 struct Fe {
     uint64_t d[4];
 };
+
+CUDA_HOSTDEV CUDA_INLINE bool operator==(const Fe& a, const Fe& b) {
+    return (a.d[0] == b.d[0]) && (a.d[1] == b.d[1]) &&
+           (a.d[2] == b.d[2]) && (a.d[3] == b.d[3]);
+}
+
+CUDA_HOSTDEV CUDA_INLINE bool operator!=(const Fe& a, const Fe& b) {
+    return !(a == b);
+}
 
 CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
@@ -698,12 +722,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
 #else
-    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
-    r0 = (uint64_t)c2; c2 >>= 64;
-    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
-    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
-    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
+    u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r1; r1 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
+    uint64_t extra = (uint64_t)c2_red;
     if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
@@ -830,12 +854,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
 #else
-    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
-    r0 = (uint64_t)c2; c2 >>= 64;
-    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
-    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
-    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
+    u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r1; r1 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
+    uint64_t extra = (uint64_t)c2_red;
     if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
@@ -1051,7 +1075,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
         0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
         0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
         0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0bef9a3f,0xc67178f2
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0x0bef9a3f,0xc67178f2
     };
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
@@ -1171,7 +1195,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
 // ============================================================================
 // MONTGOMERY BATCH WORKER
 // ============================================================================
-static std::atomic<bool> g_running(true);
+
 
 void scan_worker_montgomery(
     u256 base_start,
@@ -1432,55 +1456,13 @@ std::string format_speed(double speed) {
     return ss.str();
 }
 
-std::string u256_to_hex64(const u256& v) {
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0');
-    ss << std::setw(16) << (uint64_t)(v.high >> 64)
-       << std::setw(16) << (uint64_t)v.high
-       << std::setw(16) << (uint64_t)(v.low >> 64)
-       << std::setw(16) << (uint64_t)v.low;
-    return ss.str();
-}
 
-u256 parse_u256(const std::string& str) {
-    u256 res = 0;
-    if (str.rfind("0x", 0) == 0 || str.rfind("0X", 0) == 0) {
-        for (size_t i = 2; i < str.length(); ++i) {
-            char c = str[i];
-            int digit = 0;
-            if (c >= '0' && c <= '9') digit = c - '0';
-            else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-            else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-            else break;
-            res = (res << 4) + digit;
-        }
-    } else {
-        for (char c : str) {
-            if (c >= '0' && c <= '9') {
-                res = res * 10 + (c - '0');
-            } else break;
-        }
-    }
-    return res;
-}
+
+
 
 static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-bool b58check_decode_hash160(const std::string& addr, uint8_t hash160[20]) {
-    std::vector<uint8_t> bin(25, 0);
-    for (char c : addr) {
-        const char* p = std::strchr(B58_CHARS, c);
-        if (!p) return false;
-        int carry = (int)(p - B58_CHARS);
-        for (int i = 24; i >= 0; --i) {
-            int val = bin[i] * 58 + carry;
-            bin[i] = val & 0xFF;
-            carry = val >> 8;
-        }
-    }
-    std::memcpy(hash160, &bin[1], 20);
-    return true;
-}
+
 
 // ============================================================================
 // VERIFICATION RUNNER

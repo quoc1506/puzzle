@@ -370,6 +370,15 @@ struct Fe {
     uint64_t d[4];
 };
 
+CUDA_HOSTDEV CUDA_INLINE bool operator==(const Fe& a, const Fe& b) {
+    return (a.d[0] == b.d[0]) && (a.d[1] == b.d[1]) &&
+           (a.d[2] == b.d[2]) && (a.d[3] == b.d[3]);
+}
+
+CUDA_HOSTDEV CUDA_INLINE bool operator!=(const Fe& a, const Fe& b) {
+    return !(a == b);
+}
+
 CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
 }
@@ -728,12 +737,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
 #else
-    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
-    r0 = (uint64_t)c2; c2 >>= 64;
-    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
-    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
-    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
+    u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r1; r1 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
+    uint64_t extra = (uint64_t)c2_red;
     if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
@@ -860,12 +869,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
 #else
-    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
-    r0 = (uint64_t)c2; c2 >>= 64;
-    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
-    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
-    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
-    uint64_t extra = (uint64_t)c2;
+    u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r1; r1 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
+    c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
+    uint64_t extra = (uint64_t)c2_red;
     if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
@@ -1067,7 +1076,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
         0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
         0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
         0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0bef9a3f,0xc67178f2
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0x0bef9a3f,0xc67178f2
     };
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
