@@ -1835,11 +1835,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 512;
+    alignas(64) Fe dx[512];
+    alignas(64) Fe cum[513];
+    alignas(64) Fe cur_x[512];
+    alignas(64) uint8_t cur_prefix[512];
 
     uint64_t local_counter = 0;
 
@@ -2340,7 +2340,7 @@ int main(int argc, char* argv[]) {
 
     init_generator_table();
 
-    std::cout << "[HARDWARE] Engine: Montgomery Batch 1024x"
+    std::cout << "[HARDWARE] Engine: Montgomery Batch 512x"
 #if defined(__AVX2__)
               << " (AVX2 + BMI2 Vectorized)"
 #elif defined(__aarch64__) || defined(__ARM_NEON)

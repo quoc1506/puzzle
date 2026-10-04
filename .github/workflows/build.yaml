@@ -131,7 +131,7 @@ jobs:
             -lpthread -ldl \
             -o bin/build-linux-x86_64
 
-          g++ -std=c++17 -O3 -msse4.2 -mpopcnt -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          g++ -std=c++17 -O3 -msse4.2 -mpopcnt -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -211,7 +211,7 @@ jobs:
             -lpthread -ldl \
             -o bin/build-linux-u22-x86_64
 
-          g++ -std=c++17 -O3 -msse4.2 -mpopcnt -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          g++ -std=c++17 -O3 -msse4.2 -mpopcnt -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -288,7 +288,7 @@ jobs:
             -o bin/build-linux-musl-x86_64
 
           # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
-          g++ -static -std=c++17 -O3 -msse4.2 -mpopcnt -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+          g++ -static -std=c++17 -O3 -msse4.2 -mpopcnt -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
             -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
