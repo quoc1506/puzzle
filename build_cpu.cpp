@@ -157,18 +157,6 @@ CUDA_HOSTDEV CUDA_INLINE u256 operator*(const u256& a, uint64_t b) {
     return r;
 }
 
-CUDA_HOSTDEV CUDA_INLINE u256 operator+(const u256& a, uint64_t b) {
-    u256 r;
-    r.low = a.low + b;
-    r.high = a.high + (r.low < a.low ? 1 : 0);
-    return r;
-}
-CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, const u256& b) {
-    u256 r;
-    r.low = a.low - b.low;
-    r.high = a.high - b.high - (a.low < b.low ? 1 : 0);
-    return r;
-}
 CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, uint64_t b) {
     u256 r;
     r.low = a.low - b;
