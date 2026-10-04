@@ -1033,12 +1033,16 @@ CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2
 // ============================================================================
 // HASHING: SHA-256 + RIPEMD-160 FOR GPU & CPU
 // ============================================================================
-static inline uint32_t rotr32(uint32_t x, uint32_t n) {
+CUDA_HOSTDEV CUDA_INLINE uint32_t rotr32(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
 }
 
-static inline uint32_t bswap32(uint32_t x) {
+CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+    return __byte_perm(x, 0, 0x0123);
+#else
     return __builtin_bswap32(x);
+#endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
@@ -1051,7 +1055,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
         }
     }
     msg[33] = 0x80;
-    std::memset(&msg[34], 0, 28);
+    for (int zi = 34; zi < 62; ++zi) msg[zi] = 0;
     msg[62] = 0x01;
     msg[63] = 0x08;
 
@@ -1347,21 +1351,7 @@ std::string format_speed(double speed) {
 
 static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-bool b58check_decode_hash160(const std::string& addr, uint8_t hash160[20]) {
-    std::vector<uint8_t> bin(25, 0);
-    for (char c : addr) {
-        const char* p = std::strchr(B58_CHARS, c);
-        if (!p) return false;
-        int carry = (int)(p - B58_CHARS);
-        for (int i = 24; i >= 0; --i) {
-            int val = bin[i] * 58 + carry;
-            bin[i] = val & 0xFF;
-            carry = val >> 8;
-        }
-    }
-    std::memcpy(hash160, &bin[1], 20);
-    return true;
-}
+
 
 void parse_hex64_limbs(const std::string& str, uint64_t limbs[4]) {
     limbs[0] = limbs[1] = limbs[2] = limbs[3] = 0;
