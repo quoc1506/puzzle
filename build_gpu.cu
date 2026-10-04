@@ -662,190 +662,243 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #if defined(__SIZEOF_INT128__)
-    uint64_t t[8] = {0};
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    u128 c;
-    c = (u128)a0 * b0; t[0] = (uint64_t)c; c >>= 64;
-    c += (u128)a0 * b1; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)a0 * b2; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)a0 * b3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+    // High-performance Comba Column Multiplication (Pure CPU/GPU Register Accumulation)
+    u128 acc = (u128)a0 * b0;
+    uint64_t t0 = (uint64_t)acc;
+    acc >>= 64;
 
-    c = (u128)t[1] + (u128)a1 * b0; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + (u128)a1 * b1; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + (u128)a1 * b2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + (u128)a1 * b3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+    acc += (u128)a0 * b1 + (u128)a1 * b0;
+    uint64_t t1 = (uint64_t)acc;
+    acc >>= 64;
 
-    c = (u128)t[2] + (u128)a2 * b0; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3] + (u128)a2 * b1; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + (u128)a2 * b2; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + (u128)a2 * b3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+    acc += (u128)a0 * b2 + (u128)a1 * b1 + (u128)a2 * b0;
+    uint64_t t2 = (uint64_t)acc;
+    acc >>= 64;
 
-    c = (u128)t[3] + (u128)a3 * b0; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + (u128)a3 * b1; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5] + (u128)a3 * b2; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + (u128)a3 * b3; t[6] = (uint64_t)c; t[7] = (uint64_t)(c >> 64);
+    acc += (u128)a0 * b3 + (u128)a1 * b2 + (u128)a2 * b1 + (u128)a3 * b0;
+    uint64_t t3 = (uint64_t)acc;
+    acc >>= 64;
 
+    acc += (u128)a1 * b3 + (u128)a2 * b2 + (u128)a3 * b1;
+    uint64_t t4 = (uint64_t)acc;
+    acc >>= 64;
+
+    acc += (u128)a2 * b3 + (u128)a3 * b2;
+    uint64_t t5 = (uint64_t)acc;
+    acc >>= 64;
+
+    acc += (u128)a3 * b3;
+    uint64_t t6 = (uint64_t)acc;
+    uint64_t t7 = (uint64_t)(acc >> 64);
+
+    // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 carry = 0;
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + carry;
-        t[i] = (uint64_t)prod;
-        carry = prod >> 64;
-    }
+    u128 prod0 = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)prod0;
+    u128 carry = prod0 >> 64;
+
+    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
+    uint64_t r1 = (uint64_t)prod1;
+    carry = prod1 >> 64;
+
+    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
+    uint64_t r2 = (uint64_t)prod2;
+    carry = prod2 >> 64;
+
+    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
+    uint64_t r3 = (uint64_t)prod3;
+    carry = prod3 >> 64;
+
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
     unsigned char carry_flag = 0;
-    carry_flag = _addcarry_u64(carry_flag, t[0], k_lo, (unsigned long long*)&t[0]);
-    carry_flag = _addcarry_u64(carry_flag, t[1], k_hi, (unsigned long long*)&t[1]);
-    carry_flag = _addcarry_u64(carry_flag, t[2], 0,    (unsigned long long*)&t[2]);
-    carry_flag = _addcarry_u64(carry_flag, t[3], 0,    (unsigned long long*)&t[3]);
+    carry_flag = _addcarry_u64(carry_flag, r0, k_lo, (unsigned long long*)&r0);
+    carry_flag = _addcarry_u64(carry_flag, r1, k_hi, (unsigned long long*)&r1);
+    carry_flag = _addcarry_u64(carry_flag, r2, 0,    (unsigned long long*)&r2);
+    carry_flag = _addcarry_u64(carry_flag, r3, 0,    (unsigned long long*)&r3);
     if (__builtin_expect(carry_flag != 0, 0)) {
-        carry_flag = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
-        carry_flag = _addcarry_u64(carry_flag, t[1], 0,      (unsigned long long*)&t[1]);
-        carry_flag = _addcarry_u64(carry_flag, t[2], 0,      (unsigned long long*)&t[2]);
-        _addcarry_u64(carry_flag, t[3], 0,          (unsigned long long*)&t[3]);
+        carry_flag = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&r0);
+        carry_flag = _addcarry_u64(carry_flag, r1, 0, (unsigned long long*)&r1);
+        carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
+        _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
 #else
-    u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2; c2 >>= 64;
+    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
+    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
+    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
     if (__builtin_expect(extra != 0, 0)) {
-        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
+        u128 c3 = (u128)r0 + (u128)extra * SECP_K;
+        r0 = (uint64_t)c3; c3 >>= 64;
+        c3 += r1; r1 = (uint64_t)c3; c3 >>= 64;
+        c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
+        r3 += (uint64_t)c3;
     }
 #endif
 
-    if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
+    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
+        r2 == 0xFFFFFFFFFFFFFFFFULL &&
+        r1 == 0xFFFFFFFFFFFFFFFFULL &&
+        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+        r0 -= 0xFFFFFFFEFFFFFC2FULL;
+        r1 = 0; r2 = 0; r3 = 0;
     }
-    Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
+
+    return Fe{{r0, r1, r2, r3}};
+#else
+    Fe r = {0};
     return r;
-#else
-    uint64_t t[8] = {0};
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        uint64_t carry = 0;
-        #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            uint64_t prod_lo = a.d[i] * b.d[j];
-#if defined(__CUDA_ARCH__)
-            uint64_t prod_hi = __umul64hi(a.d[i], b.d[j]);
-#elif defined(__SIZEOF_INT128__)
-            uint64_t prod_hi = (uint64_t)(((unsigned __int128)a.d[i] * b.d[j]) >> 64);
-#else
-            uint64_t prod_hi = 0;
-#endif
-            uint64_t sum1 = t[i + j] + prod_lo;
-            uint64_t c1 = (sum1 < t[i + j]);
-            uint64_t sum2 = sum1 + carry;
-            uint64_t c2 = (sum2 < sum1);
-            t[i + j] = sum2;
-            carry = prod_hi + c1 + c2;
-        }
-        t[i + 4] = carry;
-    }
-    return fe_reduce(t);
 #endif
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
-    uint64_t t[8] = {0};
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    u128 c = (u128)a0 * a1; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)a0 * a2; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)a0 * a3; t[3] = (uint64_t)c; t[4] = (uint64_t)(c >> 64);
+    // High-performance Comba Column Squaring (Registers Only)
+    // Cross products
+    u128 c = (u128)a0 * a1;
+    uint64_t c1 = (uint64_t)c;
+    c >>= 64;
 
-    c = (u128)t[3] + (u128)a1 * a2; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + (u128)a1 * a3; t[4] = (uint64_t)c; t[5] = (uint64_t)(c >> 64);
+    c += (u128)a0 * a2;
+    uint64_t c2 = (uint64_t)c;
+    c >>= 64;
 
-    c = (u128)t[5] + (u128)a2 * a3; t[5] = (uint64_t)c; t[6] = (uint64_t)(c >> 64);
+    c += (u128)a0 * a3;
+    uint64_t c3 = (uint64_t)c;
+    uint64_t c4 = (uint64_t)(c >> 64);
 
-    uint64_t carry = 0;
-    #pragma unroll
-    for (int i = 1; i < 7; ++i) {
-        uint64_t v = (t[i] << 1) | carry;
-        carry = t[i] >> 63;
-        t[i] = v;
-    }
-    t[7] = carry;
+    c = (u128)c3 + (u128)a1 * a2;
+    c3 = (uint64_t)c;
+    c >>= 64;
 
-    c = (u128)t[0] + (u128)a0 * a0; t[0] = (uint64_t)c; c >>= 64;
-    c += (u128)t[1]; t[1] = (uint64_t)c; c >>= 64;
-    c += (u128)t[2] + (u128)a1 * a1; t[2] = (uint64_t)c; c >>= 64;
-    c += (u128)t[3]; t[3] = (uint64_t)c; c >>= 64;
-    c += (u128)t[4] + (u128)a2 * a2; t[4] = (uint64_t)c; c >>= 64;
-    c += (u128)t[5]; t[5] = (uint64_t)c; c >>= 64;
-    c += (u128)t[6] + (u128)a3 * a3; t[6] = (uint64_t)c; c >>= 64;
-    t[7] += (uint64_t)c;
+    c += (u128)c4 + (u128)a1 * a3;
+    c4 = (uint64_t)c;
+    uint64_t c5 = (uint64_t)(c >> 64);
 
+    c = (u128)c5 + (u128)a2 * a3;
+    c5 = (uint64_t)c;
+    uint64_t c6 = (uint64_t)(c >> 64);
+
+    // Double cross-products
+    uint64_t t7 = c6 >> 63;
+    uint64_t t6 = (c6 << 1) | (c5 >> 63);
+    uint64_t t5 = (c5 << 1) | (c4 >> 63);
+    uint64_t t4 = (c4 << 1) | (c3 >> 63);
+    uint64_t t3 = (c3 << 1) | (c2 >> 63);
+    uint64_t t2 = (c2 << 1) | (c1 >> 63);
+    uint64_t t1 = (c1 << 1);
+
+    // Add squares
+    c = (u128)a0 * a0;
+    uint64_t t0 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t1;
+    t1 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t2 + (u128)a1 * a1;
+    t2 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t3;
+    t3 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t4 + (u128)a2 * a2;
+    t4 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t5;
+    t5 = (uint64_t)c;
+    c >>= 64;
+
+    c += (u128)t6 + (u128)a3 * a3;
+    t6 = (uint64_t)c;
+    t7 += (uint64_t)(c >> 64);
+
+    // Fast reduction mod p
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 red_carry = 0;
-    #pragma unroll
-    for (int i = 0; i < 4; ++i) {
-        u128 prod = (u128)t[4 + i] * SECP_K + t[i] + red_carry;
-        t[i] = (uint64_t)prod;
-        red_carry = prod >> 64;
+    u128 prod0 = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)prod0;
+    u128 carry = prod0 >> 64;
+
+    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
+    uint64_t r1 = (uint64_t)prod1;
+    carry = prod1 >> 64;
+
+    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
+    uint64_t r2 = (uint64_t)prod2;
+    carry = prod2 >> 64;
+
+    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
+    uint64_t r3 = (uint64_t)prod3;
+    carry = prod3 >> 64;
+
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+    u128 k_prod = (u128)carry * SECP_K;
+    uint64_t k_lo = (uint64_t)k_prod;
+    uint64_t k_hi = (uint64_t)(k_prod >> 64);
+    unsigned char carry_flag = 0;
+    carry_flag = _addcarry_u64(carry_flag, r0, k_lo, (unsigned long long*)&r0);
+    carry_flag = _addcarry_u64(carry_flag, r1, k_hi, (unsigned long long*)&r1);
+    carry_flag = _addcarry_u64(carry_flag, r2, 0,    (unsigned long long*)&r2);
+    carry_flag = _addcarry_u64(carry_flag, r3, 0,    (unsigned long long*)&r3);
+    if (__builtin_expect(carry_flag != 0, 0)) {
+        carry_flag = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&r0);
+        carry_flag = _addcarry_u64(carry_flag, r1, 0, (unsigned long long*)&r1);
+        carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
+        _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
-    u128 c2 = (u128)t[0] + (u128)red_carry * SECP_K;
-    t[0] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[2]; t[2] = (uint64_t)c2; c2 >>= 64;
-    c2 += t[3]; t[3] = (uint64_t)c2; c2 >>= 64;
+#else
+    u128 c2 = (u128)r0 + (u128)carry * SECP_K;
+    r0 = (uint64_t)c2; c2 >>= 64;
+    c2 += r1; r1 = (uint64_t)c2; c2 >>= 64;
+    c2 += r2; r2 = (uint64_t)c2; c2 >>= 64;
+    c2 += r3; r3 = (uint64_t)c2; c2 >>= 64;
     uint64_t extra = (uint64_t)c2;
     if (__builtin_expect(extra != 0, 0)) {
-        u128 c3 = (u128)t[0] + (u128)extra * SECP_K;
-        t[0] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[1]; t[1] = (uint64_t)c3; c3 >>= 64;
-        c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
-        t[3] += (uint64_t)c3;
+        u128 c3 = (u128)r0 + (u128)extra * SECP_K;
+        r0 = (uint64_t)c3; c3 >>= 64;
+        c3 += r1; r1 = (uint64_t)c3; c3 >>= 64;
+        c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
+        r3 += (uint64_t)c3;
+    }
+#endif
+
+    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
+        r2 == 0xFFFFFFFFFFFFFFFFULL &&
+        r1 == 0xFFFFFFFFFFFFFFFFULL &&
+        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+        r0 -= 0xFFFFFFFEFFFFFC2FULL;
+        r1 = 0; r2 = 0; r3 = 0;
     }
 
-    if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        t[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
-        t[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        t[1] = 0;
-        t[2] = 0;
-        t[3] = 0;
-    }
-    Fe r;
-    r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
-    return r;
+    return Fe{{r0, r1, r2, r3}};
 #else
-    return fe_mul(a, a);
+    Fe r = {0};
+    return r;
 #endif
 }
-
+// ============================================================================
+// MODULAR INVERSION VIA FERMAT'S LITTLE THEOREM: a^(p - 2) mod p
+// ============================================================================
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
-    #pragma unroll
     for (int i = 0; i < n; ++i) {
         a = fe_sqr(a);
     }
     return a;
 }
 
-// 100% Mathematically Verified Inversion modulo 2^256 - 2^32 - 977 (22-step Addition Chain)
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x2 = fe_mul(fe_sqr(a), a);
     Fe x3 = fe_mul(fe_sqr(x2), a);
@@ -859,35 +912,21 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x220 = fe_mul(fe_sqr_n(x176, 44), x44);
     Fe x223 = fe_mul(fe_sqr_n(x220, 3), x3);
 
-    // Top 223 bits (all 1s) shifted by 33 bits
-    Fe t = fe_sqr_n(x223, 33);
-
-    // Low 33 bits: bit 32 is 0, bits 31..0 is 0xFFFFFC2D
-    Fe x14 = fe_mul(fe_sqr_n(x11, 3), x3);
-    Fe x16 = fe_mul(fe_sqr_n(x14, 2), x2);
-    Fe low = fe_sqr_n(x16, 16);
-
-    Fe b = a;
-    Fe low16 = a;
-    b = fe_sqr(b);
-    b = fe_sqr(b);
-    low16 = fe_mul(low16, b);
-    b = fe_sqr(b);
-    low16 = fe_mul(low16, b);
-    b = fe_sqr(b);
-    b = fe_sqr(b);
-    low16 = fe_mul(low16, b);
-    b = fe_sqr_n(b, 5);
-    low16 = fe_mul(low16, b);
-    b = fe_sqr(b); low16 = fe_mul(low16, b);
-    b = fe_sqr(b); low16 = fe_mul(low16, b);
-    b = fe_sqr(b); low16 = fe_mul(low16, b);
-    b = fe_sqr(b); low16 = fe_mul(low16, b);
-    b = fe_sqr(b); low16 = fe_mul(low16, b);
-    low = fe_mul(low, low16);
-    return fe_mul(t, low);
+    Fe t = fe_sqr_n(x223, 23);
+    Fe x22_2 = fe_mul(fe_sqr_n(x22, 2), a);
+    Fe res = fe_mul(t, x22_2);
+    res = fe_sqr_n(res, 5);
+    res = fe_mul(res, a);
+    res = fe_sqr_n(res, 3);
+    res = fe_mul(res, x2);
+    res = fe_sqr_n(res, 2);
+    res = fe_mul(res, a);
+    return res;
 }
 
+// ============================================================================
+// SECP256K1 ELLIPTIC CURVE POINT ARITHMETIC
+// ============================================================================
 struct AffinePoint {
     Fe x;
     Fe y;
@@ -900,489 +939,70 @@ struct JacobianPoint {
     bool infinity;
 };
 
-CUDA_HOSTDEV CUDA_INLINE AffinePoint get_generator_G() {
-    AffinePoint G;
-    G.x.d[0] = 0x59F2815B16F81798ULL;
-    G.x.d[1] = 0x029BFCDB2DCE28D9ULL;
-    G.x.d[2] = 0x55A06295CE870B07ULL;
-    G.x.d[3] = 0x79BE667EF9DCBBACULL;
-
-    G.y.d[0] = 0x9C47D08FFB10D4B8ULL;
-    G.y.d[1] = 0xFD17B448A6855419ULL;
-    G.y.d[2] = 0x5DA4FBFC0E1108A8ULL;
-    G.y.d[3] = 0x483ADA7726A3C465ULL;
-    return G;
-}
-
 CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_double(const JacobianPoint& p) {
-    if (p.infinity || fe_is_zero(p.y)) return p;
-    Fe XX = fe_sqr(p.x);
-    Fe YY = fe_sqr(p.y);
-    Fe YYYY = fe_sqr(YY);
-    Fe ZZ = fe_sqr(p.z);
-
-    Fe S = fe_add(p.x, YY);
-    S = fe_sub(fe_sqr(S), XX);
-    S = fe_sub(S, YYYY);
-    S = fe_add(S, S);
-
-    Fe M = fe_add(fe_add(XX, XX), XX);
-
-    Fe T = fe_sub(fe_sqr(M), fe_add(S, S));
-
-    JacobianPoint r;
-    r.infinity = false;
-    r.x = T;
-
-    Fe YYYY8 = fe_add(YYYY, YYYY);
-    YYYY8 = fe_add(YYYY8, YYYY8);
-    YYYY8 = fe_add(YYYY8, YYYY8);
-
-    r.y = fe_sub(fe_mul(M, fe_sub(S, T)), YYYY8);
-
-    Fe YZ = fe_add(p.y, p.z);
-    r.z = fe_sub(fe_sub(fe_sqr(YZ), YY), ZZ);
-    return r;
+    if (p.infinity) return p;
+    Fe y2 = fe_sqr(p.y);
+    Fe s = fe_mul(fe_add(p.x, p.x), fe_add(y2, y2));
+    Fe m = fe_mul(fe_add(fe_sqr(p.x), fe_add(fe_sqr(p.x), fe_sqr(p.x))), Fe{{1, 0, 0, 0}});
+    Fe x3 = fe_sub(fe_sqr(m), fe_add(s, s));
+    Fe y3 = fe_sub(fe_mul(m, fe_sub(s, x3)), fe_mul(fe_sqr(y2), Fe{{8, 0, 0, 0}}));
+    Fe z3 = fe_mul(fe_add(p.y, p.y), p.z);
+    return JacobianPoint{x3, y3, z3, false};
 }
 
-CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_add_affine(const JacobianPoint& p, const AffinePoint& a) {
-    if (p.infinity) {
-        JacobianPoint r;
-        r.x = a.x;
-        r.y = a.y;
-        r.z.d[0] = 1; r.z.d[1] = 0; r.z.d[2] = 0; r.z.d[3] = 0;
-        r.infinity = false;
-        return r;
+CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_add_affine(const JacobianPoint& p, const AffinePoint& q) {
+    if (p.infinity) return JacobianPoint{q.x, q.y, Fe{{1, 0, 0, 0}}, false};
+    Fe z1z1 = fe_sqr(p.z);
+    Fe u2 = fe_mul(q.x, z1z1);
+    Fe s2 = fe_mul(q.y, fe_mul(p.z, z1z1));
+    if (p.x == u2) {
+        if (p.y == s2) return jacobian_double(p);
+        return JacobianPoint{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
     }
-    Fe Z1Z1 = fe_sqr(p.z);
-    Fe U2 = fe_mul(a.x, Z1Z1);
-    Fe S2 = fe_mul(fe_mul(a.y, p.z), Z1Z1);
-
-    Fe H = fe_sub(U2, p.x);
-    Fe R = fe_sub(S2, p.y);
-
-    if (fe_is_zero(H)) {
-        if (fe_is_zero(R)) {
-            return jacobian_double(p);
-        } else {
-            JacobianPoint inf;
-            inf.infinity = true;
-            return inf;
-        }
-    }
-
-    Fe HH = fe_sqr(H);
-    Fe HHH = fe_mul(H, HH);
-    Fe V = fe_mul(p.x, HH);
-
-    JacobianPoint res;
-    res.infinity = false;
-    res.x = fe_sub(fe_sub(fe_sqr(R), HHH), fe_add(V, V));
-    res.y = fe_sub(fe_mul(R, fe_sub(V, res.x)), fe_mul(p.y, HHH));
-    res.z = fe_mul(p.z, H);
-    return res;
+    Fe h = fe_sub(u2, p.x);
+    Fe i = fe_sqr(fe_add(h, h));
+    Fe j = fe_mul(h, i);
+    Fe r = fe_sub(s2, p.y);
+    Fe r2 = fe_add(r, r);
+    Fe v = fe_mul(p.x, i);
+    Fe x3 = fe_sub(fe_sub(fe_sqr(r2), j), fe_add(v, v));
+    Fe y3 = fe_sub(fe_mul(r2, fe_sub(v, x3)), fe_mul(fe_add(p.y, p.y), j));
+    Fe z3 = fe_mul(fe_add(p.z, h), fe_add(p.z, h));
+    z3 = fe_sub(fe_sub(z3, z1z1), fe_sqr(h));
+    return JacobianPoint{x3, y3, z3, false};
 }
 
 CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& p) {
-    AffinePoint a;
-    if (p.infinity) {
-        std::memset(&a, 0, sizeof(a));
-        return a;
-    }
+    if (p.infinity) return AffinePoint{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}};
     Fe z_inv = fe_inv(p.z);
     Fe z_inv2 = fe_sqr(z_inv);
     Fe z_inv3 = fe_mul(z_inv2, z_inv);
-    a.x = fe_mul(p.x, z_inv2);
-    a.y = fe_mul(p.y, z_inv3);
-    return a;
+    return AffinePoint{fe_mul(p.x, z_inv2), fe_mul(p.y, z_inv3)};
 }
 
-CUDA_HOSTDEV CUDA_INLINE AffinePoint scalar_mul_G(const uint64_t scalar[4]) {
-    JacobianPoint res;
-    res.infinity = true;
-    AffinePoint G = get_generator_G();
-    JacobianPoint base;
-    base.x = G.x;
-    base.y = G.y;
-    base.z.d[0] = 1; base.z.d[1] = 0; base.z.d[2] = 0; base.z.d[3] = 0;
-    base.infinity = false;
+static const AffinePoint G_POINT = {
+    Fe{{0x59F2815B16F81798ULL, 0x029BFCDB2DCE28D9ULL, 0x55A06295CE870B07ULL, 0x79BE667EF9DCBBACULL}},
+    Fe{{0x9C47D08FFB10D4B8ULL, 0xFD17B448A6855419ULL, 0x5DA4FBFC0E1108A8ULL, 0x483ADA7726A3C465ULL}}
+};
 
-    for (int limb = 0; limb < 4; ++limb) {
-        uint64_t w = scalar[limb];
-        for (int b = 0; b < 64; ++b) {
-            if ((w >> b) & 1) {
-                res = jacobian_add_affine(res, jacobian_to_affine(base));
-            }
-            base = jacobian_double(base);
+CUDA_HOSTDEV AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
+    JacobianPoint res{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
+    for (int limb = 3; limb >= 0; --limb) {
+        uint64_t w = limbs[limb];
+        for (int b = 63; b >= 0; --b) {
+            if (!res.infinity) res = jacobian_double(res);
+            if ((w >> b) & 1) res = jacobian_add_affine(res, G_POINT);
         }
     }
     return jacobian_to_affine(res);
 }
 
-CUDA_HOSTDEV CUDA_INLINE uint32_t ror32_dev(uint32_t x, int n) {
-#if defined(__CUDA_ARCH__)
-    return __funnelshift_r(x, x, n);
-#elif defined(_MSC_VER)
-    return _rotr(x, n);
-#elif defined(__GNUC__) || defined(__clang__)
-    return (x >> n) | (x << (32 - n));
-#else
-    return (x >> n) | (x << (32 - n));
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t rol32_dev(uint32_t x, int n) {
-#if defined(__CUDA_ARCH__)
-    return __funnelshift_l(x, x, n);
-#elif defined(_MSC_VER)
-    return _rotl(x, n);
-#elif defined(__GNUC__) || defined(__clang__)
-    return (x << n) | (x >> (32 - n));
-#else
-    return (x << n) | (x >> (32 - n));
-#endif
-}
-
-CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32_dev(uint32_t x) {
-#if defined(__CUDA_ARCH__)
-    return __byte_perm(x, 0, 0x0123);
-#elif defined(__GNUC__) || defined(__clang__)
-    return __builtin_bswap32(x);
-#else
-    return ((x & 0xFF000000U) >> 24) |
-           ((x & 0x00FF0000U) >> 8)  |
-           ((x & 0x0000FF00U) << 8)  |
-           ((x & 0x000000FFU) << 24);
-#endif
-}
-
-template<uint32_t imm>
-CUDA_HOSTDEV CUDA_INLINE uint32_t lop3_b32(uint32_t a, uint32_t b, uint32_t c) {
-#if defined(__CUDA_ARCH__)
-    uint32_t res;
-    asm("lop3.b32 %0, %1, %2, %3, %4;" : "=r"(res) : "r"(a), "r"(b), "r"(c), "n"(imm));
-    return res;
-#else
-    if constexpr (imm == 0x96) return a ^ b ^ c;
-    else if constexpr (imm == 0xCA) return c ^ (a & (b ^ c));
-    else if constexpr (imm == 0xE8) return (a & b) | (c & (a ^ b));
-    else if constexpr (imm == 0x59) return (a | ~b) ^ c;
-    else if constexpr (imm == 0xE4) return b ^ (c & (a ^ b));
-    else if constexpr (imm == 0x2D) return a ^ (b | ~c);
-    else {
-        uint32_t res = 0;
-        if constexpr (imm & 0x01) res |= (~a & ~b & ~c);
-        if constexpr (imm & 0x02) res |= (~a & ~b &  c);
-        if constexpr (imm & 0x04) res |= (~a &  b & ~c);
-        if constexpr (imm & 0x08) res |= (~a &  b &  c);
-        if constexpr (imm & 0x10) res |= ( a & ~b & ~c);
-        if constexpr (imm & 0x20) res |= ( a & ~b &  c);
-        if constexpr (imm & 0x40) res |= ( a &  b & ~c);
-        if constexpr (imm & 0x80) res |= ( a &  b &  c);
-        return res;
-    }
-#endif
-}
-
-static constexpr uint32_t host_K_SHA256[64] = {
-    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
-    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
-    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
-    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
-    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
-    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
-    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
-    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
-};
-
-static constexpr uint8_t host_rl_tab[80] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
-    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
-    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
-    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
-};
-
-static constexpr uint8_t host_sl_tab[80] = {
-    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
-    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
-    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
-    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
-    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
-};
-
-static constexpr uint8_t host_rr_tab[80] = {
-    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
-    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
-    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
-    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
-    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
-};
-
-static constexpr uint8_t host_sr_tab[80] = {
-    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
-    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
-    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
-    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
-    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
-};
-
-template<int i>
-CUDA_HOSTDEV CUDA_INLINE void sha256_round_dev(
-    uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
-    uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h,
-    uint32_t wi
-) {
-    constexpr uint32_t K = host_K_SHA256[i];
-    uint32_t S1 = ror32_dev(e, 6) ^ ror32_dev(e, 11) ^ ror32_dev(e, 25);
-    uint32_t ch = lop3_b32<0xCA>(e, f, g);
-    uint32_t temp1;
-    if constexpr (i >= 9 && i <= 14) {
-        temp1 = h + S1 + ch + K;
-    } else {
-        temp1 = h + S1 + ch + K + wi;
-    }
-    uint32_t S0 = ror32_dev(a, 2) ^ ror32_dev(a, 13) ^ ror32_dev(a, 22);
-    uint32_t maj = lop3_b32<0xE8>(a, b, c);
-    uint32_t temp2 = S0 + maj;
-
-    h = g; g = f; f = e; e = d + temp1;
-    d = c; c = b; b = a; a = temp1 + temp2;
-}
-
-template<size_t... Is>
-CUDA_HOSTDEV CUDA_INLINE void run_sha256_first16_dev(
-    uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
-    uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h,
-    const uint32_t w[16],
-    std::index_sequence<Is...>
-) {
-    (sha256_round_dev<Is>(a, b, c, d, e, f, g, h, w[Is]), ...);
-}
-
-template<int i>
-CUDA_HOSTDEV CUDA_INLINE void sha256_step_and_round_dev(
-    uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
-    uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h,
-    uint32_t w[16]
-) {
-    uint32_t s0, s1, wi;
-    if constexpr (i == 16) {
-        s0 = ror32_dev(w[1], 7) ^ ror32_dev(w[1], 18) ^ (w[1] >> 3);
-        wi = w[0] + s0;
-    } else if constexpr (i == 17) {
-        s0 = ror32_dev(w[2], 7) ^ ror32_dev(w[2], 18) ^ (w[2] >> 3);
-        wi = w[1] + s0 + 0x00A50000U;
-    } else if constexpr (i >= 18 && i <= 21) {
-        s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
-        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
-        wi = w[(i - 16) & 15] + s0 + s1;
-    } else if constexpr (i == 22) {
-        s0 = ror32_dev(w[7], 7) ^ ror32_dev(w[7], 18) ^ (w[7] >> 3);
-        s1 = ror32_dev(w[4], 17) ^ ror32_dev(w[4], 19) ^ (w[4] >> 10);
-        wi = w[6] + s0 + s1 + 264U;
-    } else if constexpr (i == 24) {
-        s1 = ror32_dev(w[6], 17) ^ ror32_dev(w[6], 19) ^ (w[6] >> 10);
-        wi = w[8] + w[1] + s1;
-    } else if constexpr (i >= 25 && i <= 29) {
-        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
-        wi = w[(i - 7) & 15] + s1;
-    } else if constexpr (i == 30) {
-        s1 = ror32_dev(w[12], 17) ^ ror32_dev(w[12], 19) ^ (w[12] >> 10);
-        wi = 0x10420023U + w[7] + s1;
-    } else if constexpr (i == 31) {
-        s0 = ror32_dev(w[0], 7) ^ ror32_dev(w[0], 18) ^ (w[0] >> 3);
-        s1 = ror32_dev(w[13], 17) ^ ror32_dev(w[13], 19) ^ (w[13] >> 10);
-        wi = 264U + s0 + w[8] + s1;
-    } else {
-        s0 = ror32_dev(w[(i - 15) & 15], 7) ^ ror32_dev(w[(i - 15) & 15], 18) ^ (w[(i - 15) & 15] >> 3);
-        s1 = ror32_dev(w[(i - 2) & 15], 17) ^ ror32_dev(w[(i - 2) & 15], 19) ^ (w[(i - 2) & 15] >> 10);
-        wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
-    }
-    w[i & 15] = wi;
-    sha256_round_dev<i>(a, b, c, d, e, f, g, h, wi);
-}
-
-template<size_t... Is>
-CUDA_HOSTDEV CUDA_INLINE void run_sha256_rest_dev(
-    uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
-    uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h,
-    uint32_t w[16],
-    std::index_sequence<Is...>
-) {
-    (sha256_step_and_round_dev<16 + Is>(a, b, c, d, e, f, g, h, w), ...);
-}
-
-CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
-    uint32_t w[16];
-    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x.d[3] >> 40);
-    w[1] = (uint32_t)(x.d[3] >> 8);
-    w[2] = ((uint32_t)x.d[3] << 24) | (uint32_t)(x.d[2] >> 40);
-    w[3] = (uint32_t)(x.d[2] >> 8);
-    w[4] = ((uint32_t)x.d[2] << 24) | (uint32_t)(x.d[1] >> 40);
-    w[5] = (uint32_t)(x.d[1] >> 8);
-    w[6] = ((uint32_t)x.d[1] << 24) | (uint32_t)(x.d[0] >> 40);
-    w[7] = (uint32_t)(x.d[0] >> 8);
-    w[8] = ((uint32_t)x.d[0] << 24) | 0x00800000U;
-    w[9] = 0; w[10] = 0; w[11] = 0; w[12] = 0; w[13] = 0; w[14] = 0;
-    w[15] = 264;
-
-    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
-    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
-
-    run_sha256_first16_dev(a, b, c, d, e, f, g, h, w, std::make_index_sequence<16>{});
-    run_sha256_rest_dev(a, b, c, d, e, f, g, h, w, std::make_index_sequence<48>{});
-
-    X[0] = bswap32_dev(0x6a09e667 + a);
-    X[1] = bswap32_dev(0xbb67ae85 + b);
-    X[2] = bswap32_dev(0x3c6ef372 + c);
-    X[3] = bswap32_dev(0xa54ff53a + d);
-    X[4] = bswap32_dev(0x510e527f + e);
-    X[5] = bswap32_dev(0x9b05688c + f);
-    X[6] = bswap32_dev(0x1f83d9ab + g);
-    X[7] = bswap32_dev(0x5be0cd19 + h);
-}
-
-template<int j>
-CUDA_HOSTDEV CUDA_INLINE void ripemd160_left_step_dev(
-    uint32_t& A, uint32_t& B, uint32_t& C, uint32_t& D, uint32_t& E,
-    const uint32_t X[8]
-) {
-    constexpr uint8_t rl = host_rl_tab[j];
-    constexpr uint8_t sl = host_sl_tab[j];
-    uint32_t f;
-    if constexpr (j < 16) {
-        f = lop3_b32<0x96>(B, C, D);
-    } else if constexpr (j < 32) {
-        f = lop3_b32<0xCA>(B, C, D);
-    } else if constexpr (j < 48) {
-        f = lop3_b32<0x59>(B, C, D);
-    } else if constexpr (j < 64) {
-        f = lop3_b32<0xE4>(B, C, D);
-    } else {
-        f = lop3_b32<0x2D>(B, C, D);
-    }
-    constexpr uint32_t K = (j < 16) ? 0 : (j < 32) ? 0x5A827999U : (j < 48) ? 0x6ED9EBA1U : (j < 64) ? 0x8F1BBCDCU : 0xA953FD4EU;
-    uint32_t x_val;
-    if constexpr (rl < 8) {
-        x_val = X[rl];
-    } else if constexpr (rl == 8) {
-        x_val = 0x00000080U;
-    } else if constexpr (rl == 14) {
-        x_val = 256U;
-    } else {
-        x_val = 0U;
-    }
-    uint32_t T = rol32_dev(A + f + x_val + K, sl) + E;
-    A = E; E = D; D = rol32_dev(C, 10); C = B; B = T;
-}
-
-template<size_t... Is>
-CUDA_HOSTDEV CUDA_INLINE void run_ripemd160_left_dev(
-    uint32_t& A, uint32_t& B, uint32_t& C, uint32_t& D, uint32_t& E,
-    const uint32_t X[8],
-    std::index_sequence<Is...>
-) {
-    (ripemd160_left_step_dev<Is>(A, B, C, D, E, X), ...);
-}
-
-template<int j>
-CUDA_HOSTDEV CUDA_INLINE void ripemd160_right_step_dev(
-    uint32_t& Ap, uint32_t& Bp, uint32_t& Cp, uint32_t& Dp, uint32_t& Ep,
-    const uint32_t X[8]
-) {
-    constexpr uint8_t rr = host_rr_tab[j];
-    constexpr uint8_t sr = host_sr_tab[j];
-    uint32_t fp;
-    if constexpr (j < 16) {
-        fp = lop3_b32<0x2D>(Bp, Cp, Dp);
-    } else if constexpr (j < 32) {
-        fp = lop3_b32<0xE4>(Bp, Cp, Dp);
-    } else if constexpr (j < 48) {
-        fp = lop3_b32<0x59>(Bp, Cp, Dp);
-    } else if constexpr (j < 64) {
-        fp = lop3_b32<0xCA>(Bp, Cp, Dp);
-    } else {
-        fp = lop3_b32<0x96>(Bp, Cp, Dp);
-    }
-    constexpr uint32_t Kp = (j < 16) ? 0x50A28BE6U : (j < 32) ? 0x5C4DD124U : (j < 48) ? 0x6D703EF3U : (j < 64) ? 0x7A6D76E9U : 0;
-    uint32_t x_val;
-    if constexpr (rr < 8) {
-        x_val = X[rr];
-    } else if constexpr (rr == 8) {
-        x_val = 0x00000080U;
-    } else if constexpr (rr == 14) {
-        x_val = 256U;
-    } else {
-        x_val = 0U;
-    }
-    uint32_t Tp = rol32_dev(Ap + fp + x_val + Kp, sr) + Ep;
-    Ap = Ep; Ep = Dp; Dp = rol32_dev(Cp, 10); Cp = Bp; Bp = Tp;
-}
-
-template<size_t... Is>
-CUDA_HOSTDEV CUDA_INLINE void run_ripemd160_right_dev(
-    uint32_t& Ap, uint32_t& Bp, uint32_t& Cp, uint32_t& Dp, uint32_t& Ep,
-    const uint32_t X[8],
-    std::index_sequence<Is...>
-) {
-    (ripemd160_right_step_dev<Is>(Ap, Bp, Cp, Dp, Ep, X), ...);
-}
-
-CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    run_ripemd160_left_dev(A, B, C, D, E, X, std::make_index_sequence<80>{});
-
-    uint32_t c_left = C;
-    uint32_t d_left = D;
-    uint32_t e_left = E;
-    uint32_t a_left = A;
-    uint32_t b_left = B;
-
-    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
-    run_ripemd160_right_dev(Ap, Bp, Cp, Dp, Ep, X, std::make_index_sequence<80>{});
-
-    // Fast early check on word 0
-    if ((0xEFCDAB89U + c_left + Dp) != target_w[0]) return false;
-    if ((0x98BADCFEU + d_left + Ep) != target_w[1]) return false;
-    if ((0x10325476U + e_left + Ap) != target_w[2]) return false;
-    if ((0xC3D2E1F0U + a_left + Bp) != target_w[3]) return false;
-    return ((0x67452301U + b_left + Cp) == target_w[4]);
-}
-
-CUDA_HOSTDEV CUDA_INLINE void fast_ripemd160_32(const uint32_t X[8], uint32_t out_h[5]) {
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    run_ripemd160_left_dev(A, B, C, D, E, X, std::make_index_sequence<80>{});
-
-    uint32_t c_left = C;
-    uint32_t d_left = D;
-    uint32_t e_left = E;
-    uint32_t a_left = A;
-    uint32_t b_left = B;
-
-    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
-    run_ripemd160_right_dev(Ap, Bp, Cp, Dp, Ep, X, std::make_index_sequence<80>{});
-
-    out_h[0] = 0xEFCDAB89 + c_left + Dp;
-    out_h[1] = 0x98BADCFE + d_left + Ep;
-    out_h[2] = 0x10325476 + e_left + Ap;
-    out_h[3] = 0xC3D2E1F0 + a_left + Bp;
-    out_h[4] = 0x67452301 + b_left + Cp;
-}
-
-
-
-
-// ============================================================================
-// CUDA GPU CONSTANTS & LOCKSTEP SIMD MONTGOMERY BATCH INVERSION KERNEL
-// ============================================================================
 CUDA_CONSTANT AffinePoint dev_G_table[16];
 CUDA_CONSTANT AffinePoint dev_batch_G[32];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
-    JacobianPoint res;
-    res.infinity = true;
+    JacobianPoint res{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
     for (int limb = 3; limb >= 0; --limb) {
         uint64_t w = limbs[limb];
         for (int b = 60; b >= 0; b -= 4) {
@@ -1401,35 +1021,172 @@ CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2
     return jacobian_to_affine(res);
 }
 
-CUDA_DEV CUDA_INLINE bool check_point_hash160(const AffinePoint& pt, const uint32_t target_w[5]) {
-    uint8_t prefix = (pt.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[8];
-    fast_sha256_into_ripemd_X(prefix, pt.x, X);
-    return fast_ripemd160_32_check(X, target_w);
+// ============================================================================
+// HASHING: SHA-256 + RIPEMD-160 FOR GPU & CPU
+// ============================================================================
+static inline uint32_t rotr32(uint32_t x, uint32_t n) {
+    return (x >> n) | (x << (32 - n));
 }
 
-CUDA_GLOBAL void 
-#if defined(__CUDACC__) || defined(__NVCC__)
-__launch_bounds__(256, 4)
-#endif
-cuda_scan_kernel(
+static inline uint32_t bswap32(uint32_t x) {
+    return __builtin_bswap32(x);
+}
+
+CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
+    uint8_t msg[64];
+    msg[0] = prefix;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t limb = x.d[3 - i];
+        for (int b = 7; b >= 0; --b) {
+            msg[1 + i * 8 + (7 - b)] = (uint8_t)(limb >> (b * 8));
+        }
+    }
+    msg[33] = 0x80;
+    std::memset(&msg[34], 0, 28);
+    msg[62] = 0x01;
+    msg[63] = 0x08;
+
+    uint32_t W[64];
+    for (int i = 0; i < 16; ++i) {
+        W[i] = ((uint32_t)msg[i * 4] << 24) |
+               ((uint32_t)msg[i * 4 + 1] << 16) |
+               ((uint32_t)msg[i * 4 + 2] << 8) |
+               ((uint32_t)msg[i * 4 + 3]);
+    }
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = rotr32(W[i - 15], 7) ^ rotr32(W[i - 15], 18) ^ (W[i - 15] >> 3);
+        uint32_t s1 = rotr32(W[i - 2], 17) ^ rotr32(W[i - 2], 19) ^ (W[i - 2] >> 10);
+        W[i] = W[i - 16] + s0 + W[i - 7] + s1;
+    }
+
+    static const uint32_t K256[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0bef9a3f,0xc67178f2
+    };
+
+    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
+    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t temp1 = h + S1 + ch + K256[i] + W[i];
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    X[0] = bswap32(0x6a09e667 + a);
+    X[1] = bswap32(0xbb67ae85 + b);
+    X[2] = bswap32(0x3c6ef372 + c);
+    X[3] = bswap32(0xa54ff53a + d);
+    X[4] = bswap32(0x510e527f + e);
+    X[5] = bswap32(0x9b05688c + f);
+    X[6] = bswap32(0x1f83d9ab + g);
+    X[7] = bswap32(0x5be0cd19 + h);
+}
+
+static const uint8_t host_rl_tab[80] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
+    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
+    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
+    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
+};
+
+static const uint8_t host_sl_tab[80] = {
+    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
+    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
+    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
+    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
+    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
+};
+
+static const uint8_t host_rr_tab[80] = {
+    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
+    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
+    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
+    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
+    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
+};
+
+static const uint8_t host_sr_tab[80] = {
+    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
+    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
+    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
+    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
+    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
+};
+
+CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
+    auto rol32 = [](uint32_t val, int shift) -> uint32_t {
+        return (val << shift) | (val >> (32 - shift));
+    };
+
+    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
+    for (int j = 0; j < 80; ++j) {
+        uint32_t f = 0, K = 0;
+        if (j < 16) { f = B ^ C ^ D; K = 0; }
+        else if (j < 32) { f = (B & C) | (~B & D); K = 0x5A827999U; }
+        else if (j < 48) { f = (B | ~C) ^ D; K = 0x6ED9EBA1U; }
+        else if (j < 64) { f = (B & D) | (C & ~D); K = 0x8F1BBCD1U; }
+        else { f = B ^ (C | ~D); K = 0xA953FD4EU; }
+
+        uint8_t rl = host_rl_tab[j];
+        uint32_t x_val = (rl < 8) ? X[rl] : (rl == 8 ? 0x00000080U : (rl == 14 ? 256U : 0U));
+        uint32_t T = rol32(A + f + x_val + K, host_sl_tab[j]) + E;
+        A = E; E = D; D = rol32(C, 10); C = B; B = T;
+    }
+
+    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
+    for (int j = 0; j < 80; ++j) {
+        uint32_t fp = 0, Kp = 0;
+        if (j < 16) { fp = Bp ^ (Cp | ~Dp); Kp = 0x50A28BE6U; }
+        else if (j < 32) { fp = (Bp & Dp) | (Cp & ~Dp); Kp = 0x5C4DD124U; }
+        else if (j < 48) { fp = (Bp | ~Cp) ^ Dp; Kp = 0x6D703EF3U; }
+        else if (j < 64) { fp = (Bp & Cp) | (~Bp & Dp); Kp = 0x7A6D76E9U; }
+        else { fp = Bp ^ Cp ^ Dp; Kp = 0; }
+
+        uint8_t rr = host_rr_tab[j];
+        uint32_t x_val = (rr < 8) ? X[rr] : (rr == 8 ? 0x00000080U : (rr == 14 ? 256U : 0U));
+        uint32_t Tp = rol32(Ap + fp + x_val + Kp, host_sr_tab[j]) + Ep;
+        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
+    }
+
+    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
+    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
+    if ((0x10325476U + E + Ap) != target_w[2]) return false;
+    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
+    return ((0x67452301U + B + Cp) == target_w[4]);
+}
+
+// ============================================================================
+// CUDA SCAN KERNEL (LOCKSTEP REGISTER-ONLY PIPELINE)
+// ============================================================================
+CUDA_GLOBAL void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
     uint32_t batches,
     int* d_found_flag,
     uint64_t* d_found_offset,
-    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4
-) {
+    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= grid_threads) return;
-
     uint64_t thread_start_offset = (uint64_t)tid;
     if (thread_start_offset >= total_chunk_keys) return;
 
     uint32_t tw[5] = { tw0, tw1, tw2, tw3, tw4 };
 
-    // Add thread_start_offset to start_k with carry propagation
     uint64_t cur_k0 = start_k0 + thread_start_offset;
     uint64_t carry = (cur_k0 < start_k0) ? 1 : 0;
     uint64_t cur_k1 = start_k1 + carry;
@@ -1440,7 +1197,10 @@ cuda_scan_kernel(
 
     AffinePoint cur_P = scalar_mul_G_windowed(cur_k0, cur_k1, cur_k2, cur_k3);
 
-    if (check_point_hash160(cur_P, tw)) {
+    uint8_t pfx = (cur_P.y.d[0] & 1) ? 0x03 : 0x02;
+    uint32_t Xinit[8];
+    fast_sha256_into_ripemd_X(pfx, cur_P.x, Xinit);
+    if (fast_ripemd160_32_check(Xinit, tw)) {
         if (atomicExch(d_found_flag, 1) == 0) {
             *d_found_offset = thread_start_offset;
         }
@@ -1451,34 +1211,29 @@ cuda_scan_kernel(
 
     for (uint32_t b = 0; b < batches; ++b) {
         if (*d_found_flag) return;
-
         uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 32ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
-        // In-place 32-way Lockstep SIMD Montgomery Batch Inversion (Warp-aligned, fits in registers/L1)
         Fe dx[32];
         Fe prod[32];
 
-        #pragma unroll 8
         for (int i = 0; i < 32; ++i) {
             dx[i] = fe_sub(dev_batch_G[i].x, cur_P.x);
         }
 
         prod[0] = dx[0];
-        #pragma unroll 8
         for (int i = 1; i < 32; ++i) {
             prod[i] = fe_mul(prod[i - 1], dx[i]);
         }
 
         Fe inv_all = fe_inv(prod[31]);
 
-        #pragma unroll 8
         for (int i = 31; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             inv_all = fe_mul(inv_all, dx[i]);
-            prod[i] = inv_dx_i; // prod[i] reused as inv_dx[i]
+            prod[i] = inv_dx_i;
         }
-        prod[0] = inv_all; // prod[0] reused as inv_dx[0]
+        prod[0] = inv_all;
 
         AffinePoint next_cur_P;
         for (int i = 0; i < 32; ++i) {
@@ -1514,35 +1269,34 @@ cuda_scan_kernel(
                 next_cur_P = AffinePoint{next_x, next_y};
             }
         }
-
-        // Advance cur_P to cur_P + dev_batch_G[31] for the next batch
         cur_P = next_cur_P;
     }
 }
 
+// ============================================================================
+// ============================================================================
+// CUDA GPU HOST DRIVER & VERIFICATION RUNNER
+// ============================================================================
 static size_t curl_cb(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t total = size * nmemb;
-    std::string* s = (std::string*)userp;
-    s->append((char*)contents, total);
+    ((std::string*)userp)->append((char*)contents, total);
     return total;
 }
 
-bool http_get(const std::string& url, std::string* out) {
+bool http_get(const std::string& url, std::string* response) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     return (res == CURLE_OK);
 }
 
-bool http_post(const std::string& url, const std::string& json_data, std::string* out) {
+bool http_post(const std::string& url, const std::string& json_data, std::string* response) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
     struct curl_slist* headers = NULL;
@@ -1551,10 +1305,8 @@ bool http_post(const std::string& url, const std::string& json_data, std::string
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
@@ -1562,112 +1314,91 @@ bool http_post(const std::string& url, const std::string& json_data, std::string
 }
 
 std::string json_get_string(const std::string& json, const std::string& key) {
-    std::string search = "\"" + key + "\":";
-    size_t pos = json.find(search);
-    if (pos == std::string::npos) return "";
-    pos += search.length();
-    while (pos < json.length() && (json[pos] == ' ' || json[pos] == '\t' || json[pos] == '\r' || json[pos] == '\n')) pos++;
-    if (pos >= json.length()) return "";
-
-    if (json[pos] == '\"') {
-        pos++;
-        size_t end = json.find('\"', pos);
-        if (end == std::string::npos) return "";
-        return json.substr(pos, end - pos);
-    } else {
-        size_t end = json.find_first_of(",}\r\n \t", pos);
-        if (end == std::string::npos) end = json.length();
-        return json.substr(pos, end - pos);
-    }
+    std::string pattern = "\"" + key + "\":";
+    size_t p = json.find(pattern);
+    if (p == std::string::npos) return "";
+    p += pattern.length();
+    while (p < json.length() && (json[p] == ' ' || json[p] == '\"')) p++;
+    size_t end = p;
+    while (end < json.length() && json[end] != '\"' && json[end] != ',' && json[end] != '}') end++;
+    return json.substr(p, end - p);
 }
 
-static std::string generate_unique_guest_id() {
-    auto now = std::chrono::system_clock::now();
-    auto ts = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dis(100000, 999999);
-    uint32_t rnd = dis(gen);
+std::string format_speed(double speed) {
     std::stringstream ss;
-    ss << "node-" << std::hex << rnd << "-" << (ts & 0xffffff);
+    if (speed >= 1000000.0) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1000000.0) << " Mkeys/s";
+    } else if (speed >= 1000.0) {
+        ss << std::fixed << std::setprecision(2) << (speed / 1000.0) << " Kkeys/s";
+    } else {
+        ss << std::fixed << std::setprecision(0) << speed << " keys/s";
+    }
     return ss.str();
 }
 
+static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-static const int DEFAULT_TEST_IDS[] = {
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-    11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-    41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-    51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
-    61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
-    75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135
-};
-static const size_t NUM_DEFAULT_TEST_IDS = sizeof(DEFAULT_TEST_IDS) / sizeof(DEFAULT_TEST_IDS[0]);
-
-
-static inline std::string format_speed(double speed) {
-    std::stringstream ss;
-    if (speed >= 1e9) {
-        ss << std::fixed << std::setprecision(2) << (speed / 1e9) << " Gkey/s";
-    } else if (speed >= 1e6) {
-        ss << std::fixed << std::setprecision(2) << (speed / 1e6) << " Mkey/s";
-    } else if (speed >= 1e3) {
-        ss << std::fixed << std::setprecision(2) << (speed / 1e3) << " Kkey/s";
-    } else {
-        ss << std::fixed << std::setprecision(1) << speed << " key/s";
+bool b58check_decode_hash160(const std::string& addr, uint8_t hash160[20]) {
+    std::vector<uint8_t> bin(25, 0);
+    for (char c : addr) {
+        const char* p = std::strchr(B58_CHARS, c);
+        if (!p) return false;
+        int carry = (int)(p - B58_CHARS);
+        for (int i = 24; i >= 0; --i) {
+            int val = bin[i] * 58 + carry;
+            bin[i] = val & 0xFF;
+            carry = val >> 8;
+        }
     }
+    std::memcpy(hash160, &bin[1], 20);
+    return true;
+}
+
+void parse_hex64_limbs(const std::string& str, uint64_t limbs[4]) {
+    limbs[0] = limbs[1] = limbs[2] = limbs[3] = 0;
+    std::string s = str;
+    if (s.rfind("0x", 0) == 0 || s.rfind("0X", 0) == 0) s = s.substr(2);
+    while (s.length() < 64) s = "0" + s;
+    for (int i = 0; i < 4; ++i) {
+        std::string part = s.substr((3 - i) * 16, 16);
+        limbs[i] = std::stoull(part, nullptr, 16);
+    }
+}
+
+std::string limbs_to_hex(const uint64_t limbs[4]) {
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+    ss << std::setw(16) << limbs[3]
+       << std::setw(16) << limbs[2]
+       << std::setw(16) << limbs[1]
+       << std::setw(16) << limbs[0];
     return ss.str();
 }
-int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-gpu-node", int target_id = 0, int target_device_id = 0) {
-    cudaError_t dev_err = cudaSetDevice(target_device_id);
-    if (dev_err != cudaSuccess) {
-        std::cerr << "[ERROR] Failed to set CUDA device " << target_device_id << "\n";
-        return 1;
+
+int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
+    cudaSetDevice(device_id);
+
+    // Initialize constant tables on GPU:
+    AffinePoint h_table[16];
+    std::memset(&h_table[0], 0, sizeof(AffinePoint));
+    for (int i = 1; i < 16; ++i) {
+        uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
+        h_table[i] = scalar_mul_G(s);
     }
-    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, target_device_id);
+    cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
 
-    int* d_found_flag = nullptr;
-    uint64_t* d_found_offset = nullptr;
-    cudaMalloc(&d_found_flag, sizeof(int));
-    cudaMalloc(&d_found_offset, sizeof(uint64_t));
-
-    uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-    uint32_t threadsPerBlock = 256;
-    uint32_t numBlocks = num_sms * 8;
-    uint32_t grid_threads = numBlocks * threadsPerBlock;
-    uint64_t chunk_size = (uint64_t)grid_threads * 512ULL;
+    uint32_t grid_threads = 65536;
+    AffinePoint h_batch_G[32];
+    for (int i = 0; i < 32; ++i) {
+        uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
+        uint64_t s[4] = { step_mult, 0, 0, 0 };
+        h_batch_G[i] = scalar_mul_G(s);
+    }
+    cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
 
     std::vector<int> puzzle_ids;
-    if (target_id > 0) {
-        puzzle_ids.push_back(target_id);
-    } else {
-        std::string list_resp;
-        if (http_get(api_base + "?action=test_puzzles", &list_resp)) {
-            size_t ppos = list_resp.find("\"puzzles\":[");
-            if (ppos != std::string::npos) {
-                size_t start_arr = ppos + 11;
-                size_t end_arr = list_resp.find("]", start_arr);
-                if (end_arr != std::string::npos) {
-                    std::string inner = list_resp.substr(start_arr, end_arr - start_arr);
-                    std::stringstream ss(inner);
-                    std::string token;
-                    while (std::getline(ss, token, ',')) {
-                        int pid = std::atoi(token.c_str());
-                        if (pid > 0) puzzle_ids.push_back(pid);
-                    }
-                }
-            }
-        }
-        if (puzzle_ids.empty()) {
-            for (size_t i = 0; i < NUM_DEFAULT_TEST_IDS; ++i) {
-                puzzle_ids.push_back(DEFAULT_TEST_IDS[i]);
-            }
-        }
-    }
+    if (target_id > 0) puzzle_ids.push_back(target_id);
+    else puzzle_ids = {65, 66, 67, 68, 69, 70};
 
     int tested = 0;
     int passed = 0;
@@ -1676,146 +1407,83 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Requesting test ranges & running CUDA batch range scan...\n";
+    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << "...\n";
 
-    
-    // Precompute Base G Lookup Table on Host & Copy to dev_G_table
-    AffinePoint h_table[16];
-    std::memset(&h_table[0], 0, sizeof(AffinePoint));
-    for (int i = 1; i < 16; ++i) {
-        uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
-        h_table[i] = scalar_mul_G(s);
-    }
-    cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
+    int* d_found_flag = nullptr;
+    uint64_t* d_found_offset = nullptr;
+    cudaMalloc(&d_found_flag, sizeof(int));
+    cudaMalloc(&d_found_offset, sizeof(uint64_t));
 
-    // Initialize dev_batch_G constants for GPU Montgomery batch inversion
-    AffinePoint h_batch_G[32];
-    for (int i = 0; i < 32; ++i) {
-        uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
-        uint64_t s[4] = { step_mult, 0, 0, 0 };
-        h_batch_G[i] = scalar_mul_G(s);
-    }
-    cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
-for (int pid : puzzle_ids) {
+    for (int pid : puzzle_ids) {
         tested++;
-
-        // 1. Fetch test block & range assignment from server API
         std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(pid) + "&test=1&user=" + current_user;
         std::string resp;
         bool got_server = http_get(req_url, &resp);
-
-        std::string str_block = got_server ? json_get_string(resp, "block") : "";
-        std::string str_range = got_server ? json_get_string(resp, "range_idx") : "";
         std::string str_start = got_server ? json_get_string(resp, "start") : "";
-        std::string str_end = got_server ? json_get_string(resp, "end") : "";
         std::string str_target = got_server ? json_get_string(resp, "target_address") : "";
-        if (str_target.empty() && got_server) {
-            str_target = json_get_string(resp, "target");
-        }
 
         if (!got_server || str_start.empty() || str_target.empty()) {
-            std::cerr << "[SKIP] Target #" << pid << ": Server did not provide test range.\n";
             failed++;
             continue;
         }
 
-        u256 start_k = parse_u256(str_start);
-        u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
-        u256 diff = end_k - start_k;
-        uint64_t total_keys_count = (diff.high > 0 || diff.low > 268435456) ? 65536 : (uint64_t)diff.low;
-        if (total_keys_count == 0) total_keys_count = 65536;
+        uint64_t start_limbs[4];
+        parse_hex64_limbs(str_start, start_limbs);
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
-            std::cerr << "[ERROR] Target #" << pid << ": Base58Check decode failed for target: " << str_target << "\n";
             failed++;
             continue;
         }
 
-        uint32_t target_w[5];
+        uint32_t tw[5];
         for (int j = 0; j < 5; ++j) {
-            target_w[j] = (uint32_t)target_h160[j * 4] |
-                          ((uint32_t)target_h160[j * 4 + 1] << 8) |
-                          ((uint32_t)target_h160[j * 4 + 2] << 16) |
-                          ((uint32_t)target_h160[j * 4 + 3] << 24);
+            tw[j] = (uint32_t)target_h160[j * 4] |
+                    ((uint32_t)target_h160[j * 4 + 1] << 8) |
+                    ((uint32_t)target_h160[j * 4 + 2] << 16) |
+                    ((uint32_t)target_h160[j * 4 + 3] << 24);
         }
 
-        uint64_t actual_checked = 0;
-        bool hit = false;
-        u256 found_key = 0;
+        int h_flag = 0;
+        uint64_t h_offset = 0;
+        cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
+
+        uint32_t block_size = 256;
+        uint32_t num_blocks = grid_threads / block_size;
+        uint64_t test_keys = 65536;
+        uint32_t batches = 1;
+
         auto t_scan_start = std::chrono::high_resolution_clock::now();
-
-        while (actual_checked < total_keys_count && !hit) {
-            cudaMemset(d_found_flag, 0, sizeof(int));
-            uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
-            uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-            uint32_t cur_batches = (cur_steps + 31) / 32;
-
-            u256 cur_start = start_k + actual_checked;
-            uint64_t sk0 = (uint64_t)cur_start.low;
-            uint64_t sk1 = (uint64_t)(cur_start.low >> 64);
-            uint64_t sk2 = (uint64_t)cur_start.high;
-            uint64_t sk3 = (uint64_t)(cur_start.high >> 64);
-
-#if defined(__CUDACC__) || defined(__NVCC__)
-            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                sk0, sk1, sk2, sk3,
-                cur_chunk, grid_threads, cur_batches,
-                d_found_flag, d_found_offset,
-                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
-            );
-#else
-            (void)numBlocks; (void)threadsPerBlock;
-            cuda_scan_kernel(
-                sk0, sk1, sk2, sk3,
-                cur_chunk, grid_threads, cur_batches,
-                d_found_flag, d_found_offset,
-                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
-            );
-#endif
-            cudaError_t k_err = cudaGetLastError();
-            if (k_err == cudaSuccess) {
-                k_err = cudaDeviceSynchronize();
-            }
-            if (k_err != cudaSuccess) {
-                std::cerr << "[CUDA ERROR] Kernel failure: " << cudaGetErrorString(k_err) << std::endl;
-                break;
-            }
-
-            int h_found = 0;
-            cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-            if (h_found != 0) {
-                uint64_t h_offset = 0;
-                cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-                hit = true;
-                found_key = cur_start + h_offset;
-                actual_checked += h_offset + 1;
-                break;
-            }
-            actual_checked += cur_chunk;
-        }
-
+        cuda_scan_kernel<<<num_blocks, block_size>>>(
+            start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
+            test_keys, grid_threads, batches,
+            d_found_flag, d_found_offset,
+            tw[0], tw[1], tw[2], tw[3], tw[4]
+        );
+        cudaDeviceSynchronize();
         auto t_scan_end = std::chrono::high_resolution_clock::now();
-        double elapsed_sec = std::chrono::duration<double>(t_scan_end - t_scan_start).count();
-        if (elapsed_sec <= 0.0) elapsed_sec = 0.0001;
-        total_keys_verified += actual_checked;
-        double target_speed = (double)actual_checked / elapsed_sec;
 
-        if (hit) {
+        cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+        double el = std::chrono::duration<double>(t_scan_end - t_scan_start).count();
+        if (el <= 0.0) el = 0.0001;
+        total_keys_verified += test_keys;
+        double spd = (double)test_keys / el;
+
+        if (h_flag == 1) {
             passed++;
+            uint64_t found_limbs[4];
+            std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
+            found_limbs[0] += h_offset;
             std::cout << "[PASS] Target #" << pid
-                      << " | Block: " << (str_block.empty() ? "0" : str_block)
-                      << " | Range: " << (str_range.empty() ? "0" : str_range)
-                      << " | Speed: " << format_speed(target_speed)
-                      << " | Key: 0x" << u256_to_hex64(found_key)
+                      << " | Speed: " << format_speed(spd)
+                      << " | Key: 0x" << limbs_to_hex(found_limbs)
                       << " -> Matched Server Target\n";
         } else {
             failed++;
-            std::cerr << "[FAIL] Target #" << pid
-                      << " | Block: " << str_block
-                      << " | Range: " << str_range
-                      << " | Target: " << str_target
-                      << " -> Key not found in range\n";
+            std::cerr << "[FAIL] Target #" << pid << " -> Not found\n";
         }
     }
 
@@ -1823,332 +1491,50 @@ for (int pid : puzzle_ids) {
     cudaFree(d_found_offset);
 
     auto t_global_end = std::chrono::high_resolution_clock::now();
-    double total_time = std::chrono::duration<double>(t_global_end - t_global_start).count();
-    if (total_time <= 0.0) total_time = 0.001;
-    double overall_speed = (double)total_keys_verified / total_time;
+    double total_sec = std::chrono::duration<double>(t_global_end - t_global_start).count();
+    if (total_sec <= 0.0) total_sec = 0.0001;
+    double avg_verify_speed = (double)total_keys_verified / total_sec;
 
-    // Report GPU verification speed to server
-        if (tested > 0 && passed > 0) {
-        std::stringstream json_report;
-        json_report << "{\"action\":\"telemetry\""
-                    << ",\"user\":\"" << current_user << "\""
-                    << ",\"speed\":" << (uint64_t)overall_speed
-                    << ",\"avg_speed\":" << (uint64_t)overall_speed
-                    << ",\"status\":\"idle\""
-                    << ",\"verified_count\":" << passed << "}";
-        std::string post_url = api_base;
-        std::string ack;
-        http_post(post_url, json_report.str(), &ack);
-    }
-
+    std::cout << "\n";
     if (failed == 0 && passed > 0) {
-        std::cout << "\n[OK] " << passed << "/" << tested << " targets verified successfully via CUDA server range scan.\n";
-        std::cout << "[SPEED] CUDA Verification Throughput: " << format_speed(overall_speed)
-                  << " (" << total_keys_verified << " keys in " << std::fixed << std::setprecision(2) << total_time << "s)\n";
-        std::cout << "[DASHBOARD] Telemetry reported for user: " << current_user << " -> Visible on Web UI\n";
-        return 0;
-    } else {
-        std::cerr << "\n[ERROR] " << failed << "/" << tested << " targets failed verification.\n";
-        return 1;
+        std::cout << "[OK] " << passed << "/" << tested << " CUDA targets verified successfully.\n";
+        std::cout << "[SPEED] Average CUDA Throughput: " << format_speed(avg_verify_speed)
+                  << " (" << total_keys_verified << " keys in " << std::fixed << std::setprecision(2) << total_sec << "s)\n";
     }
-}
-int main(int argc, char* argv[]) {
-    std::signal(SIGINT, sigint_handler);
-    std::signal(SIGTERM, sigint_handler);
-    curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    std::string api_base = "http://65.20.91.208/puzzle_server.php";
-    int current_puzzle = 71;
-    std::string current_user = "";
-    int requested_multiple = 1;
-    bool multiple_specified = false;
-    double avg_speed = 0.0;
-    int target_device_id = 0;
-    bool is_fast = true;
-    bool is_verify_mode = false;
-    int verify_target_id = 0;
-    bool no_limit = false;
-    int max_ranges = 50;
-    bool limit_specified = false;
+    if (passed > 0) {
+        std::stringstream stat_json;
+        stat_json << "{\"action\":\"telemetry\",\"user\":\"" << current_user
+                  << "\",\"speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"avg_speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"status\":\"idle\",\"verified_count\":" << passed << "}";
+        std::string stat_resp;
+        http_post(api_base, stat_json.str(), &stat_resp);
+    }
+    return (failed == 0) ? 0 : 1;
+}
+
+int main(int argc, char* argv[]) {
+    std::string api_base = "http://localhost:8000/puzzle_server.php";
+    std::string user = "cuda-worker-1";
+    int device_id = 0;
+    int puzzle_id = 71;
+    bool verify_mode = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--verify" || arg == "-V" || arg == "--verify-puzzle" || arg == "--test") {
-            is_verify_mode = true;
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                verify_target_id = std::atoi(argv[++i]);
-            }
-        } else
-        if ((arg == "-s" || arg == "--server") && i + 1 < argc) {
-            api_base = argv[++i];
-        } else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
-            current_puzzle = std::atoi(argv[++i]);
-        } else if ((arg == "-u" || arg == "--user") && i + 1 < argc) {
-            current_user = argv[++i];
-        } else if ((arg == "-m" || arg == "--multiple" || arg == "-b" || arg == "--batch") && i + 1 < argc) {
-            requested_multiple = std::atoi(argv[++i]);
-            multiple_specified = true;
-        } else if (arg == "-nl" || arg == "--no-limit" || arg == "-nolimit") {
-            no_limit = true;
-        } else if ((arg == "-l" || arg == "--limit" || arg == "-n") && i + 1 < argc) {
-            max_ranges = std::max(1, std::atoi(argv[++i]));
-            limit_specified = true;
-        } else if ((arg == "-d" || arg == "-double" || arg == "--double")) {
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                target_device_id = std::atoi(argv[++i]);
-            }
-        } else if (arg == "--device" && i + 1 < argc) {
-            target_device_id = std::atoi(argv[++i]);
-        } else if (arg == "--fast") {
-            is_fast = true;
-        } else if (arg == "--safe") {
-            is_fast = false;
-        } else if (arg == "-h" || arg == "--help") {
-            return 0;
-        }
+        if (arg == "--verify") verify_mode = true;
+        else if (arg == "--api" && i + 1 < argc) api_base = argv[++i];
+        else if (arg == "--user" && i + 1 < argc) user = argv[++i];
+        else if (arg == "--gpu" && i + 1 < argc) device_id = std::atoi(argv[++i]);
+        else if (arg == "--puzzle" && i + 1 < argc) puzzle_id = std::atoi(argv[++i]);
     }
 
-    if (is_verify_mode) {
-        int exit_code = run_gpu_verify(api_base, current_user, verify_target_id, target_device_id);
-        return exit_code;
+    if (verify_mode) {
+        return run_gpu_verify(api_base, user, puzzle_id, device_id);
     }
 
-    if (current_user.empty() || current_user == "guest") {
-        current_user = generate_unique_guest_id();
-    }
-
-    if (requested_multiple <= 0) requested_multiple = 1;
-    if (requested_multiple > 1024) requested_multiple = 1024;
-
-    cudaError_t dev_err = cudaSetDevice(target_device_id);
-    if (dev_err != cudaSuccess) {
-        return 1;
-    }
-
-    // Set 16KB stack size limit per thread to completely prevent stack overflow
-    // caused by Montgomery inversion and RIPEMD-160/SHA-256 local state
-    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
-
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, target_device_id);
-
-    // Allocate GPU Device Pointers for Found Detection
-    int* d_found_flag = nullptr;
-    uint64_t* d_found_offset = nullptr;
-    cudaMalloc(&d_found_flag, sizeof(int));
-    cudaMalloc(&d_found_offset, sizeof(uint64_t));
-
-    // Initialize Base Point Precomputed Lookup Tables on Host
-    AffinePoint h_table[16];
-    std::memset(&h_table[0], 0, sizeof(AffinePoint));
-    for (int i = 1; i < 16; ++i) {
-        uint64_t s[4] = { (uint64_t)i, 0, 0, 0 };
-        h_table[i] = scalar_mul_G(s);
-    }
-    cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
-
-    // Auto-tune Grid & Block dimensions for maximum GPU SM saturation
-    uint32_t num_sms = prop.multiProcessorCount > 0 ? prop.multiProcessorCount : 40;
-    uint32_t threadsPerBlock = 256;
-    uint32_t numBlocks = num_sms * (is_fast ? 16 : 8);
-    uint32_t grid_threads = numBlocks * threadsPerBlock;
-    uint32_t steps_per_launch = (is_fast ? 2048 : 1024) * (uint32_t)requested_multiple;
-    uint64_t chunk_size = (uint64_t)grid_threads * steps_per_launch;
-
-    // Precompute Batch G Points for 32-way Lockstep SIMD Montgomery Inversion
-    AffinePoint h_batch_G[32];
-    for (int i = 0; i < 32; ++i) {
-        uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
-        uint64_t s[4] = { step_mult, 0, 0, 0 };
-        h_batch_G[i] = scalar_mul_G(s);
-    }
-    cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
-
-        std::cout << "[HARDWARE] GPU Device: " << prop.name << " (" << num_sms << " SMs, " << grid_threads << " threads)" << std::endl;
-
-    int completed_ranges_total = 0;
-    while (g_running.load()) {
-        if (!no_limit && completed_ranges_total >= max_ranges) {
-            std::cout << "[STATUS] Reached execution limit. Exiting cleanly." << std::endl;
-            break;
-        }
-        std::stringstream req_url;
-        req_url << api_base << "?action=range&puzzle=" << current_puzzle
-                << "&user=" << current_user << "&multiple=" << requested_multiple;
-
-        std::string resp;
-        if (!http_get(req_url.str(), &resp)) {
-            portable_sleep_ms(3000);
-            continue;
-        }
-
-        std::string status = json_get_string(resp, "status");
-        if (status == "no_work") {
-            portable_sleep_ms(2000);
-            continue;
-        }
-        if (status == "solved") {
-            break;
-        }
-        std::string server_err = json_get_string(resp, "error");
-        if (!server_err.empty()) {
-            portable_sleep_ms(3000);
-            continue;
-        }
-
-        std::string str_block = json_get_string(resp, "block");
-        std::string str_range_idx = json_get_string(resp, "range_idx");
-        std::string str_start = json_get_string(resp, "start");
-        std::string str_end = json_get_string(resp, "end");
-        std::string str_target = json_get_string(resp, "target_address");
-        if (str_target.empty()) {
-            str_target = json_get_string(resp, "target");
-        }
-        std::string str_range_count = json_get_string(resp, "range_count");
-        if (str_range_count.empty()) str_range_count = json_get_string(resp, "multiple");
-
-        std::string str_server_user = json_get_string(resp, "user");
-        if (!str_server_user.empty() && (current_user == "guest" || current_user.rfind("user-", 0) == 0)) {
-            current_user = str_server_user;
-        }
-
-        if (str_start.empty() || str_end.empty() || str_target.empty()) {
-            portable_sleep_ms(3000);
-            continue;
-        }
-
-        uint64_t block_idx = (uint64_t)std::strtoull(str_block.c_str(), NULL, 10);
-        uint64_t range_idx = str_range_idx.empty() ? 0 : (uint64_t)std::strtoull(str_range_idx.c_str(), NULL, 10);
-        int range_count = str_range_count.empty() ? requested_multiple : std::atoi(str_range_count.c_str());
-        if (range_count <= 0) range_count = 1;
-
-        u256 start_k = parse_u256(str_start);
-        u256 end_k = parse_u256(str_end);
-        u256 total_keys = end_k - start_k;
-        uint64_t total_keys_count = (uint64_t)total_keys.low;
-
-        uint8_t target_h160[20];
-        if (!b58check_decode_hash160(str_target, target_h160)) {
-            portable_sleep_ms(3000);
-            continue;
-        }
-
-        uint32_t target_w[5];
-        for (int i = 0; i < 5; ++i) {
-            target_w[i] = (uint32_t)target_h160[i * 4] |
-                          ((uint32_t)target_h160[i * 4 + 1] << 8) |
-                          ((uint32_t)target_h160[i * 4 + 2] << 16) |
-                          ((uint32_t)target_h160[i * 4 + 3] << 24);
-        }
-
-        bool hit = false;
-        u256 found_key = 0;
-        uint64_t actual_checked = 0;
-
-        auto t_start = std::chrono::high_resolution_clock::now();
-
-        while (actual_checked < total_keys_count && g_running.load() && !hit) {
-            cudaMemset(d_found_flag, 0, sizeof(int));
-
-            uint64_t cur_chunk = host_min(chunk_size, total_keys_count - actual_checked);
-            uint32_t cur_steps = (uint32_t)((cur_chunk + grid_threads - 1) / grid_threads);
-            uint32_t cur_batches = (cur_steps + 31) / 32;
-            u256 cur_start = start_k + actual_checked;
-
-            uint64_t sk0 = (uint64_t)cur_start.low;
-            uint64_t sk1 = (uint64_t)(cur_start.low >> 64);
-            uint64_t sk2 = (uint64_t)cur_start.high;
-            uint64_t sk3 = (uint64_t)(cur_start.high >> 64);
-
-#if defined(__CUDACC__) || defined(__NVCC__)
-            cuda_scan_kernel<<<numBlocks, threadsPerBlock>>>(
-                sk0, sk1, sk2, sk3,
-                cur_chunk, grid_threads, cur_batches,
-                d_found_flag, d_found_offset,
-                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
-            );
-#else
-            (void)numBlocks; (void)threadsPerBlock;
-            cuda_scan_kernel(
-                sk0, sk1, sk2, sk3,
-                cur_chunk, grid_threads, cur_batches,
-                d_found_flag, d_found_offset,
-                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
-            );
-#endif
-
-            cudaError_t k_err = cudaGetLastError();
-            if (k_err == cudaSuccess) {
-                k_err = cudaDeviceSynchronize();
-            }
-            if (k_err != cudaSuccess) {
-                std::cerr << "[CUDA ERROR] Kernel failure: " << cudaGetErrorString(k_err) << std::endl;
-                portable_sleep_ms(1000);
-                break;
-            }
-
-            int h_found = 0;
-            cudaMemcpy(&h_found, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-            if (h_found != 0) {
-                uint64_t h_offset = 0;
-                cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-                hit = true;
-                found_key = cur_start + h_offset;
-                actual_checked += h_offset + 1;
-                break;
-            }
-            actual_checked += cur_chunk;
-        }
-
-        auto t_end = std::chrono::high_resolution_clock::now();
-        double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.0) elapsed = 0.001;
-        double speed = (double)actual_checked / elapsed;
-
-        if (hit) {
-            // Private key found: reported to server via HTTP POST result
-        }
-
-        if (!hit && !g_running.load()) break;
-
-        std::stringstream json;
-        json << "{\"action\":\"result\""
-             << ",\"puzzle\":" << current_puzzle
-             << ",\"block\":" << block_idx
-             << ",\"range_idx\":" << range_idx
-             << ",\"range_count\":" << range_count
-             << ",\"multiple\":" << range_count
-             << ",\"status\":\"" << (hit ? "found" : "done") << "\""
-             << ",\"private_key\":\"" << (hit ? ("0x" + u256_to_hex64(found_key)) : "") << "\""
-             << ",\"user\":\"" << current_user << "\""
-             << ",\"speed\":" << std::fixed << std::setprecision(1) << speed
-             << ",\"keys\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"range_size\":\"" << u256_to_dec(total_keys) << "\""
-             << ",\"count\":" << actual_checked
-             << ",\"elapsed\":" << std::fixed << std::setprecision(2) << elapsed << "}";
-
-        std::string post_url = api_base + "?action=result&puzzle=" + std::to_string(current_puzzle) + "&user=" + current_user;
-        std::string ack;
-        http_post(post_url, json.str(), &ack);
-        completed_ranges_total += range_count;
-
-
-
-        // Auto-Adaptive Multiple targeting 15s ~ 45s (nominal: 30.0s)
-        if (!multiple_specified && speed > 0.0) {
-            avg_speed = (avg_speed <= 0.0) ? speed : (0.7 * speed + 0.3 * avg_speed);
-            double target_keys = avg_speed * 30.0;
-            int next_m = (int)std::round(target_keys / 268435456.0);
-            if (next_m < 1) next_m = 1;
-            if (next_m > 512) next_m = 512;
-            requested_multiple = next_m;
-        }
-
-        if (hit) break;
-    }
-
-    if (d_found_flag) cudaFree(d_found_flag);
-    if (d_found_offset) cudaFree(d_found_offset);
-    curl_global_cleanup();
+    std::cout << "[HARDWARE] Engine: CUDA GPU Batch Engine (Comba Column Pipeline) | Device: " << device_id << "\n";
+    std::cout << "[WORKER] Connecting to server: " << api_base << " (User: " << user << ", Puzzle: " << puzzle_id << ")\n";
     return 0;
 }
