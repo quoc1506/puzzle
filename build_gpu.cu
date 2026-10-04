@@ -695,6 +695,22 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         t[i] = (uint64_t)prod;
         carry = prod >> 64;
     }
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+    u128 k_prod = (u128)carry * SECP_K;
+    uint64_t k_lo = (uint64_t)k_prod;
+    uint64_t k_hi = (uint64_t)(k_prod >> 64);
+    unsigned char c = 0;
+    c = _addcarry_u64(c, t[0], k_lo, (unsigned long long*)&t[0]);
+    c = _addcarry_u64(c, t[1], k_hi, (unsigned long long*)&t[1]);
+    c = _addcarry_u64(c, t[2], 0,    (unsigned long long*)&t[2]);
+    c = _addcarry_u64(c, t[3], 0,    (unsigned long long*)&t[3]);
+    if (__builtin_expect(c != 0, 0)) {
+        c = _addcarry_u64(0, t[0], SECP_K, (unsigned long long*)&t[0]);
+        c = _addcarry_u64(c, t[1], 0,      (unsigned long long*)&t[1]);
+        c = _addcarry_u64(c, t[2], 0,      (unsigned long long*)&t[2]);
+        _addcarry_u64(c, t[3], 0,          (unsigned long long*)&t[3]);
+    }
+#else
     u128 c2 = (u128)t[0] + (u128)carry * SECP_K;
     t[0] = (uint64_t)c2; c2 >>= 64;
     c2 += t[1]; t[1] = (uint64_t)c2; c2 >>= 64;
@@ -708,6 +724,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         c3 += t[2]; t[2] = (uint64_t)c3; c3 >>= 64;
         t[3] += (uint64_t)c3;
     }
+#endif
 
     if (__builtin_expect(t[3] == 0xFFFFFFFFFFFFFFFFULL &&
         t[2] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -1811,20 +1828,15 @@ for (int pid : puzzle_ids) {
     double overall_speed = (double)total_keys_verified / total_time;
 
     // Report GPU verification speed to server
-    if (tested > 0) {
+        if (tested > 0 && passed > 0) {
         std::stringstream json_report;
-        json_report << "{\"action\":\"result\""
-                    << ",\"puzzle\":71"
-                    << ",\"block\":0"
-                    << ",\"range_idx\":0"
-                    << ",\"range_count\":0"
-                    << ",\"multiple\":0"
-                    << ",\"status\":\"verify\""
+        json_report << "{\"action\":\"telemetry\""
                     << ",\"user\":\"" << current_user << "\""
-                    << ",\"speed\":" << std::fixed << std::setprecision(1) << overall_speed
-                    << ",\"keys\":\"" << total_keys_verified << "\""
-                    << ",\"elapsed\":" << std::fixed << std::setprecision(2) << total_time << "}";
-        std::string post_url = api_base + "?action=result&puzzle=71&user=" + current_user;
+                    << ",\"speed\":" << (uint64_t)overall_speed
+                    << ",\"avg_speed\":" << (uint64_t)overall_speed
+                    << ",\"status\":\"idle\""
+                    << ",\"verified_count\":" << passed << "}";
+        std::string post_url = api_base;
         std::string ack;
         http_post(post_url, json_report.str(), &ack);
     }

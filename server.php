@@ -1070,6 +1070,18 @@ switch ($action) {
     case 'health':
         respond(['status' => 'ok', 'engine' => 'SQLite WAL (CPU Optimized)', 'time' => time()]);
         break;
+    case 'reset_test_range':
+        // An toan tuyet doi: Reset lai bat ky range nao neu bi submit nham boi test verify
+        try {
+            $raw_puzzle = $_GET['puzzle'] ?? 71;
+            $puzzle_id = resolve_puzzle_id($raw_puzzle);
+            $pdo = get_puzzle_db($puzzle_id);
+            $pdo->exec("UPDATE ranges SET status = 0, worker = '', claimed_at = 0 WHERE puzzle_id = $puzzle_id AND block_id = 0 AND range_idx = 0 AND status = 2");
+            respond(['status' => 'ok', 'msg' => 'Test range 0/0 has been reset to unscanned status safely.']);
+        } catch (\Throwable $e) {
+            error_resp($e->getMessage(), 500);
+        }
+        break;
 
     case 'dashboard':
     case 'stats':
@@ -1589,6 +1601,24 @@ switch ($action) {
             // Chỉ đọc 'range_count' hoặc 'multiple'. Nếu client cũ không gửi, mặc định chuẩn là 1 range.
             $range_count = max(1, min(RANGES_PER_BLOCK, (int)($input['range_count'] ?? ($input['multiple'] ?? 1))));
             $end_range_idx = $range_idx + $range_count - 1;
+
+            // BẢO VỆ TUYỆT ĐỐI: Chế độ verify/test TUYỆT ĐỐI KHÔNG BAO GIỜ được cập nhật range thực tế hay tăng ranges_done!
+            if ($status === 'verify' || $status === 'test') {
+                $now = time();
+                $pdo->prepare("
+                    INSERT INTO user_stats (worker, speed, ranges_done, current_block, current_range, last_seen)
+                    VALUES (?, ?, 0, 0, 0, ?)
+                    ON CONFLICT(worker) DO UPDATE SET
+                        speed = excluded.speed,
+                        last_seen = excluded.last_seen
+                ")->execute([$worker, $speed, $now]);
+                respond([
+                    'status' => 'ok',
+                    'verify' => true,
+                    'msg'    => 'Verification telemetry recorded. No production ranges modified.'
+                ]);
+                break;
+            }
 
             if ($block_id < 0 || $range_idx < 0) error_resp('Missing block or range_idx');
 
