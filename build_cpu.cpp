@@ -1095,79 +1095,189 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     X[7] = bswap32(0x5be0cd19 + h);
 }
 
-// RIPEMD-160 permutation constants
-static const uint8_t host_rl_tab[80] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8,
-    3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12,
-    1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2,
-    4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13
-};
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_rol(uint32_t x, int i) { return (x << i) | (x >> (32 - i)); }
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f1(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f2(uint32_t x, uint32_t y, uint32_t z) { return (x & y) | (~x & z); }
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f3(uint32_t x, uint32_t y, uint32_t z) { return (x | ~y) ^ z; }
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f4(uint32_t x, uint32_t y, uint32_t z) { return (x & z) | (y & ~z); }
+CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f5(uint32_t x, uint32_t y, uint32_t z) { return x ^ (y | ~z); }
 
-static const uint8_t host_sl_tab[80] = {
-    11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8,
-    7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12,
-    11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5,
-    11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12,
-    9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6
-};
-
-static const uint8_t host_rr_tab[80] = {
-    5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12,
-    6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2,
-    15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13,
-    8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14,
-    12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11
-};
-
-static const uint8_t host_sr_tab[80] = {
-    8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6,
-    9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11,
-    9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5,
-    15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8,
-    8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11
-};
+CUDA_HOSTDEV CUDA_INLINE void btc_round(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t f, uint32_t x, uint32_t k, int r) {
+    a = btc_rol(a + f + x + k, r) + e;
+    c = btc_rol(c, 10);
+}
 
 CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
-    auto rol32 = [](uint32_t val, int shift) -> uint32_t {
-        return (val << shift) | (val >> (32 - shift));
-    };
+    uint32_t a1 = 0x67452301U, b1 = 0xEFCDAB89U, c1 = 0x98BADCFEU, d1 = 0x10325476U, e1 = 0xC3D2E1F0U;
+    uint32_t a2 = a1, b2 = b1, c2 = c1, d2 = d1, e2 = e1;
 
-    uint32_t A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476, E = 0xC3D2E1F0;
-    for (int j = 0; j < 80; ++j) {
-        uint32_t f = 0, K = 0;
-        if (j < 16) { f = B ^ C ^ D; K = 0; }
-        else if (j < 32) { f = (B & C) | (~B & D); K = 0x5A827999U; }
-        else if (j < 48) { f = (B | ~C) ^ D; K = 0x6ED9EBA1U; }
-        else if (j < 64) { f = (B & D) | (C & ~D); K = 0x8F1BBCD1U; }
-        else { f = B ^ (C | ~D); K = 0xA953FD4EU; }
+    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), X[0], 0U, 11);
+    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), X[5], 0x50A28BE6U, 8);
+    btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), X[1], 0U, 14);
+    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 256U, 0x50A28BE6U, 9);
+    btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), X[2], 0U, 15);
+    btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[7], 0x50A28BE6U, 9);
+    btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), X[3], 0U, 12);
+    btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), X[0], 0x50A28BE6U, 11);
+    btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), X[4], 0U, 5);
+    btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), 0U, 0x50A28BE6U, 13);
+    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), X[5], 0U, 8);
+    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), X[2], 0x50A28BE6U, 15);
+    btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), X[6], 0U, 7);
+    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0U, 0x50A28BE6U, 15);
+    btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), X[7], 0U, 9);
+    btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[4], 0x50A28BE6U, 5);
+    btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 0x00000080U, 0U, 11);
+    btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0U, 0x50A28BE6U, 7);
+    btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 0U, 0U, 13);
+    btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), X[6], 0x50A28BE6U, 7);
+    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 0U, 0U, 14);
+    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0U, 0x50A28BE6U, 8);
+    btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), 0U, 0U, 15);
+    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0x00000080U, 0x50A28BE6U, 11);
+    btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), 0U, 0U, 6);
+    btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[1], 0x50A28BE6U, 14);
+    btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 0U, 0U, 7);
+    btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0U, 0x50A28BE6U, 14);
+    btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 256U, 0U, 9);
+    btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), X[3], 0x50A28BE6U, 12);
+    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 0U, 0U, 8);
+    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0U, 0x50A28BE6U, 6);
+    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), X[7], 0x5A827999U, 7);
+    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), X[6], 0x5C4DD124U, 9);
+    btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), X[4], 0x5A827999U, 6);
+    btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0U, 0x5C4DD124U, 13);
+    btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), 0U, 0x5A827999U, 8);
+    btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), X[3], 0x5C4DD124U, 15);
+    btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), X[1], 0x5A827999U, 13);
+    btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), X[7], 0x5C4DD124U, 7);
+    btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0U, 0x5A827999U, 11);
+    btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), X[0], 0x5C4DD124U, 12);
+    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), X[6], 0x5A827999U, 9);
+    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0U, 0x5C4DD124U, 8);
+    btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), 0U, 0x5A827999U, 7);
+    btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), X[5], 0x5C4DD124U, 9);
+    btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), X[3], 0x5A827999U, 15);
+    btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), 0U, 0x5C4DD124U, 11);
+    btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 0U, 0x5A827999U, 7);
+    btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 256U, 0x5C4DD124U, 7);
+    btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), X[0], 0x5A827999U, 12);
+    btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), 0U, 0x5C4DD124U, 7);
+    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0U, 0x5A827999U, 15);
+    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0x00000080U, 0x5C4DD124U, 12);
+    btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), X[5], 0x5A827999U, 9);
+    btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0U, 0x5C4DD124U, 7);
+    btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), X[2], 0x5A827999U, 11);
+    btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), X[4], 0x5C4DD124U, 6);
+    btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 256U, 0x5A827999U, 7);
+    btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 0U, 0x5C4DD124U, 15);
+    btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0U, 0x5A827999U, 13);
+    btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), X[1], 0x5C4DD124U, 13);
+    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0x00000080U, 0x5A827999U, 12);
+    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), X[2], 0x5C4DD124U, 11);
+    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), X[3], 0x6ED9EBA1U, 11);
+    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 9);
+    btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0U, 0x6ED9EBA1U, 13);
+    btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[5], 0x6D703EF3U, 7);
+    btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 256U, 0x6ED9EBA1U, 6);
+    btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), X[1], 0x6D703EF3U, 15);
+    btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), X[4], 0x6ED9EBA1U, 7);
+    btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), X[3], 0x6D703EF3U, 11);
+    btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), 0U, 0x6ED9EBA1U, 14);
+    btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), X[7], 0x6D703EF3U, 8);
+    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0U, 0x6ED9EBA1U, 9);
+    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 256U, 0x6D703EF3U, 6);
+    btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0x00000080U, 0x6ED9EBA1U, 13);
+    btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[6], 0x6D703EF3U, 6);
+    btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), X[1], 0x6ED9EBA1U, 15);
+    btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0U, 0x6D703EF3U, 14);
+    btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), X[2], 0x6ED9EBA1U, 14);
+    btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), 0U, 0x6D703EF3U, 12);
+    btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), X[7], 0x6ED9EBA1U, 8);
+    btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), 0x00000080U, 0x6D703EF3U, 13);
+    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), X[0], 0x6ED9EBA1U, 13);
+    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), X[6], 0x6ED9EBA1U, 6);
+    btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[2], 0x6D703EF3U, 14);
+    btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 0U, 0x6ED9EBA1U, 5);
+    btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0U, 0x6D703EF3U, 13);
+    btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), 0U, 0x6ED9EBA1U, 12);
+    btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), X[0], 0x6D703EF3U, 13);
+    btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), X[5], 0x6ED9EBA1U, 7);
+    btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), X[4], 0x6D703EF3U, 7);
+    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0U, 0x6ED9EBA1U, 5);
+    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[1], 0x8F1BBCDCU, 11);
+    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0x00000080U, 0x7A6D76E9U, 15);
+    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 12);
+    btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), X[6], 0x7A6D76E9U, 5);
+    btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 0U, 0x8F1BBCDCU, 14);
+    btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), X[4], 0x7A6D76E9U, 8);
+    btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0U, 0x8F1BBCDCU, 15);
+    btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[1], 0x7A6D76E9U, 11);
+    btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[0], 0x8F1BBCDCU, 14);
+    btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), X[3], 0x7A6D76E9U, 14);
+    btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), 0x00000080U, 0x8F1BBCDCU, 15);
+    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0U, 0x7A6D76E9U, 14);
+    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 9);
+    btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0U, 0x7A6D76E9U, 6);
+    btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), X[4], 0x8F1BBCDCU, 8);
+    btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), X[0], 0x7A6D76E9U, 14);
+    btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0U, 0x8F1BBCDCU, 9);
+    btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[5], 0x7A6D76E9U, 6);
+    btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[3], 0x8F1BBCDCU, 14);
+    btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0U, 0x7A6D76E9U, 9);
+    btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[7], 0x8F1BBCDCU, 5);
+    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), X[2], 0x7A6D76E9U, 12);
+    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 6);
+    btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0U, 0x7A6D76E9U, 9);
+    btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 256U, 0x8F1BBCDCU, 8);
+    btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), 0U, 0x7A6D76E9U, 12);
+    btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), X[5], 0x8F1BBCDCU, 6);
+    btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[7], 0x7A6D76E9U, 5);
+    btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[6], 0x8F1BBCDCU, 5);
+    btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0U, 0x7A6D76E9U, 15);
+    btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[2], 0x8F1BBCDCU, 12);
+    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 256U, 0x7A6D76E9U, 8);
+    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), X[4], 0xA953FD4EU, 9);
+    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 8);
+    btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), X[0], 0xA953FD4EU, 15);
+    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0U, 0U, 5);
+    btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), X[5], 0xA953FD4EU, 5);
+    btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), 0U, 0U, 12);
+    btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 0U, 0xA953FD4EU, 11);
+    btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[4], 0U, 9);
+    btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), X[7], 0xA953FD4EU, 6);
+    btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), X[1], 0U, 12);
+    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 8);
+    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), X[5], 0U, 5);
+    btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), X[2], 0xA953FD4EU, 13);
+    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0x00000080U, 0U, 14);
+    btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0U, 0xA953FD4EU, 12);
+    btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), X[7], 0U, 6);
+    btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 256U, 0xA953FD4EU, 5);
+    btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[6], 0U, 8);
+    btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), X[1], 0xA953FD4EU, 12);
+    btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), X[2], 0U, 13);
+    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), X[3], 0xA953FD4EU, 13);
+    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 6);
+    btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), 0x00000080U, 0xA953FD4EU, 14);
+    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 256U, 0U, 5);
+    btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0U, 0xA953FD4EU, 11);
+    btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), X[0], 0U, 15);
+    btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
+    btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
+    btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
+    btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
+    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
+    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-        uint8_t rl = host_rl_tab[j];
-        uint32_t x_val = (rl < 8) ? X[rl] : (rl == 8 ? 0x00000080U : (rl == 14 ? 256U : 0U));
-        uint32_t T = rol32(A + f + x_val + K, host_sl_tab[j]) + E;
-        A = E; E = D; D = rol32(C, 10); C = B; B = T;
-    }
-
-    uint32_t Ap = 0x67452301, Bp = 0xEFCDAB89, Cp = 0x98BADCFE, Dp = 0x10325476, Ep = 0xC3D2E1F0;
-    for (int j = 0; j < 80; ++j) {
-        uint32_t fp = 0, Kp = 0;
-        if (j < 16) { fp = Bp ^ (Cp | ~Dp); Kp = 0x50A28BE6U; }
-        else if (j < 32) { fp = (Bp & Dp) | (Cp & ~Dp); Kp = 0x5C4DD124U; }
-        else if (j < 48) { fp = (Bp | ~Cp) ^ Dp; Kp = 0x6D703EF3U; }
-        else if (j < 64) { fp = (Bp & Cp) | (~Bp & Dp); Kp = 0x7A6D76E9U; }
-        else { fp = Bp ^ Cp ^ Dp; Kp = 0; }
-
-        uint8_t rr = host_rr_tab[j];
-        uint32_t x_val = (rr < 8) ? X[rr] : (rr == 8 ? 0x00000080U : (rr == 14 ? 256U : 0U));
-        uint32_t Tp = rol32(Ap + fp + x_val + Kp, host_sr_tab[j]) + Ep;
-        Ap = Ep; Ep = Dp; Dp = rol32(Cp, 10); Cp = Bp; Bp = Tp;
-    }
-
-    if ((0xEFCDAB89U + C + Dp) != target_w[0]) return false;
-    if ((0x98BADCFEU + D + Ep) != target_w[1]) return false;
-    if ((0x10325476U + E + Ap) != target_w[2]) return false;
-    if ((0xC3D2E1F0U + A + Bp) != target_w[3]) return false;
-    return ((0x67452301U + B + Cp) == target_w[4]);
+    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    if ((s1 + c1 + d2) != target_w[0]) return false;
+    if ((s2 + d1 + e2) != target_w[1]) return false;
+    if ((s3 + e1 + a2) != target_w[2]) return false;
+    if ((s4 + a1 + b2) != target_w[3]) return false;
+    return ((s0 + b1 + c2) == target_w[4]);
 }
 
 #if defined(__AVX2__)
