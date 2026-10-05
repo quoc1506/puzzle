@@ -921,16 +921,19 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x220 = fe_mul(fe_sqr_n(x176, 44), x44);
     Fe x223 = fe_mul(fe_sqr_n(x220, 3), x3);
 
-    Fe t = fe_sqr_n(x223, 23);
-    Fe x22_2 = fe_mul(fe_sqr_n(x22, 2), a);
-    Fe res = fe_mul(t, x22_2);
-    res = fe_sqr_n(res, 5);
-    res = fe_mul(res, a);
-    res = fe_sqr_n(res, 3);
-    res = fe_mul(res, x2);
-    res = fe_sqr_n(res, 2);
-    res = fe_mul(res, a);
-    return res;
+    // Exact Fermat addition chain for 2^256 - 2^32 - 979:
+    Fe t1 = fe_sqr(x223);
+    Fe t2 = fe_mul(fe_sqr_n(t1, 22), x22);
+    Fe t3 = fe_sqr_n(t2, 10);
+
+    Fe a2 = fe_sqr(a);
+    Fe a4 = fe_sqr(a2);
+    Fe a8 = fe_sqr(a4);
+    Fe a16 = fe_sqr(a8);
+    Fe a32 = fe_sqr(a16);
+    Fe a45 = fe_mul(fe_mul(fe_mul(a32, a8), a4), a);
+
+    return fe_mul(t3, a45);
 }
 
 // ============================================================================
