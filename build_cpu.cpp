@@ -1457,8 +1457,7 @@ static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnop
 // ============================================================================
 int run_cpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int threads = 0) {
     if (threads <= 0) {
-        unsigned int hw = std::thread::hardware_concurrency();
-        threads = (hw > 0) ? (int)hw : 4;
+        threads = 1;
     }
     init_generator_table();
 
@@ -1466,7 +1465,17 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
     if (target_id > 0) {
         puzzle_ids.push_back(target_id);
     } else {
-        puzzle_ids = {65, 66, 67, 68, 69, 70};
+        puzzle_ids = {
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+            51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+            61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+            75, 80, 85, 90, 95, 100, 105, 110, 115, 120,
+            125, 130, 135
+        };
     }
 
     int tested = 0;
@@ -1476,7 +1485,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running Montgomery 512-batch test scan (" << threads << " threads)...\n";
+    std::cout << "[VERIFY] Running Montgomery 512-batch test scan (" << threads << " thread" << (threads > 1 ? "s" : "") << ")...\n";
 
     for (int pid : puzzle_ids) {
         tested++;
@@ -1579,40 +1588,104 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 }
 
 // ============================================================================
-// MAIN ENTRYPOINT
+// MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://localhost:8000/puzzle_server.php";
+    // 1. Default server URL is http://65.20.91.208/puzzle_server.php
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string user = "worker-1";
-    int threads = 0;
+    int threads = 1; // Default 1 thread as per user specification
     int puzzle_id = 71;
     bool verify_mode = false;
+    bool explicit_puzzle = false;
+    bool no_limit = false; // Default: limit to 50 ranges unless -nl / --no-limit is provided
+    int max_ranges = 50;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--verify") verify_mode = true;
-        else if (arg == "--api" && i + 1 < argc) api_base = argv[++i];
-        else if (arg == "--user" && i + 1 < argc) user = argv[++i];
-        else if (arg == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
-        else if (arg == "--puzzle" && i + 1 < argc) puzzle_id = std::atoi(argv[++i]);
+
+        // Server URL: --server, -s, --api (supports both space and = delimiter)
+        if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
+            api_base = argv[++i];
+        } else if (arg.rfind("--server=", 0) == 0) {
+            api_base = arg.substr(9);
+        } else if (arg.rfind("-s=", 0) == 0) {
+            api_base = arg.substr(3);
+        } else if (arg.rfind("--api=", 0) == 0) {
+            api_base = arg.substr(6);
+        }
+        // User: --user, -u
+        else if ((arg == "--user" || arg == "-u") && i + 1 < argc) {
+            user = argv[++i];
+        } else if (arg.rfind("--user=", 0) == 0) {
+            user = arg.substr(7);
+        } else if (arg.rfind("-u=", 0) == 0) {
+            user = arg.substr(3);
+        }
+        // Fast mode: --fast -> full CPU threads
+        else if (arg == "--fast") {
+            unsigned int hw = std::thread::hardware_concurrency();
+            threads = (hw > 0) ? (int)hw : 4;
+        }
+        // Dual thread mode: -d -> 2 threads
+        else if (arg == "-d") {
+            threads = 2;
+        }
+        // Custom thread count: -t, --threads
+        else if ((arg == "-t" || arg == "--threads") && i + 1 < argc) {
+            threads = std::max(1, std::atoi(argv[++i]));
+        } else if (arg.rfind("-t=", 0) == 0) {
+            threads = std::max(1, std::atoi(arg.substr(3).c_str()));
+        } else if (arg.rfind("--threads=", 0) == 0) {
+            threads = std::max(1, std::atoi(arg.substr(10).c_str()));
+        }
+        // No limit mode: -nl, --no-limit
+        else if (arg == "-nl" || arg == "--no-limit") {
+            no_limit = true;
+        }
+        // Verify mode: --verify, -v
+        else if (arg == "--verify" || arg == "-v") {
+            verify_mode = true;
+        }
+        // Target puzzle ID: -p, --puzzle
+        else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
+            puzzle_id = std::atoi(argv[++i]);
+            explicit_puzzle = true;
+        } else if (arg.rfind("-p=", 0) == 0) {
+            puzzle_id = std::atoi(arg.substr(3).c_str());
+            explicit_puzzle = true;
+        } else if (arg.rfind("--puzzle=", 0) == 0) {
+            puzzle_id = std::atoi(arg.substr(9).c_str());
+            explicit_puzzle = true;
+        }
     }
 
+    // In verify mode, if user did NOT explicitly specify --puzzle, test all sample puzzles {65..70} (target_id = 0)
     if (verify_mode) {
-        return run_cpu_verify(api_base, user, puzzle_id, threads);
-    }
-
-    if (threads <= 0) {
-        unsigned int hw = std::thread::hardware_concurrency();
-        threads = (hw > 0) ? (int)hw : 4;
+        int verify_target = explicit_puzzle ? puzzle_id : 0;
+        return run_cpu_verify(api_base, user, verify_target, threads);
     }
 
     init_generator_table();
 
-    std::cout << "[HARDWARE] Engine: Montgomery Batch 512x (Comba Registers + Native Carry Chains) | Threads: " << threads << "\n";
-    std::cout << "[WORKER] Connecting to server: " << api_base << " (User: " << user << ", Target Puzzle: " << puzzle_id << ")\n";
+    std::cout << "[HARDWARE] Engine: Montgomery Batch 512x (Comba Column Registers) | Threads: " << threads << "\n";
+    std::cout << "[WORKER] Connecting to coordinator: " << api_base << "\n";
+    std::cout << "[CONFIG] User: " << user << " | Target Puzzle: #" << puzzle_id;
+    if (no_limit) {
+        std::cout << " | Mode: Unlimited Ranges (-nl)\n";
+    } else {
+        std::cout << " | Mode: Fixed 50 Ranges (use -nl for unlimited)\n";
+    }
+
+    int ranges_completed = 0;
 
     // Main solver scan loop
     while (g_running.load()) {
+        if (!no_limit && ranges_completed >= max_ranges) {
+            std::cout << "\n[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.\n";
+            break;
+        }
+
         std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(puzzle_id) + "&user=" + user;
         std::string resp;
         if (!http_get(req_url, &resp)) {
@@ -1690,6 +1763,8 @@ int main(int argc, char* argv[]) {
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         double final_spd = (elapsed > 0) ? ((double)checked_counter.load() / elapsed) : 0;
+
+        ranges_completed++;
 
         if (found_flag.load()) {
             std::cout << "\n[WINNER] FOUND KEY: 0x" << u256_to_hex64(found_key) << "\n";

@@ -1430,8 +1430,21 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
 
     std::vector<int> puzzle_ids;
-    if (target_id > 0) puzzle_ids.push_back(target_id);
-    else puzzle_ids = {65, 66, 67, 68, 69, 70};
+    if (target_id > 0) {
+        puzzle_ids.push_back(target_id);
+    } else {
+        puzzle_ids = {
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+            41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+            51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+            61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+            75, 80, 85, 90, 95, 100, 105, 110, 115, 120,
+            125, 130, 135
+        };
+    }
 
     int tested = 0;
     int passed = 0;
@@ -1456,6 +1469,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         std::string str_target = got_server ? json_get_string(resp, "target_address") : "";
 
         if (!got_server || str_start.empty() || str_target.empty()) {
+            std::cerr << "[SKIP] Target #" << pid << ": Server did not provide test range.\n";
             failed++;
             continue;
         }
@@ -1548,26 +1562,70 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 }
 
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://localhost:8000/puzzle_server.php";
+    // 1. Default server URL is http://65.20.91.208/puzzle_server.php
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string user = "cuda-worker-1";
     int device_id = 0;
     int puzzle_id = 71;
     bool verify_mode = false;
+    bool explicit_puzzle = false;
+    bool no_limit = false;
+    int max_ranges = 50;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--verify") verify_mode = true;
-        else if (arg == "--api" && i + 1 < argc) api_base = argv[++i];
-        else if (arg == "--user" && i + 1 < argc) user = argv[++i];
-        else if (arg == "--gpu" && i + 1 < argc) device_id = std::atoi(argv[++i]);
-        else if (arg == "--puzzle" && i + 1 < argc) puzzle_id = std::atoi(argv[++i]);
+
+        if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
+            api_base = argv[++i];
+        } else if (arg.rfind("--server=", 0) == 0) {
+            api_base = arg.substr(9);
+        } else if (arg.rfind("-s=", 0) == 0) {
+            api_base = arg.substr(3);
+        } else if (arg.rfind("--api=", 0) == 0) {
+            api_base = arg.substr(6);
+        }
+        else if ((arg == "--user" || arg == "-u") && i + 1 < argc) {
+            user = argv[++i];
+        } else if (arg.rfind("--user=", 0) == 0) {
+            user = arg.substr(7);
+        } else if (arg.rfind("-u=", 0) == 0) {
+            user = arg.substr(3);
+        }
+        else if ((arg == "--gpu") && i + 1 < argc) {
+            device_id = std::atoi(argv[++i]);
+        } else if (arg.rfind("--gpu=", 0) == 0) {
+            device_id = std::atoi(arg.substr(6).c_str());
+        }
+        else if (arg == "-nl" || arg == "--no-limit") {
+            no_limit = true;
+        }
+        else if (arg == "--verify" || arg == "-v") {
+            verify_mode = true;
+        }
+        else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
+            puzzle_id = std::atoi(argv[++i]);
+            explicit_puzzle = true;
+        } else if (arg.rfind("-p=", 0) == 0) {
+            puzzle_id = std::atoi(arg.substr(3).c_str());
+            explicit_puzzle = true;
+        } else if (arg.rfind("--puzzle=", 0) == 0) {
+            puzzle_id = std::atoi(arg.substr(9).c_str());
+            explicit_puzzle = true;
+        }
     }
 
     if (verify_mode) {
-        return run_gpu_verify(api_base, user, puzzle_id, device_id);
+        int verify_target = explicit_puzzle ? puzzle_id : 0;
+        return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
     std::cout << "[HARDWARE] Engine: CUDA GPU Batch Engine (Comba Column Pipeline) | Device: " << device_id << "\n";
-    std::cout << "[WORKER] Connecting to server: " << api_base << " (User: " << user << ", Puzzle: " << puzzle_id << ")\n";
+    std::cout << "[WORKER] Connecting to coordinator: " << api_base << "\n";
+    std::cout << "[CONFIG] User: " << user << " | Target Puzzle: #" << puzzle_id;
+    if (no_limit) {
+        std::cout << " | Mode: Unlimited Ranges (-nl)\n";
+    } else {
+        std::cout << " | Mode: Fixed 50 Ranges (use -nl for unlimited)\n";
+    }
     return 0;
 }
