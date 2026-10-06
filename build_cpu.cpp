@@ -1808,13 +1808,13 @@ int main(int argc, char* argv[]) {
 
     init_generator_table();
 
-    std::cout << "[HARDWARE] Engine: Montgomery Batch 512x (Comba Column Registers) | Threads: " << threads << "\n";
-    std::cout << "[WORKER] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[CONFIG] User: " << user << " | Target Puzzle: #" << puzzle_id;
+    std::cout << "[WORKER] Threads: " << threads << " | Privacy: ON\n";
+    // Coordinator URL hidden for privacy
+    // User & Target hidden for privacy
     if (no_limit) {
-        std::cout << " | Mode: Unlimited Ranges (-nl)\n";
+        
     } else {
-        std::cout << " | Mode: Fixed 50 Ranges (use -nl for unlimited)\n";
+        
     }
 
     int ranges_completed = 0;
@@ -1888,9 +1888,9 @@ int main(int argc, char* argv[]) {
             double el = std::chrono::duration<double>(t_now - t_start).count();
             if (el > 0) {
                 double spd = (double)cur / el;
-                std::cout << "\r[SCAN] Block: " << str_block << " | Range: " << str_range
+                std::cout << "\r[*] Speed: " << format_speed(spd)
                           << " | Progress: " << std::fixed << std::setprecision(1) << ((double)cur / total_keys_count * 100.0) << "%"
-                          << " | Speed: " << format_speed(spd) << std::flush;
+                          << " | Done: " << ranges_completed << " ranges" << std::flush;
             }
             if (cur >= total_keys_count || found_flag.load() || !g_running.load()) break;
         }

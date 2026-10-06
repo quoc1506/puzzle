@@ -1743,13 +1743,13 @@ int main(int argc, char* argv[]) {
         return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
-    std::cout << "[HARDWARE] Engine: CUDA GPU Batch Engine (Comba Column Pipeline) | Device: " << device_id << "\n";
-    std::cout << "[WORKER] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[CONFIG] User: " << user << " | Target Puzzle: #" << puzzle_id;
+    std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
+    // Coordinator URL hidden for privacy
+    // User & Target hidden for privacy
     if (no_limit) {
-        std::cout << " | Mode: Unlimited Ranges (-nl)\n";
+        
     } else {
-        std::cout << " | Mode: Fixed 50 Ranges (use -nl for unlimited)\n";
+        
     }
     return 0;
 }
