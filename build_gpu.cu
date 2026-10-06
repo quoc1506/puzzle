@@ -669,39 +669,69 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
     return r;
 }
 
+CUDA_HOSTDEV CUDA_INLINE void comba_accum(u128& acc, uint64_t& c_hi, uint64_t x, uint64_t y) {
+    u128 p = (u128)x * y;
+    acc += p;
+    if (acc < p) c_hi++;
+}
+
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    // High-performance Comba Column Multiplication (Pure CPU/GPU Register Accumulation)
-    u128 acc = (u128)a0 * b0;
+    u128 acc = 0;
+    uint64_t c_hi = 0;
+
+    // Column 0
+    comba_accum(acc, c_hi, a0, b0);
     uint64_t t0 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a0 * b1 + (u128)a1 * b0;
+    // Column 1
+    comba_accum(acc, c_hi, a0, b1);
+    comba_accum(acc, c_hi, a1, b0);
     uint64_t t1 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a0 * b2 + (u128)a1 * b1 + (u128)a2 * b0;
+    // Column 2
+    comba_accum(acc, c_hi, a0, b2);
+    comba_accum(acc, c_hi, a1, b1);
+    comba_accum(acc, c_hi, a2, b0);
     uint64_t t2 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a0 * b3 + (u128)a1 * b2 + (u128)a2 * b1 + (u128)a3 * b0;
+    // Column 3
+    comba_accum(acc, c_hi, a0, b3);
+    comba_accum(acc, c_hi, a1, b2);
+    comba_accum(acc, c_hi, a2, b1);
+    comba_accum(acc, c_hi, a3, b0);
     uint64_t t3 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a1 * b3 + (u128)a2 * b2 + (u128)a3 * b1;
+    // Column 4
+    comba_accum(acc, c_hi, a1, b3);
+    comba_accum(acc, c_hi, a2, b2);
+    comba_accum(acc, c_hi, a3, b1);
     uint64_t t4 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a2 * b3 + (u128)a3 * b2;
+    // Column 5
+    comba_accum(acc, c_hi, a2, b3);
+    comba_accum(acc, c_hi, a3, b2);
     uint64_t t5 = (uint64_t)acc;
-    acc >>= 64;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    acc += (u128)a3 * b3;
+    // Column 6
+    comba_accum(acc, c_hi, a3, b3);
     uint64_t t6 = (uint64_t)acc;
-    uint64_t t7 = (uint64_t)(acc >> 64);
+    uint64_t t7 = (uint64_t)((acc >> 64) | ((u128)c_hi << 64));
 
     // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -743,7 +773,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
     c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
     uint64_t extra = (uint64_t)c2_red;
-    if (__builtin_expect(extra != 0, 0)) {
+    if (extra != 0) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
         c3 += r1; r1 = (uint64_t)c3; c3 >>= 64;
@@ -752,21 +782,19 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     }
 #endif
 
-    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
+    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
-
     return Fe{{r0, r1, r2, r3}};
 #else
     Fe r = {0};
     return r;
 #endif
 }
-
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
@@ -1469,12 +1497,20 @@ std::string format_speed(double speed) {
 
 void parse_hex64_limbs(const std::string& str, uint64_t limbs[4]) {
     limbs[0] = limbs[1] = limbs[2] = limbs[3] = 0;
-    std::string s = str;
-    if (s.rfind("0x", 0) == 0 || s.rfind("0X", 0) == 0) s = s.substr(2);
-    while (s.length() < 64) s = "0" + s;
-    for (int i = 0; i < 4; ++i) {
-        std::string part = s.substr((3 - i) * 16, 16);
-        limbs[i] = std::stoull(part, nullptr, 16);
+    if (str.empty()) return;
+    if (str.rfind("0x", 0) == 0 || str.rfind("0X", 0) == 0) {
+        std::string s = str.substr(2);
+        while (s.length() < 64) s = "0" + s;
+        for (int i = 0; i < 4; ++i) {
+            std::string part = s.substr((3 - i) * 16, 16);
+            limbs[i] = std::stoull(part, nullptr, 16);
+        }
+    } else {
+        u256 r = parse_u256(str);
+        limbs[0] = (uint64_t)r.low;
+        limbs[1] = (uint64_t)(r.low >> 64);
+        limbs[2] = (uint64_t)r.high;
+        limbs[3] = (uint64_t)(r.high >> 64);
     }
 }
 
@@ -1603,7 +1639,15 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
             passed++;
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
-            found_limbs[0] += h_offset;
+            u128 s_carry = (u128)found_limbs[0] + h_offset;
+            found_limbs[0] = (uint64_t)s_carry;
+            s_carry >>= 64;
+            s_carry += found_limbs[1];
+            found_limbs[1] = (uint64_t)s_carry;
+            s_carry >>= 64;
+            s_carry += found_limbs[2];
+            found_limbs[2] = (uint64_t)s_carry;
+            found_limbs[3] += (uint64_t)(s_carry >> 64);
             std::cout << "[PASS] Target #" << pid
                       << " | Speed: " << format_speed(spd)
                       << " | Key: 0x" << limbs_to_hex(found_limbs)

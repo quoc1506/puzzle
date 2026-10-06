@@ -1399,6 +1399,9 @@ switch ($action) {
 
     case 'range':
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') error_resp('Method not allowed', 405);
+         if (isset($_GET['user']) && $_GET['user'] === 'worker-1') {
+            respond(['status' => 'error', 'message' => 'Demo is blocked. You should contact the admin'], 403);
+        }
         $raw_puzzle = $_GET['puzzle'] ?? null;
         $req_p = is_numeric($raw_puzzle) ? (int)$raw_puzzle : 0;
         $is_test = isset($_GET['test']) && $_GET['test'] == 1;
