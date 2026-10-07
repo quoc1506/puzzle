@@ -1086,6 +1086,22 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32(uint32_t x) {
 #endif
 }
 
+
+#if defined(__CUDA_ARCH__)
+// Hardware single-cycle 3-input bitwise LUT instructions (Compute Capability >= 5.0)
+CUDA_DEV CUDA_INLINE uint32_t lop3_ch(uint32_t e, uint32_t f, uint32_t g) {
+    uint32_t ret;
+    asm("lop3.b32 %0, %1, %2, %3, 0xca;" : "=r"(ret) : "r"(e), "r"(f), "g"(g));
+    return ret;
+}
+
+CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t ret;
+    asm("lop3.b32 %0, %1, %2, %3, 0xe8;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
+    return ret;
+}
+#endif
+
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint8_t msg[64];
     msg[0] = prefix;
@@ -1660,7 +1676,6 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
             found_limbs[3] += (uint64_t)(s_carry >> 64);
             std::cout << "[PASS] Target #" << pid
                       << " | Speed: " << format_speed(spd)
-                      << " | Key: 0x" << limbs_to_hex(found_limbs)
                       << " -> Matched Server Target\n";
         } else {
             failed++;
@@ -1699,7 +1714,7 @@ int main(int argc, char* argv[]) {
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "cuda-worker-1";
     int device_id = 0;
-    int puzzle_id = 71;
+    int puzzle_id = 0; // 0 = dynamic from server
     bool verify_mode = false;
     bool explicit_puzzle = false;
     bool no_limit = false;
@@ -1752,13 +1767,177 @@ int main(int argc, char* argv[]) {
         return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
-    std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
-    // Coordinator URL hidden for privacy
-    // User & Target hidden for privacy
-    if (no_limit) {
-        
-    } else {
-        
+        std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
+    init_generator_table();
+
+    cudaSetDevice(device_id);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device_id);
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
+    uint32_t block_size = 256;
+    uint32_t num_blocks = sm_count * 8;
+    if (num_blocks < 256) num_blocks = 256;
+    if (num_blocks > 4096) num_blocks = 4096;
+    uint32_t grid_threads = num_blocks * block_size;
+
+    int* d_found_flag = nullptr;
+    uint64_t* d_found_offset = nullptr;
+    cudaMalloc(&d_found_flag, sizeof(int));
+    cudaMalloc(&d_found_offset, sizeof(uint64_t));
+
+    
+
+    int ranges_completed = 0;
+    double last_measured_speed = 0.0;
+    uint64_t single_range_size = 268435456ULL; // default 2^28 keys
+
+    while (g_running.load()) {
+        if (!no_limit && ranges_completed >= max_ranges) {
+            std::cout << "
+[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.
+";
+            break;
+        }
+
+        // Dynamic multiple calculation: target submitting roughly every 30 seconds
+        int req_multiple = 1;
+        if (last_measured_speed > 0.0) {
+            double target_keys = last_measured_speed * 30.0;
+            int calc = (int)std::round(target_keys / (double)single_range_size);
+            req_multiple = std::max(1, std::min(128, calc));
+        }
+
+        std::string req_url = api_base + "?action=range&user=" + user + "&multiple=" + std::to_string(req_multiple);
+        if (explicit_puzzle || puzzle_id > 0) {
+            req_url += "&puzzle=" + std::to_string(puzzle_id);
+        }
+
+        std::string resp;
+        if (!http_get(req_url, &resp)) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        std::string s_puz = json_get_string(resp, "puzzle");
+        if (!s_puz.empty()) {
+            try { puzzle_id = std::stoi(s_puz); } catch (...) {}
+        }
+
+        std::string str_single_sz = json_get_string(resp, "single_range_size");
+        if (!str_single_sz.empty()) {
+            try { single_range_size = std::stoull(str_single_sz); } catch (...) {}
+        }
+
+        std::string str_rc = json_get_string(resp, "range_count");
+        if (str_rc.empty()) str_rc = json_get_string(resp, "multiple");
+        int actual_multiple = str_rc.empty() ? req_multiple : std::max(1, std::stoi(str_rc));
+
+        std::string str_block = json_get_string(resp, "block");
+        std::string str_range = json_get_string(resp, "range_idx");
+        std::string str_start = json_get_string(resp, "start");
+        std::string str_end = json_get_string(resp, "end");
+        std::string str_target = json_get_string(resp, "target_address");
+        if (str_start.empty() || str_target.empty()) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        u256 start_k = parse_u256(str_start);
+        u256 end_k = str_end.empty() ? (start_k + 268435456ULL) : parse_u256(str_end);
+        u256 diff = end_k - start_k;
+        uint64_t total_keys_count = (diff.high > 0) ? 268435456ULL : (uint64_t)diff.low;
+        if (total_keys_count == 0) total_keys_count = 268435456ULL;
+
+        uint8_t target_h160[20];
+        if (!b58check_decode_hash160(str_target, target_h160)) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        uint32_t target_w[5];
+        for (int j = 0; j < 5; ++j) {
+            target_w[j] = (uint32_t)target_h160[j * 4] |
+                          ((uint32_t)target_h160[j * 4 + 1] << 8) |
+                          ((uint32_t)target_h160[j * 4 + 2] << 16) |
+                          ((uint32_t)target_h160[j * 4 + 3] << 24);
+        }
+
+        int h_flag = 0;
+        uint64_t h_offset = 0;
+        cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
+
+        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
+        uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
+        if (batches == 0) batches = 1;
+
+        uint64_t start_limbs[4] = {
+            (uint64_t)start_k.low,
+            (uint64_t)(start_k.low >> 64),
+            (uint64_t)start_k.high,
+            (uint64_t)(start_k.high >> 64)
+        };
+
+        auto t_start = std::chrono::high_resolution_clock::now();
+        cuda_scan_kernel<<<num_blocks, block_size>>>(
+            start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
+            total_keys_count, grid_threads, batches,
+            d_found_flag, d_found_offset,
+            target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
+        );
+        cudaDeviceSynchronize();
+        auto t_end = std::chrono::high_resolution_clock::now();
+
+        cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+        double elapsed = std::chrono::duration<double>(t_end - t_start).count();
+        if (elapsed <= 0.0) elapsed = 0.0001;
+        double final_spd = (double)total_keys_count / elapsed;
+        ranges_completed += actual_multiple; last_measured_speed = final_spd;
+
+        std::cout << "\r[*] Speed: " << format_speed(final_spd)
+                  << " | Done: " << ranges_completed << " ranges" << std::flush;
+
+        if (h_flag == 1) {
+            uint64_t found_limbs[4];
+            std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
+            u128 s_carry = (u128)found_limbs[0] + h_offset;
+            found_limbs[0] = (uint64_t)s_carry;
+            s_carry >>= 64;
+            s_carry += found_limbs[1];
+            found_limbs[1] = (uint64_t)s_carry;
+            s_carry >>= 64;
+            s_carry += found_limbs[2];
+            found_limbs[2] = (uint64_t)s_carry;
+            found_limbs[3] += (uint64_t)(s_carry >> 64);
+
+            std::string priv_hex = limbs_to_hex(found_limbs);
+            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
+
+            std::stringstream res_json;
+            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
+                     << ",\"block\":" << str_block
+                     << ",\"range_idx\":" << str_range
+                     << ",\"status\":\"found\",\"user\":\"" << user
+                     << "\",\"private_key\":\"0x" << priv_hex
+                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
+            std::string ack;
+            http_post(api_base, res_json.str(), &ack);
+            break;
+        } else {
+            std::stringstream res_json;
+            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
+                     << ",\"block\":" << str_block
+                     << ",\"range_idx\":" << str_range
+                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
+            std::string ack;
+            http_post(api_base, res_json.str(), &ack);
+        }
     }
+
+    cudaFree(d_found_flag);
+    cudaFree(d_found_offset);
     return 0;
 }

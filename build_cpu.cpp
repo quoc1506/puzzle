@@ -1319,11 +1319,295 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 
 #if defined(__AVX2__)
 void init_avx2_consts() {}
+
+#define ROR256(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
+#define ROL256(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
+
+#define BSWAP256(x) _mm256_shuffle_epi8(x, _mm256_set_epi8( \
+    12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3, \
+    12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3))
+
+#define F1(x, y, z) _mm256_xor_si256(_mm256_xor_si256(x, y), z)
+#define F2(x, y, z) _mm256_or_si256(_mm256_and_si256(x, y), _mm256_andnot_si256(x, z))
+#define F3(x, y, z) _mm256_xor_si256(_mm256_or_si256(x, _mm256_xor_si256(y, _mm256_set1_epi32(-1))), z)
+#define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
+#define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
+
+inline __m256i as_m256i(__m256i v) { return v; }
+inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
+
+#define ROUND_AVX2(a, b, c, d, e, f, x, k, r) do { \
+    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k))), r), e); \
+    c = ROL256(c, 10); \
+} while(0)
+
+// Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
+    __m256i W[64];
+    uint32_t w_lanes[16][8];
+    #pragma GCC unroll 8
     for (int lane = 0; lane < 8; ++lane) {
-        uint32_t X[8];
-        fast_sha256_into_ripemd_X(prefixes[lane], x[lane], X);
-        if (fast_ripemd160_32_check(X, target_w)) return lane;
+        uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
+        w_lanes[0][lane] = ((uint32_t)prefixes[lane] << 24) | (uint32_t)(x3 >> 40);
+        w_lanes[1][lane] = (uint32_t)(x3 >> 8);
+        w_lanes[2][lane] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
+        w_lanes[3][lane] = (uint32_t)(x2 >> 8);
+        w_lanes[4][lane] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
+        w_lanes[5][lane] = (uint32_t)(x1 >> 8);
+        w_lanes[6][lane] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
+        w_lanes[7][lane] = (uint32_t)(x0 >> 8);
+        w_lanes[8][lane] = ((uint32_t)x0 << 24) | 0x00800000U;
+        w_lanes[9][lane]  = 0;
+        w_lanes[10][lane] = 0;
+        w_lanes[11][lane] = 0;
+        w_lanes[12][lane] = 0;
+        w_lanes[13][lane] = 0;
+        w_lanes[14][lane] = 0;
+        w_lanes[15][lane] = 0x00000108U;
+    }
+
+    #pragma GCC unroll 16
+    for (int j = 0; j < 16; ++j) {
+        W[j] = _mm256_loadu_si256((const __m256i*)w_lanes[j]);
+    }
+
+    for (int i = 16; i < 64; ++i) {
+        __m256i w15 = W[i - 15];
+        __m256i s0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w15, 7), ROR256(w15, 18)), _mm256_srli_epi32(w15, 3));
+        __m256i w2 = W[i - 2];
+        __m256i s1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w2, 17), ROR256(w2, 19)), _mm256_srli_epi32(w2, 10));
+        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i - 16], s0), _mm256_add_epi32(W[i - 7], s1));
+    }
+
+    static const uint32_t K256[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+
+    __m256i a = _mm256_set1_epi32(0x6a09e667), b = _mm256_set1_epi32(0xbb67ae85);
+    __m256i c = _mm256_set1_epi32(0x3c6ef372), d = _mm256_set1_epi32(0xa54ff53a);
+    __m256i e = _mm256_set1_epi32(0x510e527f), f = _mm256_set1_epi32(0x9b05688c);
+    __m256i g = _mm256_set1_epi32(0x1f83d9ab), h = _mm256_set1_epi32(0x5be0cd19);
+
+    #pragma GCC unroll 16
+    for (int i = 0; i < 64; ++i) {
+        __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
+        __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
+        __m256i k_val = _mm256_set1_epi32(K256[i]);
+        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
+        __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
+        __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
+        __m256i temp2 = _mm256_add_epi32(S0, maj);
+
+        h = g; g = f; f = e; e = _mm256_add_epi32(d, temp1);
+        d = c; c = b; b = a; a = _mm256_add_epi32(temp1, temp2);
+    }
+
+    // Little-endian words for RIPEMD-160
+    __m256i X_simd[8];
+    X_simd[0] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x6a09e667), a));
+    X_simd[1] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0xbb67ae85), b));
+    X_simd[2] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x3c6ef372), c));
+    X_simd[3] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0xa54ff53a), d));
+    X_simd[4] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x510e527f), e));
+    X_simd[5] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x9b05688c), f));
+    X_simd[6] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x1f83d9ab), g));
+    X_simd[7] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x5be0cd19), h));
+
+    // Parallel 8-way RIPEMD-160 Round Pipeline
+    __m256i a1 = _mm256_set1_epi32(0x67452301U), b1 = _mm256_set1_epi32(0xEFCDAB89U);
+    __m256i c1 = _mm256_set1_epi32(0x98BADCFEU), d1 = _mm256_set1_epi32(0x10325476U);
+    __m256i e1 = _mm256_set1_epi32(0xC3D2E1F0U);
+    __m256i a2 = a1, b2 = b1, c2 = c1, d2 = d1, e2 = e1;
+
+    ROUND_AVX2(a1, b1, c1, d1, e1, F1(b1, c1, d1), X_simd[0], 0U, 11);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F5(b2, c2, d2), X_simd[5], 0x50A28BE6U, 8);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F1(a1, b1, c1), X_simd[1], 0U, 14);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F5(a2, b2, c2), 256U, 0x50A28BE6U, 9);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F1(e1, a1, b1), X_simd[2], 0U, 15);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F5(e2, a2, b2), X_simd[7], 0x50A28BE6U, 9);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F1(d1, e1, a1), X_simd[3], 0U, 12);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F5(d2, e2, a2), X_simd[0], 0x50A28BE6U, 11);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F1(c1, d1, e1), X_simd[4], 0U, 5);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F5(c2, d2, e2), 0U, 0x50A28BE6U, 13);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F1(b1, c1, d1), X_simd[5], 0U, 8);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F5(b2, c2, d2), X_simd[2], 0x50A28BE6U, 15);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F1(a1, b1, c1), X_simd[6], 0U, 7);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F5(a2, b2, c2), 0U, 0x50A28BE6U, 15);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F1(e1, a1, b1), X_simd[7], 0U, 9);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F5(e2, a2, b2), X_simd[4], 0x50A28BE6U, 5);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F1(d1, e1, a1), 0x00000080U, 0U, 11);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F5(d2, e2, a2), 0U, 0x50A28BE6U, 7);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F1(c1, d1, e1), 0U, 0U, 13);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F5(c2, d2, e2), X_simd[6], 0x50A28BE6U, 7);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F1(b1, c1, d1), 0U, 0U, 14);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F5(b2, c2, d2), 0U, 0x50A28BE6U, 8);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F1(a1, b1, c1), 0U, 0U, 15);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F5(a2, b2, c2), 0x00000080U, 0x50A28BE6U, 11);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F1(e1, a1, b1), 0U, 0U, 6);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F5(e2, a2, b2), X_simd[1], 0x50A28BE6U, 14);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F1(d1, e1, a1), 0U, 0U, 7);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F5(d2, e2, a2), 0U, 0x50A28BE6U, 14);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F1(c1, d1, e1), 256U, 0U, 9);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F5(c2, d2, e2), X_simd[3], 0x50A28BE6U, 12);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F1(b1, c1, d1), 0U, 0U, 8);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F5(b2, c2, d2), 0U, 0x50A28BE6U, 6);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F2(a1, b1, c1), X_simd[7], 0x5A827999U, 7);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F4(a2, b2, c2), X_simd[6], 0x5C4DD124U, 9);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F2(e1, a1, b1), X_simd[4], 0x5A827999U, 6);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F4(e2, a2, b2), 0U, 0x5C4DD124U, 13);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F2(d1, e1, a1), 0U, 0x5A827999U, 8);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F4(d2, e2, a2), X_simd[3], 0x5C4DD124U, 15);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F2(c1, d1, e1), X_simd[1], 0x5A827999U, 13);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F4(c2, d2, e2), X_simd[7], 0x5C4DD124U, 7);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F2(b1, c1, d1), 0U, 0x5A827999U, 11);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F4(b2, c2, d2), X_simd[0], 0x5C4DD124U, 12);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F2(a1, b1, c1), X_simd[6], 0x5A827999U, 9);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F4(a2, b2, c2), 0U, 0x5C4DD124U, 8);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F2(e1, a1, b1), 0U, 0x5A827999U, 7);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F4(e2, a2, b2), X_simd[5], 0x5C4DD124U, 9);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F2(d1, e1, a1), X_simd[3], 0x5A827999U, 15);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F4(d2, e2, a2), 0U, 0x5C4DD124U, 11);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F2(c1, d1, e1), 0U, 0x5A827999U, 7);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F4(c2, d2, e2), 256U, 0x5C4DD124U, 7);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F2(b1, c1, d1), X_simd[0], 0x5A827999U, 12);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F4(b2, c2, d2), 0U, 0x5C4DD124U, 7);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F2(a1, b1, c1), 0U, 0x5A827999U, 15);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F4(a2, b2, c2), 0x00000080U, 0x5C4DD124U, 12);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F2(e1, a1, b1), X_simd[5], 0x5A827999U, 9);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F4(e2, a2, b2), 0U, 0x5C4DD124U, 7);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F2(d1, e1, a1), X_simd[2], 0x5A827999U, 11);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F4(d2, e2, a2), X_simd[4], 0x5C4DD124U, 6);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F2(c1, d1, e1), 256U, 0x5A827999U, 7);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F4(c2, d2, e2), 0U, 0x5C4DD124U, 15);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F2(b1, c1, d1), 0U, 0x5A827999U, 13);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F4(b2, c2, d2), X_simd[1], 0x5C4DD124U, 13);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F2(a1, b1, c1), 0x00000080U, 0x5A827999U, 12);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F4(a2, b2, c2), X_simd[2], 0x5C4DD124U, 11);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F3(e1, a1, b1), X_simd[3], 0x6ED9EBA1U, 11);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F3(e2, a2, b2), 0U, 0x6D703EF3U, 9);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F3(d1, e1, a1), 0U, 0x6ED9EBA1U, 13);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F3(d2, e2, a2), X_simd[5], 0x6D703EF3U, 7);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F3(c1, d1, e1), 256U, 0x6ED9EBA1U, 6);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F3(c2, d2, e2), X_simd[1], 0x6D703EF3U, 15);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F3(b1, c1, d1), X_simd[4], 0x6ED9EBA1U, 7);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F3(b2, c2, d2), X_simd[3], 0x6D703EF3U, 11);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F3(a1, b1, c1), 0U, 0x6ED9EBA1U, 14);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F3(a2, b2, c2), X_simd[7], 0x6D703EF3U, 8);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F3(e1, a1, b1), 0U, 0x6ED9EBA1U, 9);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F3(e2, a2, b2), 256U, 0x6D703EF3U, 6);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F3(d1, e1, a1), 0x00000080U, 0x6ED9EBA1U, 13);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F3(d2, e2, a2), X_simd[6], 0x6D703EF3U, 6);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F3(c1, d1, e1), X_simd[1], 0x6ED9EBA1U, 15);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F3(c2, d2, e2), 0U, 0x6D703EF3U, 14);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F3(b1, c1, d1), X_simd[2], 0x6ED9EBA1U, 14);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F3(b2, c2, d2), 0U, 0x6D703EF3U, 12);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F3(a1, b1, c1), X_simd[7], 0x6ED9EBA1U, 8);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F3(a2, b2, c2), 0x00000080U, 0x6D703EF3U, 13);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F3(e1, a1, b1), X_simd[0], 0x6ED9EBA1U, 13);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F3(d1, e1, a1), X_simd[6], 0x6ED9EBA1U, 6);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F3(d2, e2, a2), X_simd[2], 0x6D703EF3U, 14);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F3(c1, d1, e1), 0U, 0x6ED9EBA1U, 5);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F3(c2, d2, e2), 0U, 0x6D703EF3U, 13);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F3(b1, c1, d1), 0U, 0x6ED9EBA1U, 12);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F3(b2, c2, d2), X_simd[0], 0x6D703EF3U, 13);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F3(a1, b1, c1), X_simd[5], 0x6ED9EBA1U, 7);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F3(a2, b2, c2), X_simd[4], 0x6D703EF3U, 7);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F3(e1, a1, b1), 0U, 0x6ED9EBA1U, 5);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F4(d1, e1, a1), X_simd[1], 0x8F1BBCDCU, 11);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F2(d2, e2, a2), 0x00000080U, 0x7A6D76E9U, 15);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F4(c1, d1, e1), 0U, 0x8F1BBCDCU, 12);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F2(c2, d2, e2), X_simd[6], 0x7A6D76E9U, 5);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F4(b1, c1, d1), 0U, 0x8F1BBCDCU, 14);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F2(b2, c2, d2), X_simd[4], 0x7A6D76E9U, 8);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F4(a1, b1, c1), 0U, 0x8F1BBCDCU, 15);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F2(a2, b2, c2), X_simd[1], 0x7A6D76E9U, 11);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F4(e1, a1, b1), X_simd[0], 0x8F1BBCDCU, 14);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F2(e2, a2, b2), X_simd[3], 0x7A6D76E9U, 14);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F4(d1, e1, a1), 0x00000080U, 0x8F1BBCDCU, 15);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F2(d2, e2, a2), 0U, 0x7A6D76E9U, 14);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F4(c1, d1, e1), 0U, 0x8F1BBCDCU, 9);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F2(c2, d2, e2), 0U, 0x7A6D76E9U, 6);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F4(b1, c1, d1), X_simd[4], 0x8F1BBCDCU, 8);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F2(b2, c2, d2), X_simd[0], 0x7A6D76E9U, 14);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F4(a1, b1, c1), 0U, 0x8F1BBCDCU, 9);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F2(a2, b2, c2), X_simd[5], 0x7A6D76E9U, 6);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F4(e1, a1, b1), X_simd[3], 0x8F1BBCDCU, 14);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F2(e2, a2, b2), 0U, 0x7A6D76E9U, 9);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F4(d1, e1, a1), X_simd[7], 0x8F1BBCDCU, 5);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F2(d2, e2, a2), X_simd[2], 0x7A6D76E9U, 12);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F4(c1, d1, e1), 0U, 0x8F1BBCDCU, 6);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F2(c2, d2, e2), 0U, 0x7A6D76E9U, 9);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F4(b1, c1, d1), 256U, 0x8F1BBCDCU, 8);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F2(b2, c2, d2), 0U, 0x7A6D76E9U, 12);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F4(a1, b1, c1), X_simd[5], 0x8F1BBCDCU, 6);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F2(a2, b2, c2), X_simd[7], 0x7A6D76E9U, 5);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F4(e1, a1, b1), X_simd[6], 0x8F1BBCDCU, 5);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F2(e2, a2, b2), 0U, 0x7A6D76E9U, 15);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F4(d1, e1, a1), X_simd[2], 0x8F1BBCDCU, 12);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F2(d2, e2, a2), 256U, 0x7A6D76E9U, 8);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F5(c1, d1, e1), X_simd[4], 0xA953FD4EU, 9);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F1(c2, d2, e2), 0U, 0U, 8);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F5(b1, c1, d1), X_simd[0], 0xA953FD4EU, 15);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F1(b2, c2, d2), 0U, 0U, 5);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F5(a1, b1, c1), X_simd[5], 0xA953FD4EU, 5);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F1(a2, b2, c2), 0U, 0U, 12);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F5(e1, a1, b1), 0U, 0xA953FD4EU, 11);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F1(e2, a2, b2), X_simd[4], 0U, 9);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F5(d1, e1, a1), X_simd[7], 0xA953FD4EU, 6);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F1(d2, e2, a2), X_simd[1], 0U, 12);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F5(c1, d1, e1), 0U, 0xA953FD4EU, 8);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F1(c2, d2, e2), X_simd[5], 0U, 5);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F5(b1, c1, d1), X_simd[2], 0xA953FD4EU, 13);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F1(b2, c2, d2), 0x00000080U, 0U, 14);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F5(a1, b1, c1), 0U, 0xA953FD4EU, 12);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F1(a2, b2, c2), X_simd[7], 0U, 6);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F5(e1, a1, b1), 256U, 0xA953FD4EU, 5);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F1(e2, a2, b2), X_simd[6], 0U, 8);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F5(d1, e1, a1), X_simd[1], 0xA953FD4EU, 12);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F1(d2, e2, a2), X_simd[2], 0U, 13);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F5(c1, d1, e1), X_simd[3], 0xA953FD4EU, 13);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F1(c2, d2, e2), 0U, 0U, 6);
+    ROUND_AVX2(a1, b1, c1, d1, e1, F5(b1, c1, d1), 0x00000080U, 0xA953FD4EU, 14);
+    ROUND_AVX2(a2, b2, c2, d2, e2, F1(b2, c2, d2), 256U, 0U, 5);
+    ROUND_AVX2(e1, a1, b1, c1, d1, F5(a1, b1, c1), 0U, 0xA953FD4EU, 11);
+    ROUND_AVX2(e2, a2, b2, c2, d2, F1(a2, b2, c2), X_simd[0], 0U, 15);
+    ROUND_AVX2(d1, e1, a1, b1, c1, F5(e1, a1, b1), X_simd[6], 0xA953FD4EU, 8);
+    ROUND_AVX2(d2, e2, a2, b2, c2, F1(e2, a2, b2), X_simd[3], 0U, 13);
+    ROUND_AVX2(c1, d1, e1, a1, b1, F5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
+    ROUND_AVX2(c2, d2, e2, a2, b2, F1(d2, e2, a2), 0U, 0U, 11);
+    ROUND_AVX2(b1, c1, d1, e1, a1, F5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
+    ROUND_AVX2(b2, c2, d2, e2, a2, F1(c2, d2, e2), 0U, 0U, 11);
+
+    // Fast 32-bit rejection filter on word 0 (s1 + c1 + d2 == target_w[0])
+    uint32_t s1 = 0xEFCDAB89U;
+    __m256i res0 = _mm256_add_epi32(_mm256_add_epi32(_mm256_set1_epi32(s1), c1), d2);
+    __m256i cmp0 = _mm256_cmpeq_epi32(res0, _mm256_set1_epi32(target_w[0]));
+    int mask = _mm256_movemask_epi8(cmp0);
+
+    if (__builtin_expect(mask != 0, 0)) {
+        // Filter matches (1 in 4.3 billion keys): full verification of all 5 words
+        alignas(32) uint32_t m0[8];
+        _mm256_storeu_si256((__m256i*)m0, cmp0);
+        for (int lane = 0; lane < 8; ++lane) {
+            if (m0[lane] != 0) {
+                alignas(32) uint32_t X_col[8];
+                for (int w = 0; w < 8; ++w) {
+                    alignas(32) uint32_t tmp[8];
+                    _mm256_storeu_si256((__m256i*)tmp, X_simd[w]);
+                    X_col[w] = tmp[lane];
+                }
+                if (fast_ripemd160_32_check(X_col, target_w)) return lane;
+            }
+        }
     }
     return -1;
 }
@@ -1743,7 +2027,7 @@ int main(int argc, char* argv[]) {
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
-    int puzzle_id = 71;
+    int puzzle_id = 0; // 0 = dynamic from server
     bool verify_mode = false;
     bool explicit_puzzle = false;
     bool no_limit = false; // Default: limit to 50 ranges unless -nl / --no-limit is provided
@@ -1825,21 +2109,53 @@ int main(int argc, char* argv[]) {
         
     }
 
+    
+
     int ranges_completed = 0;
+    double last_measured_speed = 0.0;
+    uint64_t single_range_size = 268435456ULL; // default 2^28 keys
 
     // Main solver scan loop
     while (g_running.load()) {
         if (!no_limit && ranges_completed >= max_ranges) {
-            std::cout << "\n[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.\n";
+            std::cout << "
+[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.
+";
             break;
         }
 
-        std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(puzzle_id) + "&user=" + user;
+        // Dynamic multiple calculation: target submitting roughly every 30 seconds
+        int req_multiple = 1;
+        if (last_measured_speed > 0.0) {
+            double target_keys = last_measured_speed * 30.0;
+            int calc = (int)std::round(target_keys / (double)single_range_size);
+            req_multiple = std::max(1, std::min(128, calc));
+        }
+
+        std::string req_url = api_base + "?action=range&user=" + user + "&multiple=" + std::to_string(req_multiple);
+        if (explicit_puzzle || puzzle_id > 0) {
+            req_url += "&puzzle=" + std::to_string(puzzle_id);
+        }
+
         std::string resp;
         if (!http_get(req_url, &resp)) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
+
+        std::string s_puz = json_get_string(resp, "puzzle");
+        if (!s_puz.empty()) {
+            try { puzzle_id = std::stoi(s_puz); } catch (...) {}
+        }
+
+        std::string str_single_sz = json_get_string(resp, "single_range_size");
+        if (!str_single_sz.empty()) {
+            try { single_range_size = std::stoull(str_single_sz); } catch (...) {}
+        }
+
+        std::string str_rc = json_get_string(resp, "range_count");
+        if (str_rc.empty()) str_rc = json_get_string(resp, "multiple");
+        int actual_multiple = str_rc.empty() ? req_multiple : std::max(1, std::stoi(str_rc));
 
         std::string str_block = json_get_string(resp, "block");
         std::string str_range = json_get_string(resp, "range_idx");
@@ -1912,10 +2228,10 @@ int main(int argc, char* argv[]) {
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         double final_spd = (elapsed > 0) ? ((double)checked_counter.load() / elapsed) : 0;
 
-        ranges_completed++;
+        ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
         if (found_flag.load()) {
-            std::cout << "\n[WINNER] FOUND KEY: 0x" << u256_to_hex64(found_key) << "\n";
+            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
