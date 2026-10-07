@@ -1,5 +1,5 @@
 // ============================================================================
-// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED NVIDIA CUDA GPU SOLVER (.cu)
+// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED NVIDIA CUDA GPU SOLVER (Zero-Copy Register Pipeline + Warp Synchronous)
 // Designed for NVIDIA GPUs (Tesla T4, RTX 3080/3090, RTX 4090, A100, H100)
 // Features:
 //   - Inlined PTX assembly for 256-bit multiprecision arithmetic
@@ -194,8 +194,18 @@ CUDA_HOSTDEV CUDA_INLINE u256 operator-(const u256& a, uint64_t b) {
 u256 parse_u256(const std::string& s) {
     u256 r;
     if (s.empty()) return r;
-    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-        for (size_t i = 2; i < s.size(); ++i) {
+    bool is_hex = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'));
+    if (!is_hex) {
+        for (char c : s) {
+            if ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+                is_hex = true;
+                break;
+            }
+        }
+    }
+    if (is_hex) {
+        size_t start = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 2 : 0;
+        for (size_t i = start; i < s.size(); ++i) {
             char c = s[i];
             int v = 0;
             if (c >= '0' && c <= '9') v = c - '0';
