@@ -1988,7 +1988,6 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
             passed++;
             std::cout << "[PASS] Target #" << pid
                       << " | Speed: " << format_speed(target_speed)
-                      << " | Key: 0x" << u256_to_hex64(found_key)
                       << " -> Matched Server Target\n";
         } else {
             failed++;
