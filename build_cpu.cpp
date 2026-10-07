@@ -2117,9 +2117,7 @@ int main(int argc, char* argv[]) {
     // Main solver scan loop
     while (g_running.load()) {
         if (!no_limit && ranges_completed >= max_ranges) {
-            std::cout << "
-[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.
-";
+            std::cout << "\n[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.\n";
             break;
         }
 

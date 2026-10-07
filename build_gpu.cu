@@ -1091,7 +1091,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32(uint32_t x) {
 // Hardware single-cycle 3-input bitwise LUT instructions (Compute Capability >= 5.0)
 CUDA_DEV CUDA_INLINE uint32_t lop3_ch(uint32_t e, uint32_t f, uint32_t g) {
     uint32_t ret;
-    asm("lop3.b32 %0, %1, %2, %3, 0xca;" : "=r"(ret) : "r"(e), "r"(f), "g"(g));
+    asm("lop3.b32 %0, %1, %2, %3, 0xca;" : "=r"(ret) : "r"(e), "r"(f), "r"(g));
     return ret;
 }
 
@@ -1550,10 +1550,7 @@ std::string limbs_to_hex(const uint64_t limbs[4]) {
     return ss.str();
 }
 
-int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
-    cudaSetDevice(device_id);
-
-    // Initialize constant tables on GPU:
+inline void init_cuda_tables(uint32_t grid_threads) {
     AffinePoint h_table[16];
     std::memset(&h_table[0], 0, sizeof(AffinePoint));
     for (int i = 1; i < 16; ++i) {
@@ -1562,7 +1559,6 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     }
     cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
 
-    uint32_t grid_threads = 65536;
     AffinePoint h_batch_G[32];
     for (int i = 0; i < 32; ++i) {
         uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
@@ -1570,6 +1566,12 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         h_batch_G[i] = scalar_mul_G(s);
     }
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
+}
+
+int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
+    cudaSetDevice(device_id);
+
+    init_cuda_tables(grid_threads);
 
     std::vector<int> puzzle_ids;
     if (target_id > 0) {
@@ -1768,7 +1770,7 @@ int main(int argc, char* argv[]) {
     }
 
         std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
-    init_generator_table();
+    
 
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
@@ -1779,6 +1781,7 @@ int main(int argc, char* argv[]) {
     if (num_blocks < 256) num_blocks = 256;
     if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
+    init_cuda_tables(grid_threads);
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
@@ -1793,9 +1796,7 @@ int main(int argc, char* argv[]) {
 
     while (g_running.load()) {
         if (!no_limit && ranges_completed >= max_ranges) {
-            std::cout << "
-[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.
-";
+            std::cout << "\n[STOP] Reached limit of " << max_ranges << " ranges completed without -nl. Exiting cleanly.\n";
             break;
         }
 
