@@ -1570,7 +1570,7 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
     cudaSetDevice(device_id);
-
+    uint32_t grid_threads = 65536;
     init_cuda_tables(grid_threads);
 
     std::vector<int> puzzle_ids;
