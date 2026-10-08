@@ -663,58 +663,71 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    u128 acc = 0;
-    uint64_t c_hi = 0;
+    // Ultra-optimized branchless 4x4 limb multiplier
+    u128 p = (u128)a0 * b0;
+    uint64_t t0 = (uint64_t)p;
+    u128 c = p >> 64;
 
-    // Column 0
-    comba_accum(acc, c_hi, a0, b0);
-    uint64_t t0 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b1 + c;
+    uint64_t t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 1
-    comba_accum(acc, c_hi, a0, b1);
-    comba_accum(acc, c_hi, a1, b0);
-    uint64_t t1 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b2 + c;
+    uint64_t t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 2
-    comba_accum(acc, c_hi, a0, b2);
-    comba_accum(acc, c_hi, a1, b1);
-    comba_accum(acc, c_hi, a2, b0);
-    uint64_t t2 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b3 + c;
+    uint64_t t3 = (uint64_t)p;
+    uint64_t t4 = (uint64_t)(p >> 64);
+    uint64_t t5 = 0, t6 = 0, t7 = 0;
 
-    // Column 3
-    comba_accum(acc, c_hi, a0, b3);
-    comba_accum(acc, c_hi, a1, b2);
-    comba_accum(acc, c_hi, a2, b1);
-    comba_accum(acc, c_hi, a3, b0);
-    uint64_t t3 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b0 + t1;
+    t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 4
-    comba_accum(acc, c_hi, a1, b3);
-    comba_accum(acc, c_hi, a2, b2);
-    comba_accum(acc, c_hi, a3, b1);
-    uint64_t t4 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b1 + t2 + c;
+    t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 5
-    comba_accum(acc, c_hi, a2, b3);
-    comba_accum(acc, c_hi, a3, b2);
-    uint64_t t5 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b2 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 6
-    comba_accum(acc, c_hi, a3, b3);
-    uint64_t t6 = (uint64_t)acc;
-    uint64_t t7 = (uint64_t)((acc >> 64) | ((u128)c_hi << 64));
+    p = (u128)a1 * b3 + t4 + c;
+    t4 = (uint64_t)p;
+    t5 = (uint64_t)(p >> 64);
+
+    p = (u128)a2 * b0 + t2;
+    t2 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b1 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b2 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b3 + t5 + c;
+    t5 = (uint64_t)p;
+    t6 = (uint64_t)(p >> 64);
+
+    p = (u128)a3 * b0 + t3;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b1 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b2 + t5 + c;
+    t5 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b3 + t6 + c;
+    t6 = (uint64_t)p;
+    t7 = (uint64_t)(p >> 64);
 
     // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -782,8 +795,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    // High-performance Comba Column Squaring (Registers Only)
-    // Cross products
+    // Ultra-optimized dedicated squaring (branchless register pipeline)
     u128 c = (u128)a0 * a1;
     uint64_t c1 = (uint64_t)c;
     c >>= 64;
@@ -808,7 +820,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     c5 = (uint64_t)c;
     uint64_t c6 = (uint64_t)(c >> 64);
 
-    // Double cross-products
     uint64_t t7 = c6 >> 63;
     uint64_t t6 = (c6 << 1) | (c5 >> 63);
     uint64_t t5 = (c5 << 1) | (c4 >> 63);
@@ -817,7 +828,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t2 = (c2 << 1) | (c1 >> 63);
     uint64_t t1 = (c1 << 1);
 
-    // Add squares
     c = (u128)a0 * a0;
     uint64_t t0 = (uint64_t)c;
     c >>= 64;
@@ -1634,11 +1644,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
@@ -1706,8 +1716,8 @@ void scan_worker_montgomery(
                 Fe u = fe_inv(cum[cur_batch]);
                 AffinePoint next_base;
 
-                // Backward pass
-                for (int i = (int)cur_batch - 1; i >= 1; --i) {
+                // Ultra-optimized 4-way unrolled backward pass with superscalar ILP
+                auto do_step = [&](int i) {
                     Fe inv_dx_i = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
@@ -1731,9 +1741,21 @@ void scan_worker_montgomery(
                         found_flag.store(true, std::memory_order_release);
                         found_key = cur_k + (uint64_t)i;
                         checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                        return;
+                        return true;
                     }
 #endif
+                    return false;
+                };
+
+                int i_idx = (int)cur_batch - 1;
+                for (; i_idx >= 4; i_idx -= 4) {
+                    if (do_step(i_idx)) return;
+                    if (do_step(i_idx - 1)) return;
+                    if (do_step(i_idx - 2)) return;
+                    if (do_step(i_idx - 3)) return;
+                }
+                for (; i_idx >= 1; --i_idx) {
+                    if (do_step(i_idx)) return;
                 }
                 // Handle i = 0 without unnecessary fe_mul
                 {

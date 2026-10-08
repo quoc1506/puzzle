@@ -690,58 +690,71 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    u128 acc = 0;
-    uint64_t c_hi = 0;
+    // Ultra-optimized limb pipeline
+    u128 p = (u128)a0 * b0;
+    uint64_t t0 = (uint64_t)p;
+    u128 c = p >> 64;
 
-    // Column 0
-    comba_accum(acc, c_hi, a0, b0);
-    uint64_t t0 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b1 + c;
+    uint64_t t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 1
-    comba_accum(acc, c_hi, a0, b1);
-    comba_accum(acc, c_hi, a1, b0);
-    uint64_t t1 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b2 + c;
+    uint64_t t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 2
-    comba_accum(acc, c_hi, a0, b2);
-    comba_accum(acc, c_hi, a1, b1);
-    comba_accum(acc, c_hi, a2, b0);
-    uint64_t t2 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b3 + c;
+    uint64_t t3 = (uint64_t)p;
+    uint64_t t4 = (uint64_t)(p >> 64);
+    uint64_t t5 = 0, t6 = 0, t7 = 0;
 
-    // Column 3
-    comba_accum(acc, c_hi, a0, b3);
-    comba_accum(acc, c_hi, a1, b2);
-    comba_accum(acc, c_hi, a2, b1);
-    comba_accum(acc, c_hi, a3, b0);
-    uint64_t t3 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b0 + t1;
+    t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 4
-    comba_accum(acc, c_hi, a1, b3);
-    comba_accum(acc, c_hi, a2, b2);
-    comba_accum(acc, c_hi, a3, b1);
-    uint64_t t4 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b1 + t2 + c;
+    t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 5
-    comba_accum(acc, c_hi, a2, b3);
-    comba_accum(acc, c_hi, a3, b2);
-    uint64_t t5 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b2 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 6
-    comba_accum(acc, c_hi, a3, b3);
-    uint64_t t6 = (uint64_t)acc;
-    uint64_t t7 = (uint64_t)((acc >> 64) | ((u128)c_hi << 64));
+    p = (u128)a1 * b3 + t4 + c;
+    t4 = (uint64_t)p;
+    t5 = (uint64_t)(p >> 64);
+
+    p = (u128)a2 * b0 + t2;
+    t2 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b1 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b2 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b3 + t5 + c;
+    t5 = (uint64_t)p;
+    t6 = (uint64_t)(p >> 64);
+
+    p = (u128)a3 * b0 + t3;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b1 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b2 + t5 + c;
+    t5 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b3 + t6 + c;
+    t6 = (uint64_t)p;
+    t7 = (uint64_t)(p >> 64);
 
     // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -809,8 +822,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    // High-performance Comba Column Squaring (Registers Only)
-    // Cross products
+    // Ultra-optimized dedicated squaring (branchless register pipeline)
     u128 c = (u128)a0 * a1;
     uint64_t c1 = (uint64_t)c;
     c >>= 64;
@@ -835,7 +847,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     c5 = (uint64_t)c;
     uint64_t c6 = (uint64_t)(c >> 64);
 
-    // Double cross-products
     uint64_t t7 = c6 >> 63;
     uint64_t t6 = (c6 << 1) | (c5 >> 63);
     uint64_t t5 = (c5 << 1) | (c4 >> 63);
@@ -844,7 +855,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t2 = (c2 << 1) | (c1 >> 63);
     uint64_t t1 = (c1 << 1);
 
-    // Add squares
     c = (u128)a0 * a0;
     uint64_t t0 = (uint64_t)c;
     c >>= 64;
@@ -1102,27 +1112,26 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
 }
 #endif
 
+// Ultra-optimized zero-copy register packing: 0 local memory spill
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
-    uint8_t msg[64];
-    msg[0] = prefix;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t limb = x.d[3 - i];
-        for (int b = 7; b >= 0; --b) {
-            msg[1 + i * 8 + (7 - b)] = (uint8_t)(limb >> (b * 8));
-        }
-    }
-    msg[33] = 0x80;
-    for (int zi = 34; zi < 62; ++zi) msg[zi] = 0;
-    msg[62] = 0x01;
-    msg[63] = 0x08;
-
     uint32_t W[64];
-    for (int i = 0; i < 16; ++i) {
-        W[i] = ((uint32_t)msg[i * 4] << 24) |
-               ((uint32_t)msg[i * 4 + 1] << 16) |
-               ((uint32_t)msg[i * 4 + 2] << 8) |
-               ((uint32_t)msg[i * 4 + 3]);
-    }
+    uint64_t x3 = x.d[3], x2 = x.d[2], x1 = x.d[1], x0 = x.d[0];
+    W[0] = ((uint32_t)prefix << 24) | (uint32_t)(x3 >> 40);
+    W[1] = (uint32_t)(x3 >> 8);
+    W[2] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
+    W[3] = (uint32_t)(x2 >> 8);
+    W[4] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
+    W[5] = (uint32_t)(x1 >> 8);
+    W[6] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
+    W[7] = (uint32_t)(x0 >> 8);
+    W[8] = ((uint32_t)x0 << 24) | 0x00800000U;
+    W[9]  = 0;
+    W[10] = 0;
+    W[11] = 0;
+    W[12] = 0;
+    W[13] = 0;
+    W[14] = 0;
+    W[15] = 0x00000108U;
     for (int i = 16; i < 64; ++i) {
         uint32_t s0 = rotr32(W[i - 15], 7) ^ rotr32(W[i - 15], 18) ^ (W[i - 15] >> 3);
         uint32_t s1 = rotr32(W[i - 2], 17) ^ rotr32(W[i - 2], 19) ^ (W[i - 2] >> 10);
