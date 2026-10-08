@@ -1659,6 +1659,50 @@ void scan_worker_montgomery(
 
         uint64_t cur_slice = std::min(slice_size, total_keys - offset);
         u256 slice_start = base_start + offset;
+
+        // Safe direct G_TABLE check for low ranges <= 1024 to prevent division by zero in Montgomery
+        if (slice_start.high == 0 && (uint64_t)slice_start.low <= 1024ULL) {
+            u256 cur_k = slice_start;
+            uint64_t rem = cur_slice;
+            while (rem > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+                uint32_t b = (uint32_t)std::min<uint64_t>(STREAM_BATCH, rem);
+                for (uint32_t i = 0; i < b; ++i) {
+                    uint64_t idx = (uint64_t)(cur_k.low + i);
+                    if (idx >= 1 && idx <= 1024) {
+                        cur_x0[i] = G_TABLE[idx - 1].x;
+                        cur_prefix0[i] = (G_TABLE[idx - 1].y.d[0] & 1) ? 0x03 : 0x02;
+                    } else {
+                        uint64_t limbs[4] = { idx, 0, 0, 0 };
+                        AffinePoint pt = scalar_mul_G_windowed(limbs);
+                        cur_x0[i] = pt.x;
+                        cur_prefix0[i] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+                    }
+                }
+#if defined(__AVX2__)
+                for (uint32_t i = 0; i + 8 <= b; i += 8) {
+                    int m = fast_sha256_ripemd160_8x_avx2(&cur_prefix0[i], &cur_x0[i], target_w);
+                    if (__builtin_expect(m >= 0, 0)) {
+                        std::lock_guard<std::mutex> lock(found_mtx);
+                        found_flag.store(true, std::memory_order_release);
+                        found_key = cur_k + (uint64_t)(i + m);
+                        checked_counter.fetch_add(local_counter + (uint64_t)(i + m + 1), std::memory_order_relaxed);
+                        return;
+                    }
+                }
+#endif
+                cur_k = cur_k + (uint64_t)b;
+                rem -= b;
+                local_counter += b;
+                if (cur_k.high > 0 || (uint64_t)cur_k.low > 1024ULL) break;
+            }
+            if ((cur_k.high > 0 || (uint64_t)cur_k.low > 1024ULL) && rem > 0) {
+                slice_start = cur_k;
+                cur_slice = rem;
+            } else {
+                continue;
+            }
+        }
+
         uint64_t half_slice = cur_slice / 2;
 
         if (half_slice < STREAM_BATCH) {
@@ -1973,19 +2017,39 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         alignas(64) u256 found_key = 0;
         alignas(64) std::atomic<uint64_t> checked_counter(0);
 
+        // Fast-path pre-check for small keys <= 1024 directly via precomputed G_TABLE
+        if (start_k.high == 0 && (uint64_t)start_k.low <= 1024ULL) {
+            uint64_t s = (uint64_t)start_k.low;
+            if (s == 0) s = 1;
+            uint64_t e = std::min<uint64_t>(s + total_keys_count, 1025ULL);
+            for (uint64_t k = s; k < e; ++k) {
+                AffinePoint pt = G_TABLE[k - 1];
+                uint8_t pfx = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+                Fe px = pt.x;
+                if (fast_sha256_ripemd160_8x_avx2(&pfx, &px, target_w) >= 0) {
+                    found_flag.store(true);
+                    found_key = k;
+                    checked_counter.store(k - s + 1);
+                    break;
+                }
+            }
+        }
+
         auto t_scan_start = std::chrono::high_resolution_clock::now();
         std::vector<std::thread> pool;
-        pool.reserve(threads);
-        for (int t = 0; t < threads; ++t) {
-            pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-                scan_worker_montgomery(start_k, std::ref(work_offset),
-                                      total_keys_count, slice_size, target_h160, target_h64,
-                                      target_w, std::ref(found_flag), std::ref(found_key),
-                                      std::ref(found_mtx), std::ref(checked_counter));
-            });
-        }
-        for (auto& th : pool) {
-            if (th.joinable()) th.join();
+        if (!found_flag.load()) {
+            pool.reserve(threads);
+            for (int t = 0; t < threads; ++t) {
+                pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
+                    scan_worker_montgomery(start_k, std::ref(work_offset),
+                                          total_keys_count, slice_size, target_h160, target_h64,
+                                          target_w, std::ref(found_flag), std::ref(found_key),
+                                          std::ref(found_mtx), std::ref(checked_counter));
+                });
+            }
+            for (auto& th : pool) {
+                if (th.joinable()) th.join();
+            }
         }
         auto t_scan_end = std::chrono::high_resolution_clock::now();
         double elapsed_sec = std::chrono::duration<double>(t_scan_end - t_scan_start).count();
