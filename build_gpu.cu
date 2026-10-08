@@ -679,69 +679,76 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
     return r;
 }
 
-CUDA_HOSTDEV CUDA_INLINE void comba_accum(u128& acc, uint64_t& c_hi, uint64_t x, uint64_t y) {
-    u128 p = (u128)x * y;
-    acc += p;
-    if (acc < p) c_hi++;
-}
-
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    u128 acc = 0;
-    uint64_t c_hi = 0;
+    // Branchless 4x4 limb schoolbook multiplier
+    u128 p = (u128)a0 * b0;
+    uint64_t t0 = (uint64_t)p;
+    u128 c = p >> 64;
 
-    // Column 0
-    comba_accum(acc, c_hi, a0, b0);
-    uint64_t t0 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b1 + c;
+    uint64_t t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 1
-    comba_accum(acc, c_hi, a0, b1);
-    comba_accum(acc, c_hi, a1, b0);
-    uint64_t t1 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b2 + c;
+    uint64_t t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 2
-    comba_accum(acc, c_hi, a0, b2);
-    comba_accum(acc, c_hi, a1, b1);
-    comba_accum(acc, c_hi, a2, b0);
-    uint64_t t2 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a0 * b3 + c;
+    uint64_t t3 = (uint64_t)p;
+    uint64_t t4 = (uint64_t)(p >> 64);
+    uint64_t t5 = 0, t6 = 0, t7 = 0;
 
-    // Column 3
-    comba_accum(acc, c_hi, a0, b3);
-    comba_accum(acc, c_hi, a1, b2);
-    comba_accum(acc, c_hi, a2, b1);
-    comba_accum(acc, c_hi, a3, b0);
-    uint64_t t3 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b0 + t1;
+    t1 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 4
-    comba_accum(acc, c_hi, a1, b3);
-    comba_accum(acc, c_hi, a2, b2);
-    comba_accum(acc, c_hi, a3, b1);
-    uint64_t t4 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b1 + t2 + c;
+    t2 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 5
-    comba_accum(acc, c_hi, a2, b3);
-    comba_accum(acc, c_hi, a3, b2);
-    uint64_t t5 = (uint64_t)acc;
-    acc = (acc >> 64) | ((u128)c_hi << 64);
-    c_hi = 0;
+    p = (u128)a1 * b2 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
 
-    // Column 6
-    comba_accum(acc, c_hi, a3, b3);
-    uint64_t t6 = (uint64_t)acc;
-    uint64_t t7 = (uint64_t)((acc >> 64) | ((u128)c_hi << 64));
+    p = (u128)a1 * b3 + t4 + c;
+    t4 = (uint64_t)p;
+    t5 = (uint64_t)(p >> 64);
+
+    p = (u128)a2 * b0 + t2;
+    t2 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b1 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b2 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b3 + t5 + c;
+    t5 = (uint64_t)p;
+    t6 = (uint64_t)(p >> 64);
+
+    p = (u128)a3 * b0 + t3;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b1 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b2 + t5 + c;
+    t5 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b3 + t6 + c;
+    t6 = (uint64_t)p;
+    t7 = (uint64_t)(p >> 64);
 
     // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -783,7 +790,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
     c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
     uint64_t extra = (uint64_t)c2_red;
-    if (extra != 0) {
+    if (__builtin_expect(extra != 0, 0)) {
         u128 c3 = (u128)r0 + (u128)extra * SECP_K;
         r0 = (uint64_t)c3; c3 >>= 64;
         c3 += r1; r1 = (uint64_t)c3; c3 >>= 64;
@@ -792,10 +799,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     }
 #endif
 
-    if (r3 == 0xFFFFFFFFFFFFFFFFULL &&
+    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL) {
+        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
@@ -1103,31 +1110,24 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
-    uint8_t msg[64];
-    msg[0] = prefix;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t limb = x.d[3 - i];
-        for (int b = 7; b >= 0; --b) {
-            msg[1 + i * 8 + (7 - b)] = (uint8_t)(limb >> (b * 8));
-        }
-    }
-    msg[33] = 0x80;
-    for (int zi = 34; zi < 62; ++zi) msg[zi] = 0;
-    msg[62] = 0x01;
-    msg[63] = 0x08;
-
-    uint32_t W[64];
-    for (int i = 0; i < 16; ++i) {
-        W[i] = ((uint32_t)msg[i * 4] << 24) |
-               ((uint32_t)msg[i * 4 + 1] << 16) |
-               ((uint32_t)msg[i * 4 + 2] << 8) |
-               ((uint32_t)msg[i * 4 + 3]);
-    }
-    for (int i = 16; i < 64; ++i) {
-        uint32_t s0 = rotr32(W[i - 15], 7) ^ rotr32(W[i - 15], 18) ^ (W[i - 15] >> 3);
-        uint32_t s1 = rotr32(W[i - 2], 17) ^ rotr32(W[i - 2], 19) ^ (W[i - 2] >> 10);
-        W[i] = W[i - 16] + s0 + W[i - 7] + s1;
-    }
+    uint32_t w[16];
+    uint64_t x3 = x.d[3], x2 = x.d[2], x1 = x.d[1], x0 = x.d[0];
+    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x3 >> 40);
+    w[1] = (uint32_t)(x3 >> 8);
+    w[2] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
+    w[3] = (uint32_t)(x2 >> 8);
+    w[4] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
+    w[5] = (uint32_t)(x1 >> 8);
+    w[6] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
+    w[7] = (uint32_t)(x0 >> 8);
+    w[8] = ((uint32_t)x0 << 24) | 0x00800000U;
+    w[9] = 0;
+    w[10] = 0;
+    w[11] = 0;
+    w[12] = 0;
+    w[13] = 0;
+    w[14] = 0;
+    w[15] = 0x00000108U;
 
     static const uint32_t K256[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -1143,12 +1143,43 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-    for (int i = 0; i < 64; ++i) {
+    #pragma unroll 16
+    for (int i = 0; i < 16; ++i) {
         uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+#if defined(__CUDA_ARCH__)
+        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t maj = lop3_maj(a, b, c);
+#else
         uint32_t ch = (e & f) ^ (~e & g);
-        uint32_t temp1 = h + S1 + ch + K256[i] + W[i];
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+#endif
+        uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    #pragma unroll 48
+    for (int i = 16; i < 64; ++i) {
+        uint32_t w15 = w[(i - 15) & 15];
+        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+        uint32_t w2 = w[(i - 2) & 15];
+        uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+        uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+        w[i & 15] = wi;
+
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+#if defined(__CUDA_ARCH__)
+        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t maj = lop3_maj(a, b, c);
+#else
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+#endif
+        uint32_t temp1 = h + S1 + ch + K256[i] + wi;
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;

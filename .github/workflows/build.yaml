@@ -63,7 +63,7 @@ jobs:
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
-          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v ${GENCODES} \
+          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math -Xptxas -O3,-dlcm=ca,-v ${GENCODES} \
             -Xcompiler -O3,-mavx2,-mbmi2,-madx,-funroll-loops \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl
           strip bin/build_cuda
@@ -123,7 +123,16 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          g++ -std=c++17 -O3 -mavx2 -mfma -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          # Maximum hardware optimization: AVX2 + BMI2 + ADX + FMA + unrolling
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -static-libgcc -static-libstdc++ \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
+            -o bin/build-linux-x86_64-fast
+
+          g++ -std=c++17 -O3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -203,7 +212,16 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          g++ -std=c++17 -O3 -mavx2 -mfma -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          # Maximum hardware optimization: AVX2 + BMI2 + ADX + FMA + unrolling
+          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+            -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
+            ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
+            -static-libgcc -static-libstdc++ \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic \
+            -lpthread -ldl \
+            -o bin/build-linux-u22-x86_64-fast
+
+          g++ -std=c++17 -O3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -280,15 +298,22 @@ jobs:
         run: |
           mkdir -p bin
 
+          # AVX2 + BMI2 + ADX hardware accelerated static binary
+          g++ -static -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -fno-stack-protector -flto \
+            -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
+            -I/usr/local/include -L/usr/local/lib \
+            -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
+            -o bin/build-linux-musl-x86_64-fast
+
           # AVX2 optimized static binary
-          g++ -static -std=c++17 -O3 -mavx2 -mfma -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+          g++ -static -std=c++17 -O3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -fno-stack-protector -flto \
             -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
             -o bin/build-linux-musl-x86_64
 
           # Universal compatibility static binary (runs on ALL Linux x86_64 distros, old & new, zero glibc dependency)
-          g++ -static -std=c++17 -O3 -msse4.2 -mpopcnt -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -fomit-frame-pointer -finline-functions -fno-stack-protector -pipe -flto \
+          g++ -static -std=c++17 -O3 -msse4.2 -mpopcnt -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -fno-stack-protector -flto \
             -DCURL_STATICLIB -DSECP256K1_STATIC build_cpu.cpp \
             -I/usr/local/include -L/usr/local/lib \
             -lsecp256k1 -lcurl -lssl -lcrypto -lz -lpthread \
