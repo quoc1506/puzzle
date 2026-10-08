@@ -1932,9 +1932,6 @@ int main(int argc, char* argv[]) {
         double final_spd = (double)total_keys_count / elapsed;
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
-        std::cout << "\r[*] Speed: " << format_speed(final_spd)
-                  << " | Done: " << ranges_completed << " ranges" << std::flush;
-
         if (h_flag == 1) {
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
