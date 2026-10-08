@@ -1706,10 +1706,10 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 
     if (passed > 0) {
         std::stringstream stat_json;
-        stat_json << "{"action":"telemetry","user":"" << current_user
-                  << "","speed":" << (uint64_t)avg_verify_speed
-                  << ","avg_speed":" << (uint64_t)avg_verify_speed
-                  << ","status":"idle","verified_count":" << passed << "}";
+        stat_json << "{\"action\":\"telemetry\",\"user\":\"" << current_user
+                  << "\",\"speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"avg_speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"status\":\"idle\",\"verified_count\":" << passed << "}";
         std::string stat_resp;
         http_post(api_base, stat_json.str(), &stat_resp);
     }
