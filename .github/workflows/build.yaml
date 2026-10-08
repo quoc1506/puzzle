@@ -2,13 +2,13 @@ name: Multiplatform Binary Build
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "testing" ]
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
       - '.github/workflows/**'
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "testing" ]
   workflow_dispatch:
 
 jobs:
