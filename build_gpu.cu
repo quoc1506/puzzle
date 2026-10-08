@@ -690,71 +690,58 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    // Ultra-optimized limb pipeline
-    u128 p = (u128)a0 * b0;
-    uint64_t t0 = (uint64_t)p;
-    u128 c = p >> 64;
+    u128 acc = 0;
+    uint64_t c_hi = 0;
 
-    p = (u128)a0 * b1 + c;
-    uint64_t t1 = (uint64_t)p;
-    c = p >> 64;
+    // Column 0
+    comba_accum(acc, c_hi, a0, b0);
+    uint64_t t0 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a0 * b2 + c;
-    uint64_t t2 = (uint64_t)p;
-    c = p >> 64;
+    // Column 1
+    comba_accum(acc, c_hi, a0, b1);
+    comba_accum(acc, c_hi, a1, b0);
+    uint64_t t1 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a0 * b3 + c;
-    uint64_t t3 = (uint64_t)p;
-    uint64_t t4 = (uint64_t)(p >> 64);
-    uint64_t t5 = 0, t6 = 0, t7 = 0;
+    // Column 2
+    comba_accum(acc, c_hi, a0, b2);
+    comba_accum(acc, c_hi, a1, b1);
+    comba_accum(acc, c_hi, a2, b0);
+    uint64_t t2 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a1 * b0 + t1;
-    t1 = (uint64_t)p;
-    c = p >> 64;
+    // Column 3
+    comba_accum(acc, c_hi, a0, b3);
+    comba_accum(acc, c_hi, a1, b2);
+    comba_accum(acc, c_hi, a2, b1);
+    comba_accum(acc, c_hi, a3, b0);
+    uint64_t t3 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a1 * b1 + t2 + c;
-    t2 = (uint64_t)p;
-    c = p >> 64;
+    // Column 4
+    comba_accum(acc, c_hi, a1, b3);
+    comba_accum(acc, c_hi, a2, b2);
+    comba_accum(acc, c_hi, a3, b1);
+    uint64_t t4 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a1 * b2 + t3 + c;
-    t3 = (uint64_t)p;
-    c = p >> 64;
+    // Column 5
+    comba_accum(acc, c_hi, a2, b3);
+    comba_accum(acc, c_hi, a3, b2);
+    uint64_t t5 = (uint64_t)acc;
+    acc = (acc >> 64) | ((u128)c_hi << 64);
+    c_hi = 0;
 
-    p = (u128)a1 * b3 + t4 + c;
-    t4 = (uint64_t)p;
-    t5 = (uint64_t)(p >> 64);
-
-    p = (u128)a2 * b0 + t2;
-    t2 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a2 * b1 + t3 + c;
-    t3 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a2 * b2 + t4 + c;
-    t4 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a2 * b3 + t5 + c;
-    t5 = (uint64_t)p;
-    t6 = (uint64_t)(p >> 64);
-
-    p = (u128)a3 * b0 + t3;
-    t3 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a3 * b1 + t4 + c;
-    t4 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a3 * b2 + t5 + c;
-    t5 = (uint64_t)p;
-    c = p >> 64;
-
-    p = (u128)a3 * b3 + t6 + c;
-    t6 = (uint64_t)p;
-    t7 = (uint64_t)(p >> 64);
+    // Column 6
+    comba_accum(acc, c_hi, a3, b3);
+    uint64_t t6 = (uint64_t)acc;
+    uint64_t t7 = (uint64_t)((acc >> 64) | ((u128)c_hi << 64));
 
     // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
@@ -822,7 +809,8 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    // Ultra-optimized dedicated squaring (branchless register pipeline)
+    // High-performance Comba Column Squaring (Registers Only)
+    // Cross products
     u128 c = (u128)a0 * a1;
     uint64_t c1 = (uint64_t)c;
     c >>= 64;
@@ -847,6 +835,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     c5 = (uint64_t)c;
     uint64_t c6 = (uint64_t)(c >> 64);
 
+    // Double cross-products
     uint64_t t7 = c6 >> 63;
     uint64_t t6 = (c6 << 1) | (c5 >> 63);
     uint64_t t5 = (c5 << 1) | (c4 >> 63);
@@ -855,6 +844,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t2 = (c2 << 1) | (c1 >> 63);
     uint64_t t1 = (c1 << 1);
 
+    // Add squares
     c = (u128)a0 * a0;
     uint64_t t0 = (uint64_t)c;
     c >>= 64;
@@ -1112,26 +1102,27 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
 }
 #endif
 
-// Ultra-optimized zero-copy register packing: 0 local memory spill
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
+    uint8_t msg[64];
+    msg[0] = prefix;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t limb = x.d[3 - i];
+        for (int b = 7; b >= 0; --b) {
+            msg[1 + i * 8 + (7 - b)] = (uint8_t)(limb >> (b * 8));
+        }
+    }
+    msg[33] = 0x80;
+    for (int zi = 34; zi < 62; ++zi) msg[zi] = 0;
+    msg[62] = 0x01;
+    msg[63] = 0x08;
+
     uint32_t W[64];
-    uint64_t x3 = x.d[3], x2 = x.d[2], x1 = x.d[1], x0 = x.d[0];
-    W[0] = ((uint32_t)prefix << 24) | (uint32_t)(x3 >> 40);
-    W[1] = (uint32_t)(x3 >> 8);
-    W[2] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
-    W[3] = (uint32_t)(x2 >> 8);
-    W[4] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
-    W[5] = (uint32_t)(x1 >> 8);
-    W[6] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
-    W[7] = (uint32_t)(x0 >> 8);
-    W[8] = ((uint32_t)x0 << 24) | 0x00800000U;
-    W[9]  = 0;
-    W[10] = 0;
-    W[11] = 0;
-    W[12] = 0;
-    W[13] = 0;
-    W[14] = 0;
-    W[15] = 0x00000108U;
+    for (int i = 0; i < 16; ++i) {
+        W[i] = ((uint32_t)msg[i * 4] << 24) |
+               ((uint32_t)msg[i * 4 + 1] << 16) |
+               ((uint32_t)msg[i * 4 + 2] << 8) |
+               ((uint32_t)msg[i * 4 + 3]);
+    }
     for (int i = 16; i < 64; ++i) {
         uint32_t s0 = rotr32(W[i - 15], 7) ^ rotr32(W[i - 15], 18) ^ (W[i - 15] >> 3);
         uint32_t s1 = rotr32(W[i - 2], 17) ^ rotr32(W[i - 2], 19) ^ (W[i - 2] >> 10);
@@ -1579,7 +1570,14 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
     cudaSetDevice(device_id);
-    uint32_t grid_threads = 65536;
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device_id);
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
+    uint32_t block_size = 256;
+    uint32_t num_blocks = sm_count * 8;
+    if (num_blocks < 256) num_blocks = 256;
+    if (num_blocks > 4096) num_blocks = 4096;
+    uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
     std::vector<int> puzzle_ids;
@@ -1619,6 +1617,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         std::string resp;
         bool got_server = http_get(req_url, &resp);
         std::string str_start = got_server ? json_get_string(resp, "start") : "";
+        std::string str_end = got_server ? json_get_string(resp, "end") : "";
         std::string str_target = got_server ? json_get_string(resp, "target_address") : "";
 
         if (!got_server || str_start.empty() || str_target.empty()) {
@@ -1627,8 +1626,9 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
             continue;
         }
 
-        uint64_t start_limbs[4];
-        parse_hex64_limbs(str_start, start_limbs);
+        u256 start_k = parse_u256(str_start);
+        u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
+        uint64_t total_keys_count = 65536;
 
         uint8_t target_h160[20];
         if (!b58check_decode_hash160(str_target, target_h160)) {
@@ -1644,112 +1644,48 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
                     ((uint32_t)target_h160[j * 4 + 3] << 24);
         }
 
-        int match_flag = 0;
-        uint64_t winning_found_limbs[4] = {0};
-        double total_scan_elapsed = 0.0;
-        uint64_t total_keys_scanned = 0;
+        int h_flag = 0;
+        uint64_t h_offset = 0;
+        cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t single_sub_keys = single_range_size;
-        if (single_sub_keys == 0) single_sub_keys = 268435456ULL;
+        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
+        uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
+        if (batches == 0) batches = 1;
 
-        u256 cur_sub_start = start_k;
+        uint64_t start_limbs[4] = {
+            (uint64_t)start_k.low,
+            (uint64_t)(start_k.low >> 64),
+            (uint64_t)start_k.high,
+            (uint64_t)(start_k.high >> 64)
+        };
 
-        for (int m = 0; m < actual_multiple && g_running.load(); ++m) {
-            uint64_t cur_sub_keys = single_sub_keys;
-            if (total_keys_scanned + cur_sub_keys > total_keys_count) {
-                cur_sub_keys = total_keys_count - total_keys_scanned;
-            }
-            if (cur_sub_keys == 0) break;
+        auto t_scan_start = std::chrono::high_resolution_clock::now();
+        cuda_scan_kernel<<<num_blocks, block_size>>>(
+            start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
+            total_keys_count, grid_threads, batches,
+            d_found_flag, d_found_offset,
+            tw[0], tw[1], tw[2], tw[3], tw[4]
+        );
+        cudaDeviceSynchronize();
+        auto t_scan_end = std::chrono::high_resolution_clock::now();
 
-            int h_flag = 0;
-            uint64_t h_offset = 0;
-            cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
+        cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
 
-            uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
-            uint32_t batches = (uint32_t)((cur_sub_keys + chunk_step - 1) / chunk_step);
-            if (batches == 0) batches = 1;
+        double elapsed_sec = std::chrono::duration<double>(t_scan_end - t_scan_start).count();
+        if (elapsed_sec <= 0.0) elapsed_sec = 0.0001;
+        total_keys_verified += total_keys_count;
+        double target_speed = (double)total_keys_count / elapsed_sec;
 
-            uint64_t sub_limbs[4] = {
-                (uint64_t)cur_sub_start.low,
-                (uint64_t)(cur_sub_start.low >> 64),
-                (uint64_t)cur_sub_start.high,
-                (uint64_t)(cur_sub_start.high >> 64)
-            };
-
-            auto t_sub_start = std::chrono::high_resolution_clock::now();
-            cuda_scan_kernel<<<num_blocks, block_size>>>(
-                sub_limbs[0], sub_limbs[1], sub_limbs[2], sub_limbs[3],
-                cur_sub_keys, grid_threads, batches,
-                d_found_flag, d_found_offset,
-                target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
-            );
-            cudaDeviceSynchronize();
-            auto t_sub_end = std::chrono::high_resolution_clock::now();
-
-            cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-            cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-
-            double sub_elapsed = std::chrono::duration<double>(t_sub_end - t_sub_start).count();
-            if (sub_elapsed <= 0.0) sub_elapsed = 0.0001;
-            total_scan_elapsed += sub_elapsed;
-            total_keys_scanned += cur_sub_keys;
-
-            double live_spd = (double)cur_sub_keys / sub_elapsed;
-            std::cout << "\r[*] Speed: " << format_speed(live_spd)
-                      << " | Range " << (m + 1) << "/" << actual_multiple
-                      << " | Total: " << (ranges_completed + m + 1) << " ranges" << std::flush;
-
-            if (h_flag == 1) {
-                match_flag = 1;
-                std::memcpy(winning_found_limbs, sub_limbs, sizeof(sub_limbs));
-                u128 s_carry = (u128)winning_found_limbs[0] + h_offset;
-                winning_found_limbs[0] = (uint64_t)s_carry;
-                s_carry >>= 64;
-                s_carry += winning_found_limbs[1];
-                winning_found_limbs[1] = (uint64_t)s_carry;
-                s_carry >>= 64;
-                s_carry += winning_found_limbs[2];
-                winning_found_limbs[2] = (uint64_t)s_carry;
-                winning_found_limbs[3] += (uint64_t)(s_carry >> 64);
-                break;
-            }
-
-            cur_sub_start = cur_sub_start + cur_sub_keys;
-        }
-
-        if (total_scan_elapsed <= 0.0) total_scan_elapsed = 0.0001;
-        double final_spd = (double)total_keys_scanned / total_scan_elapsed;
-        ranges_completed += actual_multiple;
-        last_measured_speed = final_spd;
-
-        if (match_flag == 1) {
-            std::string priv_hex = limbs_to_hex(winning_found_limbs);
-            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
-
-            std::stringstream res_json;
-            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
-                     << ",\"block\":" << str_block
-                     << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"found\",\"user\":\"" << user
-                     << "\",\"private_key\":\"0x" << priv_hex
-                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
-            std::string ack;
-            http_post(api_base, res_json.str(), &ack);
-            break;
+        if (h_flag == 1) {
+            passed++;
+            std::cout << "[PASS] Target #" << pid
+                      << " | Speed: " << format_speed(target_speed)
+                      << " -> Matched Server Target\n";
         } else {
-            std::stringstream res_json;
-            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
-                     << ",\"block\":" << str_block
-                     << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"done\",\"user\":\"" << user
-                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
-            std::string ack;
-            http_post(api_base, res_json.str(), &ack);
+            failed++;
+            std::cerr << "[FAIL] Target #" << pid << " -> Key not found in range\n";
         }
     }
 
@@ -1770,10 +1706,10 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 
     if (passed > 0) {
         std::stringstream stat_json;
-        stat_json << "{\"action\":\"telemetry\",\"user\":\"" << current_user
-                  << "\",\"speed\":" << (uint64_t)avg_verify_speed
-                  << ",\"avg_speed\":" << (uint64_t)avg_verify_speed
-                  << ",\"status\":\"idle\",\"verified_count\":" << passed << "}";
+        stat_json << "{"action":"telemetry","user":"" << current_user
+                  << "","speed":" << (uint64_t)avg_verify_speed
+                  << ","avg_speed":" << (uint64_t)avg_verify_speed
+                  << ","status":"idle","verified_count":" << passed << "}";
         std::string stat_resp;
         http_post(api_base, stat_json.str(), &stat_resp);
     }
@@ -1988,7 +1924,7 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"0x" << priv_hex
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
@@ -1999,7 +1935,7 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
             http_post(api_base, res_json.str(), &ack);

@@ -2255,7 +2255,7 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"" << u256_to_hex64(found_key)
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
@@ -2266,7 +2266,7 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
