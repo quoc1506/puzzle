@@ -463,7 +463,7 @@ jobs:
   publish-bin-folder:
     name: Consolidate Binaries into bin/
     needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/testing'
     runs-on: ubuntu-latest
     permissions:
       contents: write
