@@ -2045,7 +2045,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://puzzle.test/server.php";
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
     int puzzle_id = 0; // 0 = dynamic from server

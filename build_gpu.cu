@@ -1748,7 +1748,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 }
 
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://puzzle.test/server.php";
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string user = "cuda-worker-1";
     int device_id = 0;
     int puzzle_id = 0; // 0 = dynamic from server
