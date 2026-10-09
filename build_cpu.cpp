@@ -1338,16 +1338,17 @@ void init_avx2_consts() {}
     12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3))
 
 #define F1(x, y, z) _mm256_xor_si256(_mm256_xor_si256(x, y), z)
-#define F2(x, y, z) _mm256_or_si256(_mm256_and_si256(x, y), _mm256_andnot_si256(x, z))
+#define F2(x, y, z) _mm256_xor_si256(z, _mm256_and_si256(x, _mm256_xor_si256(y, z)))
 #define F3(x, y, z) _mm256_xor_si256(_mm256_or_si256(x, _mm256_xor_si256(y, _mm256_set1_epi32(-1))), z)
-#define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
+#define F4(x, y, z) _mm256_xor_si256(y, _mm256_and_si256(z, _mm256_xor_si256(x, y)))
 #define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
 
 inline __m256i as_m256i(__m256i v) { return v; }
 inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
 
 #define ROUND_AVX2(a, b, c, d, e, f, x, k, r) do { \
-    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k))), r), e); \
+    __m256i step_k = ((k) == 0U) ? as_m256i(x) : _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k)); \
+    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), step_k), r), e); \
     c = ROL256(c, 10); \
 } while(0)
 
@@ -1644,11 +1645,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 512;
+    alignas(64) Fe dx[512];
+    alignas(64) Fe cum[513];
+    alignas(64) Fe cur_x[512];
+    alignas(64) uint8_t cur_prefix[512];
 
     uint64_t local_counter = 0;
 
@@ -1714,26 +1715,34 @@ void scan_worker_montgomery(
                 }
 
                 Fe u = fe_inv(cum[cur_batch]);
+                AffinePoint next_base;
 
-                // Backward pass: calculate modular inverses
-                alignas(64) Fe inv_dx[1024];
+                // Fused backward pass & point addition (0 inv_dx array allocation)
                 for (int i = (int)cur_batch - 1; i >= 1; --i) {
-                    inv_dx[i] = fe_mul(u, cum[i]);
+                    Fe inv_dx_i = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
-                }
-                inv_dx[0] = u;
-
-                // Point Addition pass: calculate xi and yi
-                for (uint32_t i = 0; i < cur_batch; ++i) {
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
+                    Fe lambda = fe_mul(dy_i, inv_dx_i);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    if (i == (int)cur_batch - 1) {
+                        next_base = AffinePoint{xi, yi};
+                    }
                 }
-                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
+                // i = 0
+                {
+                    Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
+                    Fe lambda = fe_mul(dy_0, u);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
+                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
+                    cur_x[0] = x0;
+                    cur_prefix[0] = (y0.d[0] & 1) ? 0x03 : 0x02;
+                }
+                cur_base = next_base;
             }
 
 #if defined(__AVX2__)
