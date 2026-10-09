@@ -1790,7 +1790,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 }
 
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://65.20.91.208/puzzle_server.php";
+    std::string api_base = "http://puzzle.test/server.php";
     std::string user = "cuda-worker-1";
     int device_id = 0;
     int puzzle_id = 0; // 0 = dynamic from server
@@ -1973,6 +1973,9 @@ int main(int argc, char* argv[]) {
         if (elapsed <= 0.0) elapsed = 0.0001;
         double final_spd = (double)total_keys_count / elapsed;
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
+
+        std::cout << "\r[*] Speed: " << format_speed(final_spd)
+                  << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
             uint64_t found_limbs[4];
