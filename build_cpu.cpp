@@ -659,104 +659,7 @@ CUDA_HOSTDEV CUDA_INLINE void comba_accum(u128& acc, uint64_t& c_hi, uint64_t x,
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && defined(__ADX__)
-    uint64_t r0, r1, r2, r3;
-    uint64_t t0, t1, t2, t3, t4, t5, t6, t7;
-    const uint64_t* a_ptr = a.d;
-    const uint64_t* b_ptr = b.d;
-    __asm__ volatile (
-        "movq 0(%[b_ptr]), %%rdx\n\t"
-        "mulx 0(%[a_ptr]), %[t0], %[t1]\n\t"
-        "mulx 8(%[a_ptr]), %%r8, %[t2]\n\t"
-        "addq %%r8, %[t1]\n\t"
-        "mulx 16(%[a_ptr]), %%r8, %[t3]\n\t"
-        "adcq %%r8, %[t2]\n\t"
-        "mulx 24(%[a_ptr]), %%r8, %[t4]\n\t"
-        "adcq %%r8, %[t3]\n\t"
-        "adcq $0, %[t4]\n\t"
-
-        "movq 8(%[b_ptr]), %%rdx\n\t"
-        "xorl %%r8d, %%r8d\n\t"
-        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t1]\n\t"
-        "adox %%r10, %[t2]\n\t"
-        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t2]\n\t"
-        "adox %%r10, %[t3]\n\t"
-        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t3]\n\t"
-        "adox %%r10, %[t4]\n\t"
-        "mulx 24(%[a_ptr]), %%r9, %[t5]\n\t"
-        "adcx %%r9, %[t4]\n\t"
-        "adox %%r8, %[t5]\n\t"
-        "adcx %%r8, %[t5]\n\t"
-
-        "movq 16(%[b_ptr]), %%rdx\n\t"
-        "xorl %%r8d, %%r8d\n\t"
-        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t2]\n\t"
-        "adox %%r10, %[t3]\n\t"
-        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t3]\n\t"
-        "adox %%r10, %[t4]\n\t"
-        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t4]\n\t"
-        "adox %%r10, %[t5]\n\t"
-        "mulx 24(%[a_ptr]), %%r9, %[t6]\n\t"
-        "adcx %%r9, %[t5]\n\t"
-        "adox %%r8, %[t6]\n\t"
-        "adcx %%r8, %[t6]\n\t"
-
-        "movq 24(%[b_ptr]), %%rdx\n\t"
-        "xorl %%r8d, %%r8d\n\t"
-        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t3]\n\t"
-        "adox %%r10, %[t4]\n\t"
-        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t4]\n\t"
-        "adox %%r10, %[t5]\n\t"
-        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
-        "adcx %%r9, %[t5]\n\t"
-        "adox %%r10, %[t6]\n\t"
-        "mulx 24(%[a_ptr]), %%r9, %[t7]\n\t"
-        "adcx %%r9, %[t6]\n\t"
-        "adox %%r8, %[t7]\n\t"
-        "adcx %%r8, %[t7]\n\t"
-
-        "movq $0x1000003D1, %%rdx\n\t"
-        "mulx %[t4], %%r8, %%r9\n\t"
-        "addq %%r8, %[t0]\n\t"
-        "adcq %%r9, %[t1]\n\t"
-        "mulx %[t5], %%r8, %%r9\n\t"
-        "adcq %%r8, %[t1]\n\t"
-        "adcq %%r9, %[t2]\n\t"
-        "mulx %[t6], %%r8, %%r9\n\t"
-        "adcq %%r8, %[t2]\n\t"
-        "adcq %%r9, %[t3]\n\t"
-        "mulx %[t7], %%r8, %%r9\n\t"
-        "adcq %%r8, %[t3]\n\t"
-        "adcq $0, %%r9\n\t"
-
-        "mulx %%r9, %%r8, %%r10\n\t"
-        "addq %%r8, %[t0]\n\t"
-        "adcq %%r10, %[t1]\n\t"
-        "adcq $0, %[t2]\n\t"
-        "adcq $0, %[t3]\n\t"
-
-        : [t0] "=&r"(r0), [t1] "=&r"(r1), [t2] "=&r"(r2), [t3] "=&r"(r3),
-          [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
-        : [a_ptr] "r"(a_ptr), [b_ptr] "r"(b_ptr)
-        : "rdx", "r8", "r9", "r10", "cc", "memory"
-    );
-    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
-        r2 == 0xFFFFFFFFFFFFFFFFULL &&
-        r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
-        r0 -= 0xFFFFFFFEFFFFFC2FULL;
-        r1 = 0; r2 = 0; r3 = 0;
-    }
-    return Fe{{r0, r1, r2, r3}};
-#elif defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
@@ -889,9 +792,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && defined(__ADX__)
-    return fe_mul(a, a);
-#elif defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // Ultra-optimized dedicated squaring (branchless register pipeline)
@@ -1822,70 +1723,34 @@ void scan_worker_montgomery(
                 }
                 inv_dx[0] = u;
 
-                // Optimized Point Addition pass (interleaved 2-way arithmetic)
-                // Micro-architecture optimization: skip 256-bit yi modular multiplications for 0..cur_batch-2.
-                // Dual prefixes (0x02 and 0x03) are verified simultaneously in 8-lane SIMD registers.
-                uint32_t limit = cur_batch - 1;
-                uint32_t i_pt = 0;
-                for (; i_pt + 2 <= limit; i_pt += 2) {
-                    Fe dy0 = fe_sub(G_TABLE[i_pt].y, cur_base.y);
-                    Fe dy1 = fe_sub(G_TABLE[i_pt + 1].y, cur_base.y);
-                    Fe lam0 = fe_mul(dy0, inv_dx[i_pt]);
-                    Fe lam1 = fe_mul(dy1, inv_dx[i_pt + 1]);
-                    Fe lam2_0 = fe_sqr(lam0);
-                    Fe lam2_1 = fe_sqr(lam1);
-                    cur_x[i_pt]     = fe_sub(fe_sub(lam2_0, cur_base.x), G_TABLE[i_pt].x);
-                    cur_x[i_pt + 1] = fe_sub(fe_sub(lam2_1, cur_base.x), G_TABLE[i_pt + 1].x);
+                // Point Addition pass: calculate xi and yi
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
+                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
+                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
+                    cur_x[i] = xi;
+                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
                 }
-                for (; i_pt < limit; ++i_pt) {
-                    Fe dy = fe_sub(G_TABLE[i_pt].y, cur_base.y);
-                    Fe lam = fe_mul(dy, inv_dx[i_pt]);
-                    Fe lam2 = fe_sqr(lam);
-                    cur_x[i_pt] = fe_sub(fe_sub(lam2, cur_base.x), G_TABLE[i_pt].x);
-                }
-                // Last point: compute full coordinates to step cur_base
-                uint32_t last = cur_batch - 1;
-                Fe dy_last = fe_sub(G_TABLE[last].y, cur_base.y);
-                Fe lambda_last = fe_mul(dy_last, inv_dx[last]);
-                Fe lambda2_last = fe_sqr(lambda_last);
-                Fe x_last = fe_sub(fe_sub(lambda2_last, cur_base.x), G_TABLE[last].x);
-                Fe y_last = fe_sub(fe_mul(lambda_last, fe_sub(cur_base.x, x_last)), cur_base.y);
-                cur_x[last] = x_last;
-                cur_base = AffinePoint{x_last, y_last};
+                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
             }
 
 #if defined(__AVX2__)
-            alignas(64) uint8_t prefixes[8];
-            alignas(64) Fe x_lanes[8];
             uint32_t i = 0;
-            for (; i + 4 <= cur_batch; i += 4) {
-                for (int k = 0; k < 4; ++k) {
-                    prefixes[k * 2]     = 0x02;
-                    x_lanes[k * 2]      = cur_x[i + k];
-                    prefixes[k * 2 + 1] = 0x03;
-                    x_lanes[k * 2 + 1]  = cur_x[i + k];
-                }
-                int match_lane = fast_sha256_ripemd160_8x_avx2(prefixes, x_lanes, target_w);
-                if (__builtin_expect(match_lane >= 0, 0)) {
-                    uint32_t pt_offset = i + (uint32_t)(match_lane / 2);
+            for (; i + 8 <= cur_batch; i += 8) {
+                int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
+                if (__builtin_expect(match_idx >= 0, 0)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)pt_offset;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(pt_offset + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)(i + match_idx);
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
                     return;
                 }
             }
             for (; i < cur_batch; ++i) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(0x02, cur_x[i], X);
-                if (fast_ripemd160_32_check(X, target_w)) {
-                    std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)i;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                    return;
-                }
-                fast_sha256_into_ripemd_X(0x03, cur_x[i], X);
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
@@ -1897,15 +1762,7 @@ void scan_worker_montgomery(
 #else
             for (uint32_t i = 0; i < cur_batch; ++i) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(0x02, cur_x[i], X);
-                if (fast_ripemd160_32_check(X, target_w)) {
-                    std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)i;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                    return;
-                }
-                fast_sha256_into_ripemd_X(0x03, cur_x[i], X);
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);

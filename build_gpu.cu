@@ -813,7 +813,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
+#if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1491,55 +1491,38 @@ void cuda_scan_kernel(
         prod[0] = inv_all;
 
         AffinePoint next_cur_P;
-        // Zero-spill optimized point addition pipeline:
-        // Skip redundant 256-bit modular multiplication for yi across indices 0..30.
-        // Hashing verifies dual compressed prefixes (0x02 / 0x03) with zero local-memory spills.
-        #pragma unroll 31
-        for (int i = 0; i < 31; ++i) {
+        #pragma unroll 32
+        for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
                 Fe lambda = fe_mul(dy_i, prod[i]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
+                if (i == 31) {
+                    next_cur_P = AffinePoint{next_x, next_y};
+                }
+
+                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(0x02, next_x, X);
+                fast_sha256_into_ripemd_X(prefix, next_x, X);
                 if (fast_ripemd160_32_check(X, tw)) {
                     if (atomicExch(d_found_flag, 1) == 0) {
                         *d_found_offset = key_offset;
                     }
                     return;
                 }
-                fast_sha256_into_ripemd_X(0x03, next_x, X);
-                if (fast_ripemd160_32_check(X, tw)) {
-                    if (atomicExch(d_found_flag, 1) == 0) {
-                        *d_found_offset = key_offset;
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Point 31: Compute full affine coordinates to advance cur_P
-        uint64_t key_offset_31 = batch_base_offset + 32ULL * step_keys;
-        Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
-        Fe lambda_31 = fe_mul(dy_31, prod[31]);
-        Fe lambda_sq_31 = fe_sqr(lambda_31);
-        Fe next_x_31 = fe_sub(fe_sub(lambda_sq_31, cur_P.x), dev_batch_G[31].x);
-        Fe diff_x_31 = fe_sub(cur_P.x, next_x_31);
-        Fe next_y_31 = fe_sub(fe_mul(lambda_31, diff_x_31), cur_P.y);
-        next_cur_P = AffinePoint{next_x_31, next_y_31};
-
-        if (key_offset_31 < total_chunk_keys) {
-            uint8_t prefix = (next_y_31.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t X[8];
-            fast_sha256_into_ripemd_X(prefix, next_x_31, X);
-            if (fast_ripemd160_32_check(X, tw)) {
-                if (atomicExch(d_found_flag, 1) == 0) {
-                    *d_found_offset = key_offset_31;
-                }
-                return;
+            } else if (i == 31) {
+                Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
+                Fe lambda = fe_mul(dy_31, prod[31]);
+                Fe lambda_sq = fe_sqr(lambda);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+                next_cur_P = AffinePoint{next_x, next_y};
             }
         }
         cur_P = next_cur_P;
@@ -1659,17 +1642,6 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
-    int dev_count = 0;
-    cudaError_t dev_err = cudaGetDeviceCount(&dev_count);
-    if (dev_err != cudaSuccess || dev_count == 0) {
-        std::cerr << "[FAIL] No CUDA-capable device detected: " 
-                  << (dev_err != cudaSuccess ? cudaGetErrorString(dev_err) : "0 devices found") << "\n";
-        return 1;
-    }
-    if (device_id >= dev_count) {
-        std::cerr << "[FAIL] Requested device ID " << device_id << " exceeds available count (" << dev_count << ")\n";
-        return 1;
-    }
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
@@ -1874,19 +1846,7 @@ int main(int argc, char* argv[]) {
         return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
-    int dev_count = 0;
-    cudaError_t dev_err = cudaGetDeviceCount(&dev_count);
-    if (dev_err != cudaSuccess || dev_count == 0) {
-        std::cerr << "[ERROR] No CUDA-capable device detected: " 
-                  << (dev_err != cudaSuccess ? cudaGetErrorString(dev_err) : "0 devices found") << "\n";
-        return 1;
-    }
-    if (device_id >= dev_count) {
-        std::cerr << "[ERROR] Requested device ID " << device_id << " exceeds available count (" << dev_count << ")\n";
-        return 1;
-    }
-
-    std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
+        std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
     
 
     cudaSetDevice(device_id);
