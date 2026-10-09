@@ -1328,25 +1328,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 }
 
 #if defined(__AVX2__)
-alignas(32) static __m256i g_K256_SIMD[64];
-static bool g_avx2_consts_inited = false;
-void init_avx2_consts() {
-    if (g_avx2_consts_inited) return;
-    static const uint32_t K256_RAW[64] = {
-        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-    };
-    for (int i = 0; i < 64; ++i) {
-        g_K256_SIMD[i] = _mm256_set1_epi32(K256_RAW[i]);
-    }
-    g_avx2_consts_inited = true;
-}
+void init_avx2_consts() {}
 
 #define ROR256(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
 #define ROL256(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
@@ -1427,7 +1409,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
         __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-        __m256i k_val = g_K256_SIMD[i];
+        __m256i k_val = _mm256_set1_epi32(K256[i]);
         __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
         __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
@@ -1741,34 +1723,70 @@ void scan_worker_montgomery(
                 }
                 inv_dx[0] = u;
 
-                // Point Addition pass: calculate xi and yi
-                for (uint32_t i = 0; i < cur_batch; ++i) {
-                    Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
-                    Fe lambda2 = fe_sqr(lambda);
-                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
-                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
-                    cur_x[i] = xi;
-                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                // Optimized Point Addition pass (interleaved 2-way arithmetic)
+                // Micro-architecture optimization: skip 256-bit yi modular multiplications for 0..cur_batch-2.
+                // Dual prefixes (0x02 and 0x03) are verified simultaneously in 8-lane SIMD registers.
+                uint32_t limit = cur_batch - 1;
+                uint32_t i_pt = 0;
+                for (; i_pt + 2 <= limit; i_pt += 2) {
+                    Fe dy0 = fe_sub(G_TABLE[i_pt].y, cur_base.y);
+                    Fe dy1 = fe_sub(G_TABLE[i_pt + 1].y, cur_base.y);
+                    Fe lam0 = fe_mul(dy0, inv_dx[i_pt]);
+                    Fe lam1 = fe_mul(dy1, inv_dx[i_pt + 1]);
+                    Fe lam2_0 = fe_sqr(lam0);
+                    Fe lam2_1 = fe_sqr(lam1);
+                    cur_x[i_pt]     = fe_sub(fe_sub(lam2_0, cur_base.x), G_TABLE[i_pt].x);
+                    cur_x[i_pt + 1] = fe_sub(fe_sub(lam2_1, cur_base.x), G_TABLE[i_pt + 1].x);
                 }
-                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
+                for (; i_pt < limit; ++i_pt) {
+                    Fe dy = fe_sub(G_TABLE[i_pt].y, cur_base.y);
+                    Fe lam = fe_mul(dy, inv_dx[i_pt]);
+                    Fe lam2 = fe_sqr(lam);
+                    cur_x[i_pt] = fe_sub(fe_sub(lam2, cur_base.x), G_TABLE[i_pt].x);
+                }
+                // Last point: compute full coordinates to step cur_base
+                uint32_t last = cur_batch - 1;
+                Fe dy_last = fe_sub(G_TABLE[last].y, cur_base.y);
+                Fe lambda_last = fe_mul(dy_last, inv_dx[last]);
+                Fe lambda2_last = fe_sqr(lambda_last);
+                Fe x_last = fe_sub(fe_sub(lambda2_last, cur_base.x), G_TABLE[last].x);
+                Fe y_last = fe_sub(fe_mul(lambda_last, fe_sub(cur_base.x, x_last)), cur_base.y);
+                cur_x[last] = x_last;
+                cur_base = AffinePoint{x_last, y_last};
             }
 
 #if defined(__AVX2__)
+            alignas(64) uint8_t prefixes[8];
+            alignas(64) Fe x_lanes[8];
             uint32_t i = 0;
-            for (; i + 8 <= cur_batch; i += 8) {
-                int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
-                if (__builtin_expect(match_idx >= 0, 0)) {
+            for (; i + 4 <= cur_batch; i += 4) {
+                for (int k = 0; k < 4; ++k) {
+                    prefixes[k * 2]     = 0x02;
+                    x_lanes[k * 2]      = cur_x[i + k];
+                    prefixes[k * 2 + 1] = 0x03;
+                    x_lanes[k * 2 + 1]  = cur_x[i + k];
+                }
+                int match_lane = fast_sha256_ripemd160_8x_avx2(prefixes, x_lanes, target_w);
+                if (__builtin_expect(match_lane >= 0, 0)) {
+                    uint32_t pt_offset = i + (uint32_t)(match_lane / 2);
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)(i + match_idx);
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)pt_offset;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(pt_offset + 1), std::memory_order_relaxed);
                     return;
                 }
             }
             for (; i < cur_batch; ++i) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                fast_sha256_into_ripemd_X(0x02, cur_x[i], X);
+                if (fast_ripemd160_32_check(X, target_w)) {
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    return;
+                }
+                fast_sha256_into_ripemd_X(0x03, cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
@@ -1780,7 +1798,15 @@ void scan_worker_montgomery(
 #else
             for (uint32_t i = 0; i < cur_batch; ++i) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                fast_sha256_into_ripemd_X(0x02, cur_x[i], X);
+                if (fast_ripemd160_32_check(X, target_w)) {
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    return;
+                }
+                fast_sha256_into_ripemd_X(0x03, cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
