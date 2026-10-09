@@ -1328,7 +1328,25 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 }
 
 #if defined(__AVX2__)
-void init_avx2_consts() {}
+alignas(32) static __m256i g_K256_SIMD[64];
+static bool g_avx2_consts_inited = false;
+void init_avx2_consts() {
+    if (g_avx2_consts_inited) return;
+    static const uint32_t K256_RAW[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    for (int i = 0; i < 64; ++i) {
+        g_K256_SIMD[i] = _mm256_set1_epi32(K256_RAW[i]);
+    }
+    g_avx2_consts_inited = true;
+}
 
 #define ROR256(x, n) _mm256_or_si256(_mm256_srli_epi32(x, n), _mm256_slli_epi32(x, 32 - (n)))
 #define ROL256(x, n) _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - (n)))
@@ -1338,17 +1356,16 @@ void init_avx2_consts() {}
     12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3))
 
 #define F1(x, y, z) _mm256_xor_si256(_mm256_xor_si256(x, y), z)
-#define F2(x, y, z) _mm256_xor_si256(z, _mm256_and_si256(x, _mm256_xor_si256(y, z)))
+#define F2(x, y, z) _mm256_or_si256(_mm256_and_si256(x, y), _mm256_andnot_si256(x, z))
 #define F3(x, y, z) _mm256_xor_si256(_mm256_or_si256(x, _mm256_xor_si256(y, _mm256_set1_epi32(-1))), z)
-#define F4(x, y, z) _mm256_xor_si256(y, _mm256_and_si256(z, _mm256_xor_si256(x, y)))
+#define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
 #define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
 
 inline __m256i as_m256i(__m256i v) { return v; }
 inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
 
 #define ROUND_AVX2(a, b, c, d, e, f, x, k, r) do { \
-    __m256i step_k = ((k) == 0U) ? as_m256i(x) : _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k)); \
-    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), step_k), r), e); \
+    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k))), r), e); \
     c = ROL256(c, 10); \
 } while(0)
 
@@ -1410,7 +1427,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
         __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-        __m256i k_val = _mm256_set1_epi32(K256[i]);
+        __m256i k_val = g_K256_SIMD[i];
         __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
         __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
@@ -1645,11 +1662,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
@@ -1715,34 +1732,26 @@ void scan_worker_montgomery(
                 }
 
                 Fe u = fe_inv(cum[cur_batch]);
-                AffinePoint next_base;
 
-                // Fused backward pass & point addition (0 inv_dx array allocation)
+                // Backward pass: calculate modular inverses
+                alignas(64) Fe inv_dx[1024];
                 for (int i = (int)cur_batch - 1; i >= 1; --i) {
-                    Fe inv_dx_i = fe_mul(u, cum[i]);
+                    inv_dx[i] = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
+                }
+                inv_dx[0] = u;
+
+                // Point Addition pass: calculate xi and yi
+                for (uint32_t i = 0; i < cur_batch; ++i) {
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx_i);
+                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (i == (int)cur_batch - 1) {
-                        next_base = AffinePoint{xi, yi};
-                    }
                 }
-                // i = 0
-                {
-                    Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_0, u);
-                    Fe lambda2 = fe_sqr(lambda);
-                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
-                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
-                    cur_x[0] = x0;
-                    cur_prefix[0] = (y0.d[0] & 1) ? 0x03 : 0x02;
-                }
-                cur_base = next_base;
+                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
             }
 
 #if defined(__AVX2__)

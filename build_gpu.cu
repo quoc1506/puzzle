@@ -45,9 +45,6 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
-#ifndef __launch_bounds__
-#define __launch_bounds__(...)
-#endif
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -1482,20 +1479,25 @@ void cuda_scan_kernel(
 
         // Only ONE inversion for 32 points
         Fe inv_all = fe_inv(prod[31]);
-        AffinePoint next_cur_P;
 
-        // Fused Backward Pass + Point Addition + Hash Check
-        // Zero-Spill Register Pipeline: inv_dx_i is consumed immediately without register storage
+        // Backward pass: compute individual inverses
         #pragma unroll 31
         for (int i = 31; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
+            prod[i] = inv_dx_i;
+        }
+        prod[0] = inv_all;
 
+        AffinePoint next_cur_P;
+        // Balanced unroll factor to maximize Turing T4 warp occupancy and eliminate local memory spills
+        #pragma unroll 2
+        for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, inv_dx_i);
+                Fe lambda = fe_mul(dy_i, prod[i]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1516,35 +1518,12 @@ void cuda_scan_kernel(
                 }
             } else if (i == 31) {
                 Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
-                Fe lambda = fe_mul(dy_31, inv_dx_i);
+                Fe lambda = fe_mul(dy_31, prod[31]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
                 next_cur_P = AffinePoint{next_x, next_y};
-            }
-        }
-
-        // i = 0 (using inv_all directly without extra multiplications)
-        {
-            uint64_t key_offset = batch_base_offset + step_keys;
-            if (key_offset < total_chunk_keys) {
-                Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
-                Fe lambda = fe_mul(dy_0, inv_all);
-                Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
-                Fe diff_x = fe_sub(cur_P.x, next_x);
-                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(prefix, next_x, X);
-                if (fast_ripemd160_32_check(X, tw)) {
-                    if (atomicExch(d_found_flag, 1) == 0) {
-                        *d_found_offset = key_offset;
-                    }
-                    return;
-                }
             }
         }
         cur_P = next_cur_P;
