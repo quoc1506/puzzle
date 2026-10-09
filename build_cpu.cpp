@@ -1714,74 +1714,26 @@ void scan_worker_montgomery(
                 }
 
                 Fe u = fe_inv(cum[cur_batch]);
-                AffinePoint next_base;
 
-                // Ultra-optimized 4-way unrolled backward pass with superscalar ILP
-                auto do_step = [&](int i) {
-                    Fe inv_dx_i = fe_mul(u, cum[i]);
+                // Backward pass: calculate modular inverses
+                alignas(64) Fe inv_dx[1024];
+                for (int i = (int)cur_batch - 1; i >= 1; --i) {
+                    inv_dx[i] = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
+                }
+                inv_dx[0] = u;
+
+                // Point Addition pass: calculate xi and yi
+                for (uint32_t i = 0; i < cur_batch; ++i) {
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx_i);
+                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
-                    uint8_t prefix = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (__builtin_expect(i == (int)cur_batch - 1, 0)) {
-                        next_base.x = xi;
-                        next_base.y = yi;
-                    }
-#if defined(__AVX2__)
                     cur_x[i] = xi;
-                    cur_prefix[i] = prefix;
-#else
-                    uint32_t X[8];
-                    fast_sha256_into_ripemd_X(prefix, xi, X);
-                    if (fast_ripemd160_32_check(X, target_w)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cur_k + (uint64_t)i;
-                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                        return true;
-                    }
-#endif
-                    return false;
-                };
-
-                int i_idx = (int)cur_batch - 1;
-                for (; i_idx >= 4; i_idx -= 4) {
-                    if (do_step(i_idx)) return;
-                    if (do_step(i_idx - 1)) return;
-                    if (do_step(i_idx - 2)) return;
-                    if (do_step(i_idx - 3)) return;
+                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
                 }
-                for (; i_idx >= 1; --i_idx) {
-                    if (do_step(i_idx)) return;
-                }
-                // Handle i = 0 without unnecessary fe_mul
-                {
-                    Fe inv_dx_0 = u;
-                    Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_0, inv_dx_0);
-                    Fe lambda2 = fe_sqr(lambda);
-                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
-                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
-                    uint8_t prefix = (y0.d[0] & 1) ? 0x03 : 0x02;
-#if defined(__AVX2__)
-                    cur_x[0] = x0;
-                    cur_prefix[0] = prefix;
-#else
-                    uint32_t X[8];
-                    fast_sha256_into_ripemd_X(prefix, x0, X);
-                    if (fast_ripemd160_32_check(X, target_w)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cur_k;
-                        checked_counter.fetch_add(local_counter + 1, std::memory_order_relaxed);
-                        return;
-                    }
-#endif
-                }
-                cur_base = next_base;
+                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
             }
 
 #if defined(__AVX2__)
@@ -1808,17 +1760,15 @@ void scan_worker_montgomery(
                 }
             }
 #else
-            if (!cur_base_valid) {
-                for (uint32_t i = 0; i < cur_batch; ++i) {
-                    uint32_t X[8];
-                    fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
-                    if (fast_ripemd160_32_check(X, target_w)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cur_k + (uint64_t)i;
-                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                        return;
-                    }
+            for (uint32_t i = 0; i < cur_batch; ++i) {
+                uint32_t X[8];
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                if (fast_ripemd160_32_check(X, target_w)) {
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    return;
                 }
             }
 #endif

@@ -63,8 +63,8 @@ jobs:
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
-          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math -Xptxas -O3,-dlcm=ca,-v ${GENCODES} \
-            -Xcompiler -O3,-mavx2,-mbmi2,-madx,-funroll-loops \
+          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v ${GENCODES} \
+            -Xcompiler -O3,-mavx2,-mbmi2,-madx \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl
           strip bin/build_cuda
           chmod +x bin/build_cuda
@@ -396,11 +396,21 @@ jobs:
           mkdir -p bin
           
           # Compile native Apple Silicon arm64 binary with maximum hardware vectorization
-          clang++ -std=c++17 -O3 -mcpu=apple-m1 -funroll-loops -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG             -arch arm64             build_cpu.cpp             -lcurl -lpthread -lz             -framework CoreFoundation -framework SystemConfiguration -framework Security             -o bin/build-macos-arm64
+          clang++ -std=c++17 -O3 -mcpu=apple-m1 -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG \
+            -arch arm64 \
+            build_cpu.cpp \
+            -lcurl -lpthread -lz \
+            -framework CoreFoundation -framework SystemConfiguration -framework Security \
+            -o bin/build-macos-arm64
           chmod +x bin/build-macos-arm64
 
           # Compile native Intel x86_64 macOS binary with full AVX2, BMI2, ADX & x86-64-v3 acceleration
-          clang++ -std=c++17 -O3 -mavx2 -mfma -funroll-loops -DNDEBUG -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG             -arch x86_64             build_cpu.cpp             -lcurl -lpthread -lz             -framework CoreFoundation -framework SystemConfiguration -framework Security             -o bin/build-macos-x86_64
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -fomit-frame-pointer -finline-functions -fno-stack-protector -flto -DNDEBUG \
+            -arch x86_64 \
+            build_cpu.cpp \
+            -lcurl -lpthread -lz \
+            -framework CoreFoundation -framework SystemConfiguration -framework Security \
+            -o bin/build-macos-x86_64
           chmod +x bin/build-macos-x86_64
 
           # Build Universal fat binary
