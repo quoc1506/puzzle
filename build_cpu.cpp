@@ -659,7 +659,104 @@ CUDA_HOSTDEV CUDA_INLINE void comba_accum(u128& acc, uint64_t& c_hi, uint64_t x,
 }
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
-#if defined(__SIZEOF_INT128__)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && defined(__ADX__)
+    uint64_t r0, r1, r2, r3;
+    uint64_t t0, t1, t2, t3, t4, t5, t6, t7;
+    const uint64_t* a_ptr = a.d;
+    const uint64_t* b_ptr = b.d;
+    __asm__ volatile (
+        "movq 0(%[b_ptr]), %%rdx\n\t"
+        "mulx 0(%[a_ptr]), %[t0], %[t1]\n\t"
+        "mulx 8(%[a_ptr]), %%r8, %[t2]\n\t"
+        "addq %%r8, %[t1]\n\t"
+        "mulx 16(%[a_ptr]), %%r8, %[t3]\n\t"
+        "adcq %%r8, %[t2]\n\t"
+        "mulx 24(%[a_ptr]), %%r8, %[t4]\n\t"
+        "adcq %%r8, %[t3]\n\t"
+        "adcq $0, %[t4]\n\t"
+
+        "movq 8(%[b_ptr]), %%rdx\n\t"
+        "xorl %%r8d, %%r8d\n\t"
+        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t1]\n\t"
+        "adox %%r10, %[t2]\n\t"
+        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t2]\n\t"
+        "adox %%r10, %[t3]\n\t"
+        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t3]\n\t"
+        "adox %%r10, %[t4]\n\t"
+        "mulx 24(%[a_ptr]), %%r9, %[t5]\n\t"
+        "adcx %%r9, %[t4]\n\t"
+        "adox %%r8, %[t5]\n\t"
+        "adcx %%r8, %[t5]\n\t"
+
+        "movq 16(%[b_ptr]), %%rdx\n\t"
+        "xorl %%r8d, %%r8d\n\t"
+        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t2]\n\t"
+        "adox %%r10, %[t3]\n\t"
+        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t3]\n\t"
+        "adox %%r10, %[t4]\n\t"
+        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t4]\n\t"
+        "adox %%r10, %[t5]\n\t"
+        "mulx 24(%[a_ptr]), %%r9, %[t6]\n\t"
+        "adcx %%r9, %[t5]\n\t"
+        "adox %%r8, %[t6]\n\t"
+        "adcx %%r8, %[t6]\n\t"
+
+        "movq 24(%[b_ptr]), %%rdx\n\t"
+        "xorl %%r8d, %%r8d\n\t"
+        "mulx 0(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t3]\n\t"
+        "adox %%r10, %[t4]\n\t"
+        "mulx 8(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t4]\n\t"
+        "adox %%r10, %[t5]\n\t"
+        "mulx 16(%[a_ptr]), %%r9, %%r10\n\t"
+        "adcx %%r9, %[t5]\n\t"
+        "adox %%r10, %[t6]\n\t"
+        "mulx 24(%[a_ptr]), %%r9, %[t7]\n\t"
+        "adcx %%r9, %[t6]\n\t"
+        "adox %%r8, %[t7]\n\t"
+        "adcx %%r8, %[t7]\n\t"
+
+        "movq $0x1000003D1, %%rdx\n\t"
+        "mulx %[t4], %%r8, %%r9\n\t"
+        "addq %%r8, %[t0]\n\t"
+        "adcq %%r9, %[t1]\n\t"
+        "mulx %[t5], %%r8, %%r9\n\t"
+        "adcq %%r8, %[t1]\n\t"
+        "adcq %%r9, %[t2]\n\t"
+        "mulx %[t6], %%r8, %%r9\n\t"
+        "adcq %%r8, %[t2]\n\t"
+        "adcq %%r9, %[t3]\n\t"
+        "mulx %[t7], %%r8, %%r9\n\t"
+        "adcq %%r8, %[t3]\n\t"
+        "adcq $0, %%r9\n\t"
+
+        "mulx %%r9, %%r8, %%r10\n\t"
+        "addq %%r8, %[t0]\n\t"
+        "adcq %%r10, %[t1]\n\t"
+        "adcq $0, %[t2]\n\t"
+        "adcq $0, %[t3]\n\t"
+
+        : [t0] "=&r"(r0), [t1] "=&r"(r1), [t2] "=&r"(r2), [t3] "=&r"(r3),
+          [t4] "=&r"(t4), [t5] "=&r"(t5), [t6] "=&r"(t6), [t7] "=&r"(t7)
+        : [a_ptr] "r"(a_ptr), [b_ptr] "r"(b_ptr)
+        : "rdx", "r8", "r9", "r10", "cc", "memory"
+    );
+    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
+        r2 == 0xFFFFFFFFFFFFFFFFULL &&
+        r1 == 0xFFFFFFFFFFFFFFFFULL &&
+        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+        r0 -= 0xFFFFFFFEFFFFFC2FULL;
+        r1 = 0; r2 = 0; r3 = 0;
+    }
+    return Fe{{r0, r1, r2, r3}};
+#elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
@@ -792,7 +889,9 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && defined(__ADX__)
+    return fe_mul(a, a);
+#elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // Ultra-optimized dedicated squaring (branchless register pipeline)

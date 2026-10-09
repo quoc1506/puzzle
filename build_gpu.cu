@@ -813,7 +813,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1659,6 +1659,17 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
+    int dev_count = 0;
+    cudaError_t dev_err = cudaGetDeviceCount(&dev_count);
+    if (dev_err != cudaSuccess || dev_count == 0) {
+        std::cerr << "[FAIL] No CUDA-capable device detected: " 
+                  << (dev_err != cudaSuccess ? cudaGetErrorString(dev_err) : "0 devices found") << "\n";
+        return 1;
+    }
+    if (device_id >= dev_count) {
+        std::cerr << "[FAIL] Requested device ID " << device_id << " exceeds available count (" << dev_count << ")\n";
+        return 1;
+    }
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
@@ -1863,7 +1874,19 @@ int main(int argc, char* argv[]) {
         return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
-        std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
+    int dev_count = 0;
+    cudaError_t dev_err = cudaGetDeviceCount(&dev_count);
+    if (dev_err != cudaSuccess || dev_count == 0) {
+        std::cerr << "[ERROR] No CUDA-capable device detected: " 
+                  << (dev_err != cudaSuccess ? cudaGetErrorString(dev_err) : "0 devices found") << "\n";
+        return 1;
+    }
+    if (device_id >= dev_count) {
+        std::cerr << "[ERROR] Requested device ID " << device_id << " exceeds available count (" << dev_count << ")\n";
+        return 1;
+    }
+
+    std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
     
 
     cudaSetDevice(device_id);
