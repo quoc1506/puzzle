@@ -1995,7 +1995,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
-    std::string api_base = "http://puzzle.test/server.php";
+    std::string api_base = "http://65.20.91.208/puzzle_server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
     int puzzle_id = 0; // 0 = dynamic from server
@@ -2179,12 +2179,6 @@ int main(int argc, char* argv[]) {
             uint64_t cur = checked_counter.load();
             auto t_now = std::chrono::high_resolution_clock::now();
             double el = std::chrono::duration<double>(t_now - t_start).count();
-            if (el > 0) {
-                double spd = (double)cur / el;
-                std::cout << "\r[*] Speed: " << format_speed(spd)
-                          << " | Progress: " << std::fixed << std::setprecision(1) << ((double)cur / total_keys_count * 100.0) << "%"
-                          << " | Done: " << ranges_completed << " ranges" << std::flush;
-            }
             if (cur >= total_keys_count || found_flag.load() || !g_running.load()) break;
         }
 
