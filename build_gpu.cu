@@ -816,7 +816,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1093,11 +1093,7 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t rotr32(uint32_t x, uint32_t n) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32(uint32_t x) {
-#if defined(__CUDA_ARCH__)
-    return __byte_perm(x, 0, 0x0123);
-#else
     return __builtin_bswap32(x);
-#endif
 }
 
 

@@ -13,6 +13,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// Chặn truy cập trực tiếp file result (result_*.txt, results_*.json)
+$req_uri = $_SERVER['REQUEST_URI'] ?? '';
+if (preg_match('#(?:^|/)results?_[0-9]+\.(?:json|txt)#i', $req_uri)) {
+    http_response_code(403);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['status' => 'error', 'message' => '403 Forbidden: Direct access to result files is blocked.']);
+    exit;
+}
+
 const DATA_DIR = __DIR__ . '/data';
 
 function get_results_json_path(int $puzzle_id): string {
@@ -164,7 +173,16 @@ function resolve_puzzle_id($raw_id = null): int {
 }
 
 if (!is_dir(DATA_DIR)) {
-    @mkdir(DATA_DIR, 0777, true);
+    @mkdir(DATA_DIR, 0750, true);
+}
+// Chặn triệt để web server (Apache/LiteSpeed/Nginx) phục vụ tĩnh các file trong data
+$htaccess_path = DATA_DIR . '/.htaccess';
+if (!file_exists($htaccess_path)) {
+    @file_put_contents($htaccess_path, "# Block all direct web access to sensitive puzzle results and sqlite\n<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Deny from all\n</IfModule>\n");
+}
+$data_index_path = DATA_DIR . '/index.php';
+if (!file_exists($data_index_path)) {
+    @file_put_contents($data_index_path, "<?php http_response_code(403); header('Content-Type: application/json'); echo json_encode(['status'=>'error','message'=>'403 Forbidden']); exit;\n");
 }
 
 function get_puzzle_db(int $puzzle_id): PDO {
