@@ -45,7 +45,9 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
-#define __launch_bounds__(x, y)
+#ifndef __launch_bounds__
+#define __launch_bounds__(...)
+#endif
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -1218,13 +1220,13 @@ CUDA_DEV CUDA_INLINE uint32_t btc_f2(uint32_t x, uint32_t y, uint32_t z) {
     uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xCA;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f3(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xD2;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f4(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xAC;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xE4;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f5(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x2D;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 #else
 CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f1(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
@@ -1400,12 +1402,17 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
+
+    // Fast 32-bit Early Rejection Filter: Word 0 check rejects 99.99999997% of keys immediately
+    const uint32_t s1 = 0xEFCDAB89U;
+    if ((s1 + c1 + d2) != target_w[0]) return false;
+
+    // Remaining rounds only execute on candidate match (1 in 4.3 billion keys)
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
-    if ((s1 + c1 + d2) != target_w[0]) return false;
+    const uint32_t s0 = 0x67452301U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
     if ((s2 + d1 + e2) != target_w[1]) return false;
     if ((s3 + e1 + a2) != target_w[2]) return false;
     if ((s4 + a1 + b2) != target_w[3]) return false;
@@ -1481,49 +1488,32 @@ void cuda_scan_kernel(
         // Only ONE inversion for 32 points
         Fe inv_all = fe_inv(prod[31]);
 
-        // Fused Backward, Point Addition & Hashing pass (Zero register spilling)
-        AffinePoint next_cur_P;
+        // Backward pass: compute individual inverses
         #pragma unroll 31
         for (int i = 31; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
-
-            uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
-            Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-            Fe lambda = fe_mul(dy_i, inv_dx_i);
-            Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
-            Fe diff_x = fe_sub(cur_P.x, next_x);
-            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-            if (i == 31) {
-                next_cur_P = AffinePoint{next_x, next_y};
-            }
-
-            if (key_offset < total_chunk_keys) {
-                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(prefix, next_x, X);
-                if (fast_ripemd160_32_check(X, tw)) {
-                    if (atomicExch(d_found_flag, 1) == 0) {
-                        *d_found_offset = key_offset;
-                    }
-                    return;
-                }
-            }
+            prod[i] = inv_dx_i;
         }
-        {
-            // Point 0 (i = 0)
-            uint64_t key_offset = batch_base_offset + step_keys;
-            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
-            Fe lambda = fe_mul(dy_0, inv_all);
-            Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
-            Fe diff_x = fe_sub(cur_P.x, next_x);
-            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+        prod[0] = inv_all;
 
+        AffinePoint next_cur_P;
+        #pragma unroll 32
+        for (int i = 0; i < 32; ++i) {
+            uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
+                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
+                Fe lambda = fe_mul(dy_i, prod[i]);
+                Fe lambda_sq = fe_sqr(lambda);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+                if (i == 31) {
+                    next_cur_P = AffinePoint{next_x, next_y};
+                }
+
                 uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(prefix, next_x, X);
@@ -1533,6 +1523,14 @@ void cuda_scan_kernel(
                     }
                     return;
                 }
+            } else if (i == 31) {
+                Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
+                Fe lambda = fe_mul(dy_31, prod[31]);
+                Fe lambda_sq = fe_sqr(lambda);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+                next_cur_P = AffinePoint{next_x, next_y};
             }
         }
         cur_P = next_cur_P;
@@ -1652,9 +1650,13 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
-    cudaSetDevice(device_id);
+    cudaError_t set_dev_err = cudaSetDevice(device_id);
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device_id);
+    cudaError_t prop_err = cudaGetDeviceProperties(&prop, device_id);
+    if (set_dev_err != cudaSuccess || prop_err != cudaSuccess) {
+        std::cerr << "[ERROR] CUDA Device #" << device_id << " unavailable or NVIDIA driver not responding.\n";
+        return 1;
+    }
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 256;
     uint32_t num_blocks = sm_count * 8;
@@ -1687,12 +1689,15 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << "...\n";
+    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << " (" << prop.name << ")...\n";
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
-    cudaMalloc(&d_found_flag, sizeof(int));
-    cudaMalloc(&d_found_offset, sizeof(uint64_t));
+    if (cudaMalloc(&d_found_flag, sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&d_found_offset, sizeof(uint64_t)) != cudaSuccess) {
+        std::cerr << "[ERROR] cudaMalloc failed for found flags on device " << device_id << ".\n";
+        return 1;
+    }
 
     for (int pid : puzzle_ids) {
         tested++;
@@ -1750,7 +1755,14 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
             d_found_flag, d_found_offset,
             tw[0], tw[1], tw[2], tw[3], tw[4]
         );
-        cudaDeviceSynchronize();
+        cudaError_t k_err = cudaGetLastError();
+        if (k_err != cudaSuccess) {
+            std::cerr << "[ERROR] Kernel launch failed: " << cudaGetErrorString(k_err) << "\n";
+        }
+        cudaError_t sync_err = cudaDeviceSynchronize();
+        if (sync_err != cudaSuccess) {
+            std::cerr << "[ERROR] CUDA device synchronize failed: " << cudaGetErrorString(sync_err) << "\n";
+        }
         auto t_scan_end = std::chrono::high_resolution_clock::now();
 
         cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
