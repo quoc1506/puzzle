@@ -45,7 +45,7 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
-#define __launch_bounds__(a, b)
+#define __launch_bounds__(x, y)
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -404,7 +404,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         "addc.cc.u64 %2, %7, %11;\n\t"
         "addc.cc.u64 %3, %8, %12;\n\t"
         "addc.u64 %4, 0, 0;\n\t"
-        : "=&l"(r.d[0]), "=&l"(r.d[1]), "=&l"(r.d[2]), "=&l"(r.d[3]), "=&l"(c0)
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c0)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
@@ -417,7 +417,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         "addc.cc.u64 %2, %7, 0;\n\t"
         "addc.cc.u64 %3, %8, 0;\n\t"
         "addc.u64 %4, 0, 0;\n\t"
-        : "=&l"(r_k.d[0]), "=&l"(r_k.d[1]), "=&l"(r_k.d[2]), "=&l"(r_k.d[3]), "=&l"(c1)
+        : "=l"(r_k.d[0]), "=l"(r_k.d[1]), "=l"(r_k.d[2]), "=l"(r_k.d[3]), "=l"(c1)
         : "l"(r.d[0]), "l"(r.d[1]), "l"(r.d[2]), "l"(r.d[3]), "l"(K)
     );
     uint64_t need_reduce = c0 | c1;
@@ -531,7 +531,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
         "subc.cc.u64 %2, %7, %11;\n\t"
         "subc.cc.u64 %3, %8, %12;\n\t"
         "subc.u64 %4, 0, 0;\n\t"
-        : "=&l"(r.d[0]), "=&l"(r.d[1]), "=&l"(r.d[2]), "=&l"(r.d[3]), "=&l"(borrow)
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
@@ -1218,13 +1218,13 @@ CUDA_DEV CUDA_INLINE uint32_t btc_f2(uint32_t x, uint32_t y, uint32_t z) {
     uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xCA;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f3(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xD2;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f4(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xE4;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xAC;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f5(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x2D;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 #else
 CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f1(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
@@ -1481,32 +1481,27 @@ void cuda_scan_kernel(
         // Only ONE inversion for 32 points
         Fe inv_all = fe_inv(prod[31]);
 
-        // Backward pass: compute individual inverses
+        // Fused Backward, Point Addition & Hashing pass (Zero register spilling)
+        AffinePoint next_cur_P;
         #pragma unroll 31
         for (int i = 31; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
-            prod[i] = inv_dx_i;
-        }
-        prod[0] = inv_all;
 
-        AffinePoint next_cur_P;
-        #pragma unroll 32
-        for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
+            Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
+            Fe lambda = fe_mul(dy_i, inv_dx_i);
+            Fe lambda_sq = fe_sqr(lambda);
+            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
+            Fe diff_x = fe_sub(cur_P.x, next_x);
+            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+            if (i == 31) {
+                next_cur_P = AffinePoint{next_x, next_y};
+            }
+
             if (key_offset < total_chunk_keys) {
-                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, prod[i]);
-                Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
-                Fe diff_x = fe_sub(cur_P.x, next_x);
-                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-                if (i == 31) {
-                    next_cur_P = AffinePoint{next_x, next_y};
-                }
-
                 uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(prefix, next_x, X);
@@ -1516,14 +1511,28 @@ void cuda_scan_kernel(
                     }
                     return;
                 }
-            } else if (i == 31) {
-                Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
-                Fe lambda = fe_mul(dy_31, prod[31]);
-                Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
-                Fe diff_x = fe_sub(cur_P.x, next_x);
-                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-                next_cur_P = AffinePoint{next_x, next_y};
+            }
+        }
+        {
+            // Point 0 (i = 0)
+            uint64_t key_offset = batch_base_offset + step_keys;
+            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
+            Fe lambda = fe_mul(dy_0, inv_all);
+            Fe lambda_sq = fe_sqr(lambda);
+            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
+            Fe diff_x = fe_sub(cur_P.x, next_x);
+            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+            if (key_offset < total_chunk_keys) {
+                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
+                uint32_t X[8];
+                fast_sha256_into_ripemd_X(prefix, next_x, X);
+                if (fast_ripemd160_32_check(X, tw)) {
+                    if (atomicExch(d_found_flag, 1) == 0) {
+                        *d_found_offset = key_offset;
+                    }
+                    return;
+                }
             }
         }
         cur_P = next_cur_P;

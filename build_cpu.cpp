@@ -747,41 +747,35 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t r3 = (uint64_t)prod3;
     carry = prod3 >> 64;
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
-    unsigned char carry_flag = 0;
-    carry_flag = _addcarry_u64(carry_flag, r0, k_lo, (unsigned long long*)&r0);
-    carry_flag = _addcarry_u64(carry_flag, r1, k_hi, (unsigned long long*)&r1);
-    carry_flag = _addcarry_u64(carry_flag, r2, 0,    (unsigned long long*)&r2);
-    carry_flag = _addcarry_u64(carry_flag, r3, 0,    (unsigned long long*)&r3);
-    if (__builtin_expect(carry_flag != 0, 0)) {
-        carry_flag = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&r0);
-        carry_flag = _addcarry_u64(carry_flag, r1, 0, (unsigned long long*)&r1);
-        carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
-        _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
+    u128 c2 = (u128)r0 + k_lo;
+    r0 = (uint64_t)c2;
+    c2 >>= 64;
+    c2 += (u128)r1 + k_hi;
+    r1 = (uint64_t)c2;
+    c2 >>= 64;
+    c2 += r2;
+    r2 = (uint64_t)c2;
+    c2 >>= 64;
+    c2 += r3;
+    r3 = (uint64_t)c2;
+    c2 >>= 64;
+    if (__builtin_expect(c2 != 0, 0)) {
+        c2 = (u128)r0 + SECP_K;
+        r0 = (uint64_t)c2;
+        c2 >>= 64;
+        c2 += r1;
+        r1 = (uint64_t)c2;
+        c2 >>= 64;
+        c2 += r2;
+        r2 = (uint64_t)c2;
+        c2 >>= 64;
+        r3 += (uint64_t)c2;
     }
-#else
-    u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
-    r0 = (uint64_t)c2_red; c2_red >>= 64;
-    c2_red += r1; r1 = (uint64_t)c2_red; c2_red >>= 64;
-    c2_red += r2; r2 = (uint64_t)c2_red; c2_red >>= 64;
-    c2_red += r3; r3 = (uint64_t)c2_red; c2_red >>= 64;
-    uint64_t extra = (uint64_t)c2_red;
-    if (__builtin_expect(extra != 0, 0)) {
-        u128 c3 = (u128)r0 + (u128)extra * SECP_K;
-        r0 = (uint64_t)c3; c3 >>= 64;
-        c3 += r1; r1 = (uint64_t)c3; c3 >>= 64;
-        c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
-        r3 += (uint64_t)c3;
-    }
-#endif
-
-    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
-        r2 == 0xFFFFFFFFFFFFFFFFULL &&
-        r1 == 0xFFFFFFFFFFFFFFFFULL &&
-        r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+    if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL && r2 == 0xFFFFFFFFFFFFFFFFULL &&
+                         r1 == 0xFFFFFFFFFFFFFFFFULL && r0 >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
@@ -792,7 +786,9 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(__BMI2__) && !defined(__CUDA_ARCH__)
+    return fe_mul(a, a);
+#elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // Ultra-optimized dedicated squaring (branchless register pipeline)
@@ -1338,9 +1334,9 @@ void init_avx2_consts() {}
     12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3))
 
 #define F1(x, y, z) _mm256_xor_si256(_mm256_xor_si256(x, y), z)
-#define F2(x, y, z) _mm256_or_si256(_mm256_and_si256(x, y), _mm256_andnot_si256(x, z))
+#define F2(x, y, z) _mm256_xor_si256(z, _mm256_and_si256(x, _mm256_xor_si256(y, z)))
 #define F3(x, y, z) _mm256_xor_si256(_mm256_or_si256(x, _mm256_xor_si256(y, _mm256_set1_epi32(-1))), z)
-#define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
+#define F4(x, y, z) _mm256_xor_si256(y, _mm256_and_si256(z, _mm256_xor_si256(x, y)))
 #define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
 
 inline __m256i as_m256i(__m256i v) { return v; }
@@ -1354,32 +1350,87 @@ inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
 // Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
     __m256i W[64];
-    uint32_t w_lanes[16][8];
-    #pragma GCC unroll 8
-    for (int lane = 0; lane < 8; ++lane) {
-        uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
-        w_lanes[0][lane] = ((uint32_t)prefixes[lane] << 24) | (uint32_t)(x3 >> 40);
-        w_lanes[1][lane] = (uint32_t)(x3 >> 8);
-        w_lanes[2][lane] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
-        w_lanes[3][lane] = (uint32_t)(x2 >> 8);
-        w_lanes[4][lane] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
-        w_lanes[5][lane] = (uint32_t)(x1 >> 8);
-        w_lanes[6][lane] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
-        w_lanes[7][lane] = (uint32_t)(x0 >> 8);
-        w_lanes[8][lane] = ((uint32_t)x0 << 24) | 0x00800000U;
-        w_lanes[9][lane]  = 0;
-        w_lanes[10][lane] = 0;
-        w_lanes[11][lane] = 0;
-        w_lanes[12][lane] = 0;
-        w_lanes[13][lane] = 0;
-        w_lanes[14][lane] = 0;
-        w_lanes[15][lane] = 0x00000108U;
-    }
-
-    #pragma GCC unroll 16
-    for (int j = 0; j < 16; ++j) {
-        W[j] = _mm256_loadu_si256((const __m256i*)w_lanes[j]);
-    }
+    W[0] = _mm256_setr_epi32(
+        ((uint32_t)prefixes[0] << 24) | (uint32_t)(x[0].d[3] >> 40),
+        ((uint32_t)prefixes[1] << 24) | (uint32_t)(x[1].d[3] >> 40),
+        ((uint32_t)prefixes[2] << 24) | (uint32_t)(x[2].d[3] >> 40),
+        ((uint32_t)prefixes[3] << 24) | (uint32_t)(x[3].d[3] >> 40),
+        ((uint32_t)prefixes[4] << 24) | (uint32_t)(x[4].d[3] >> 40),
+        ((uint32_t)prefixes[5] << 24) | (uint32_t)(x[5].d[3] >> 40),
+        ((uint32_t)prefixes[6] << 24) | (uint32_t)(x[6].d[3] >> 40),
+        ((uint32_t)prefixes[7] << 24) | (uint32_t)(x[7].d[3] >> 40)
+    );
+    W[1] = _mm256_setr_epi32(
+        (uint32_t)(x[0].d[3] >> 8), (uint32_t)(x[1].d[3] >> 8),
+        (uint32_t)(x[2].d[3] >> 8), (uint32_t)(x[3].d[3] >> 8),
+        (uint32_t)(x[4].d[3] >> 8), (uint32_t)(x[5].d[3] >> 8),
+        (uint32_t)(x[6].d[3] >> 8), (uint32_t)(x[7].d[3] >> 8)
+    );
+    W[2] = _mm256_setr_epi32(
+        ((uint32_t)x[0].d[3] << 24) | (uint32_t)(x[0].d[2] >> 40),
+        ((uint32_t)x[1].d[3] << 24) | (uint32_t)(x[1].d[2] >> 40),
+        ((uint32_t)x[2].d[3] << 24) | (uint32_t)(x[2].d[2] >> 40),
+        ((uint32_t)x[3].d[3] << 24) | (uint32_t)(x[3].d[2] >> 40),
+        ((uint32_t)x[4].d[3] << 24) | (uint32_t)(x[4].d[2] >> 40),
+        ((uint32_t)x[5].d[3] << 24) | (uint32_t)(x[5].d[2] >> 40),
+        ((uint32_t)x[6].d[3] << 24) | (uint32_t)(x[6].d[2] >> 40),
+        ((uint32_t)x[7].d[3] << 24) | (uint32_t)(x[7].d[2] >> 40)
+    );
+    W[3] = _mm256_setr_epi32(
+        (uint32_t)(x[0].d[2] >> 8), (uint32_t)(x[1].d[2] >> 8),
+        (uint32_t)(x[2].d[2] >> 8), (uint32_t)(x[3].d[2] >> 8),
+        (uint32_t)(x[4].d[2] >> 8), (uint32_t)(x[5].d[2] >> 8),
+        (uint32_t)(x[6].d[2] >> 8), (uint32_t)(x[7].d[2] >> 8)
+    );
+    W[4] = _mm256_setr_epi32(
+        ((uint32_t)x[0].d[2] << 24) | (uint32_t)(x[0].d[1] >> 40),
+        ((uint32_t)x[1].d[2] << 24) | (uint32_t)(x[1].d[1] >> 40),
+        ((uint32_t)x[2].d[2] << 24) | (uint32_t)(x[2].d[1] >> 40),
+        ((uint32_t)x[3].d[2] << 24) | (uint32_t)(x[3].d[1] >> 40),
+        ((uint32_t)x[4].d[2] << 24) | (uint32_t)(x[4].d[1] >> 40),
+        ((uint32_t)x[5].d[2] << 24) | (uint32_t)(x[5].d[1] >> 40),
+        ((uint32_t)x[6].d[2] << 24) | (uint32_t)(x[6].d[1] >> 40),
+        ((uint32_t)x[7].d[2] << 24) | (uint32_t)(x[7].d[1] >> 40)
+    );
+    W[5] = _mm256_setr_epi32(
+        (uint32_t)(x[0].d[1] >> 8), (uint32_t)(x[1].d[1] >> 8),
+        (uint32_t)(x[2].d[1] >> 8), (uint32_t)(x[3].d[1] >> 8),
+        (uint32_t)(x[4].d[1] >> 8), (uint32_t)(x[5].d[1] >> 8),
+        (uint32_t)(x[6].d[1] >> 8), (uint32_t)(x[7].d[1] >> 8)
+    );
+    W[6] = _mm256_setr_epi32(
+        ((uint32_t)x[0].d[1] << 24) | (uint32_t)(x[0].d[0] >> 40),
+        ((uint32_t)x[1].d[1] << 24) | (uint32_t)(x[1].d[0] >> 40),
+        ((uint32_t)x[2].d[1] << 24) | (uint32_t)(x[2].d[0] >> 40),
+        ((uint32_t)x[3].d[1] << 24) | (uint32_t)(x[3].d[0] >> 40),
+        ((uint32_t)x[4].d[1] << 24) | (uint32_t)(x[4].d[0] >> 40),
+        ((uint32_t)x[5].d[1] << 24) | (uint32_t)(x[5].d[0] >> 40),
+        ((uint32_t)x[6].d[1] << 24) | (uint32_t)(x[6].d[0] >> 40),
+        ((uint32_t)x[7].d[1] << 24) | (uint32_t)(x[7].d[0] >> 40)
+    );
+    W[7] = _mm256_setr_epi32(
+        (uint32_t)(x[0].d[0] >> 8), (uint32_t)(x[1].d[0] >> 8),
+        (uint32_t)(x[2].d[0] >> 8), (uint32_t)(x[3].d[0] >> 8),
+        (uint32_t)(x[4].d[0] >> 8), (uint32_t)(x[5].d[0] >> 8),
+        (uint32_t)(x[6].d[0] >> 8), (uint32_t)(x[7].d[0] >> 8)
+    );
+    W[8] = _mm256_setr_epi32(
+        ((uint32_t)x[0].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[1].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[2].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[3].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[4].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[5].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[6].d[0] << 24) | 0x00800000U,
+        ((uint32_t)x[7].d[0] << 24) | 0x00800000U
+    );
+    W[9]  = _mm256_setzero_si256();
+    W[10] = _mm256_setzero_si256();
+    W[11] = _mm256_setzero_si256();
+    W[12] = _mm256_setzero_si256();
+    W[13] = _mm256_setzero_si256();
+    W[14] = _mm256_setzero_si256();
+    W[15] = _mm256_set1_epi32(0x00000108U);
 
     for (int i = 16; i < 64; ++i) {
         __m256i w15 = W[i - 15];
@@ -1408,11 +1459,11 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     #pragma GCC unroll 16
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
-        __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
+        __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g)));
         __m256i k_val = _mm256_set1_epi32(K256[i]);
         __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
-        __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
+        __m256i maj = _mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b)));
         __m256i temp2 = _mm256_add_epi32(S0, maj);
 
         h = g; g = f; f = e; e = _mm256_add_epi32(d, temp1);
@@ -1644,11 +1695,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
@@ -1715,27 +1766,35 @@ void scan_worker_montgomery(
 
                 Fe u = fe_inv(cum[cur_batch]);
 
-                // Backward pass: calculate modular inverses
-                alignas(64) Fe inv_dx[512];
+                // Fused Backward & Point Addition pass (Zero-copy, cache-aligned in-register streaming)
+                AffinePoint next_base;
                 for (int i = (int)cur_batch - 1; i >= 1; --i) {
-                    inv_dx[i] = fe_mul(u, cum[i]);
+                    Fe inv_d = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
-                }
-                inv_dx[0] = u;
-
-                // Point Addition pass: calculate xi and yi
-                for (uint32_t i = 0; i < cur_batch; ++i) {
                     Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
+                    Fe lambda = fe_mul(dy_i, inv_d);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (i == cur_batch - 1) {
-                        cur_base = AffinePoint{xi, yi};
+                    if (i == (int)cur_batch - 1) {
+                        next_base = AffinePoint{xi, yi};
                     }
                 }
+                {
+                    Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
+                    Fe lambda = fe_mul(dy_0, u);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
+                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
+                    cur_x[0] = xi;
+                    cur_prefix[0] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    if (cur_batch == 1) {
+                        next_base = AffinePoint{xi, yi};
+                    }
+                }
+                cur_base = next_base;
             }
 
 #if defined(__AVX2__)
@@ -1892,7 +1951,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running Montgomery 512-batch test scan (" << threads << " thread" << (threads > 1 ? "s" : "") << ")...\n";
+    std::cout << "[VERIFY] Running Montgomery 1024-batch test scan (" << threads << " thread" << (threads > 1 ? "s" : "") << ")...\n";
 
     for (int pid : puzzle_ids) {
         tested++;
@@ -1996,6 +2055,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // ============================================================================
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
+#ifndef PROFILE_ONLY
 int main(int argc, char* argv[]) {
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
@@ -2227,3 +2287,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+#endif
