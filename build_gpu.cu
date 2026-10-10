@@ -1398,17 +1398,12 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
-
-    // Fast 32-bit Early Rejection Filter: Word 0 check rejects 99.99999997% of keys immediately
-    const uint32_t s1 = 0xEFCDAB89U;
-    if ((s1 + c1 + d2) != target_w[0]) return false;
-
-    // Remaining rounds only execute on candidate match (1 in 4.3 billion keys)
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    const uint32_t s0 = 0x67452301U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    const uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    if ((s1 + c1 + d2) != target_w[0]) return false;
     if ((s2 + d1 + e2) != target_w[1]) return false;
     if ((s3 + e1 + a2) != target_w[2]) return false;
     if ((s4 + a1 + b2) != target_w[3]) return false;
