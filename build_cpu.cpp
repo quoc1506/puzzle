@@ -1644,11 +1644,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 512;
+    alignas(64) Fe dx[512];
+    alignas(64) Fe cum[513];
+    alignas(64) Fe cur_x[512];
+    alignas(64) uint8_t cur_prefix[512];
 
     uint64_t local_counter = 0;
 
@@ -1716,7 +1716,7 @@ void scan_worker_montgomery(
                 Fe u = fe_inv(cum[cur_batch]);
 
                 // Backward pass: calculate modular inverses
-                alignas(64) Fe inv_dx[1024];
+                alignas(64) Fe inv_dx[512];
                 for (int i = (int)cur_batch - 1; i >= 1; --i) {
                     inv_dx[i] = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
@@ -1732,8 +1732,10 @@ void scan_worker_montgomery(
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[i] = xi;
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    if (i == cur_batch - 1) {
+                        cur_base = AffinePoint{xi, yi};
+                    }
                 }
-                cur_base = AffinePoint{cur_x[cur_batch - 1], fe_sub(fe_mul(fe_mul(fe_sub(G_TABLE[cur_batch - 1].y, cur_base.y), inv_dx[cur_batch - 1]), fe_sub(cur_base.x, cur_x[cur_batch - 1])), cur_base.y)};
             }
 
 #if defined(__AVX2__)

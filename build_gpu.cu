@@ -45,6 +45,7 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
+#define __launch_bounds__(a, b)
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -403,7 +404,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         "addc.cc.u64 %2, %7, %11;\n\t"
         "addc.cc.u64 %3, %8, %12;\n\t"
         "addc.u64 %4, 0, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c0)
+        : "=&l"(r.d[0]), "=&l"(r.d[1]), "=&l"(r.d[2]), "=&l"(r.d[3]), "=&l"(c0)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
@@ -416,7 +417,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
         "addc.cc.u64 %2, %7, 0;\n\t"
         "addc.cc.u64 %3, %8, 0;\n\t"
         "addc.u64 %4, 0, 0;\n\t"
-        : "=l"(r_k.d[0]), "=l"(r_k.d[1]), "=l"(r_k.d[2]), "=l"(r_k.d[3]), "=l"(c1)
+        : "=&l"(r_k.d[0]), "=&l"(r_k.d[1]), "=&l"(r_k.d[2]), "=&l"(r_k.d[3]), "=&l"(c1)
         : "l"(r.d[0]), "l"(r.d[1]), "l"(r.d[2]), "l"(r.d[3]), "l"(K)
     );
     uint64_t need_reduce = c0 | c1;
@@ -530,7 +531,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
         "subc.cc.u64 %2, %7, %11;\n\t"
         "subc.cc.u64 %3, %8, %12;\n\t"
         "subc.u64 %4, 0, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
+        : "=&l"(r.d[0]), "=&l"(r.d[1]), "=&l"(r.d[2]), "=&l"(r.d[3]), "=&l"(borrow)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
@@ -1217,13 +1218,13 @@ CUDA_DEV CUDA_INLINE uint32_t btc_f2(uint32_t x, uint32_t y, uint32_t z) {
     uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xCA;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f3(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xD2;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f4(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xAC;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0xE4;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 CUDA_DEV CUDA_INLINE uint32_t btc_f5(uint32_t x, uint32_t y, uint32_t z) {
-    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x59;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
+    uint32_t r; asm("lop3.b32 %0, %1, %2, %3, 0x2D;" : "=r"(r) : "r"(x), "r"(y), "r"(z)); return r;
 }
 #else
 CUDA_HOSTDEV CUDA_INLINE uint32_t btc_f1(uint32_t x, uint32_t y, uint32_t z) { return x ^ y ^ z; }
