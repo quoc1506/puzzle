@@ -45,9 +45,6 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
-#ifndef __launch_bounds__
-#define __launch_bounds__(...)
-#endif
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -816,7 +813,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
+#if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1093,7 +1090,11 @@ CUDA_HOSTDEV CUDA_INLINE uint32_t rotr32(uint32_t x, uint32_t n) {
 }
 
 CUDA_HOSTDEV CUDA_INLINE uint32_t bswap32(uint32_t x) {
+#if defined(__CUDA_ARCH__)
+    return __byte_perm(x, 0, 0x0123);
+#else
     return __builtin_bswap32(x);
+#endif
 }
 
 
@@ -1402,7 +1403,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    const uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
     if ((s1 + c1 + d2) != target_w[0]) return false;
     if ((s2 + d1 + e2) != target_w[1]) return false;
     if ((s3 + e1 + a2) != target_w[2]) return false;
@@ -1641,13 +1642,9 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
-    cudaError_t set_dev_err = cudaSetDevice(device_id);
+    cudaSetDevice(device_id);
     cudaDeviceProp prop;
-    cudaError_t prop_err = cudaGetDeviceProperties(&prop, device_id);
-    if (set_dev_err != cudaSuccess || prop_err != cudaSuccess) {
-        std::cerr << "[ERROR] CUDA Device #" << device_id << " unavailable or NVIDIA driver not responding.\n";
-        return 1;
-    }
+    cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 256;
     uint32_t num_blocks = sm_count * 8;
@@ -1680,15 +1677,12 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << " (" << prop.name << ")...\n";
+    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << "...\n";
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
-    if (cudaMalloc(&d_found_flag, sizeof(int)) != cudaSuccess ||
-        cudaMalloc(&d_found_offset, sizeof(uint64_t)) != cudaSuccess) {
-        std::cerr << "[ERROR] cudaMalloc failed for found flags on device " << device_id << ".\n";
-        return 1;
-    }
+    cudaMalloc(&d_found_flag, sizeof(int));
+    cudaMalloc(&d_found_offset, sizeof(uint64_t));
 
     for (int pid : puzzle_ids) {
         tested++;
@@ -1746,14 +1740,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
             d_found_flag, d_found_offset,
             tw[0], tw[1], tw[2], tw[3], tw[4]
         );
-        cudaError_t k_err = cudaGetLastError();
-        if (k_err != cudaSuccess) {
-            std::cerr << "[ERROR] Kernel launch failed: " << cudaGetErrorString(k_err) << "\n";
-        }
-        cudaError_t sync_err = cudaDeviceSynchronize();
-        if (sync_err != cudaSuccess) {
-            std::cerr << "[ERROR] CUDA device synchronize failed: " << cudaGetErrorString(sync_err) << "\n";
-        }
+        cudaDeviceSynchronize();
         auto t_scan_end = std::chrono::high_resolution_clock::now();
 
         cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
