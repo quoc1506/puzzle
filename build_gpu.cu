@@ -1111,7 +1111,24 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
     asm("lop3.b32 %0, %1, %2, %3, 0xe8;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
     return ret;
 }
+
+CUDA_DEV CUDA_INLINE uint32_t lop3_xor3(uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t ret;
+    asm("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
+    return ret;
+}
 #endif
+
+CUDA_CONSTANT uint32_t K256[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
@@ -1133,32 +1150,23 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[14] = 0;
     w[15] = 0x00000108U;
 
-    static const uint32_t K256[64] = {
-        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-    };
-
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
     #pragma unroll 16
     for (int i = 0; i < 16; ++i) {
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1168,22 +1176,29 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     #pragma unroll 48
     for (int i = 16; i < 64; ++i) {
         uint32_t w15 = w[(i - 15) & 15];
-        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
         uint32_t w2 = w[(i - 2) & 15];
+#if defined(__CUDA_ARCH__)
+        uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+        uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
         uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
         uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
         w[i & 15] = wi;
 
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + wi;
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1422,7 +1437,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(256, 2)
+CUDA_GLOBAL __launch_bounds__(256, 1)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1430,8 +1445,8 @@ void cuda_scan_kernel(
     uint32_t batches,
     int* d_found_flag,
     uint64_t* d_found_offset,
-    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
-
+    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4
+) {
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= grid_threads) return;
 
@@ -1468,7 +1483,7 @@ void cuda_scan_kernel(
         uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 64ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
-        // Forward pass: compute cumulative products across 64 points (1 fe_inv per 64 keys = 4.45 ops/key)
+        // Forward pass: compute cumulative products across 64 points
         Fe prod[64];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
         #pragma unroll 63
@@ -1480,23 +1495,20 @@ void cuda_scan_kernel(
         // Only ONE inversion for 64 points
         Fe inv_all = fe_inv(prod[63]);
 
-        // Backward pass: compute individual inverses
-        #pragma unroll 63
+        // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
+        // Eliminates writing/reading prod[i] array twice, drastically reducing local stack memory traffic and register pressure
+        AffinePoint next_cur_P;
+
+        #pragma unroll 1
         for (int i = 63; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
-            prod[i] = inv_dx_i;
-        }
-        prod[0] = inv_all;
 
-        AffinePoint next_cur_P;
-        #pragma unroll 64
-        for (int i = 0; i < 64; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, prod[i]);
+                Fe lambda = fe_mul(dy_i, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1517,7 +1529,7 @@ void cuda_scan_kernel(
                 }
             } else if (i == 63) {
                 Fe dy_63 = fe_sub(dev_batch_G[63].y, cur_P.y);
-                Fe lambda = fe_mul(dy_63, prod[63]);
+                Fe lambda = fe_mul(dy_63, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[63].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1525,6 +1537,28 @@ void cuda_scan_kernel(
                 next_cur_P = AffinePoint{next_x, next_y};
             }
         }
+
+        // Evaluate point 0 (inv_all is now inv_dx_0)
+        uint64_t key_offset_0 = batch_base_offset + (uint64_t)1 * step_keys;
+        if (key_offset_0 < total_chunk_keys) {
+            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
+            Fe lambda = fe_mul(dy_0, inv_all);
+            Fe lambda_sq = fe_sqr(lambda);
+            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
+            Fe diff_x = fe_sub(cur_P.x, next_x);
+            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+            uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t X[8];
+            fast_sha256_into_ripemd_X(prefix, next_x, X);
+            if (fast_ripemd160_32_check(X, tw)) {
+                if (atomicExch(d_found_flag, 1) == 0) {
+                    *d_found_offset = key_offset_0;
+                }
+                return;
+            }
+        }
+
         cur_P = next_cur_P;
     }
 }
