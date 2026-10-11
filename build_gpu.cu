@@ -2011,7 +2011,7 @@ int main(int argc, char* argv[]) {
         double final_spd = (double)total_keys_count / elapsed;
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
-        std::cout << "\r[*] Speed: " << format_speed(final_spd)
+        std::cout << "\r[*]Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
