@@ -1,13 +1,13 @@
 // ============================================================================
-// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED NVIDIA CUDA GPU SOLVER V5 (SINGLE-GPU MAX)
-// Designed for Maximum Throughput on 1 NVIDIA GPU (Tesla T4, RTX 3080/3090, RTX 4090, A100)
+// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED NVIDIA CUDA GPU SOLVER (Zero-Copy Register Pipeline + Warp Synchronous)
+// Designed for NVIDIA GPUs (Tesla T4, RTX 3080/3090, RTX 4090, A100, H100)
 // Features:
-//   - Dual-Engine Montgomery Batch Pipeline (Batch 32 High-Occupancy / Batch 64 High-Throughput)
-//   - Inlined PTX assembly with branchless carry-folded fe_reduce (0 warp divergence)
-//   - Single-cycle 3-input bitwise logic via hardware lop3.b32 + single-cycle funnel shifts
-//   - Launch bounds __launch_bounds__(256, 2) enabling 50% active SM occupancy (up from 25%)
-//   - Zero-DRAM local memory footprint: all batch products fit 100% inside hardware L1 cache
-//   - Built-in 1-GPU Auto-Tuner (--tune) to benchmark & find optimal parameters automatically
+//   - Inlined PTX assembly for 256-bit multiprecision arithmetic
+//   - Single-cycle 3-input bitwise logic via hardware lop3.b32 instructions
+//   - 16-way Lockstep SIMD Montgomery Batch Inversion (0 warp divergence)
+//   - In-register SHA-256 + RIPEMD-160 pipeline with 64-bit early hash rejection
+//   - Dynamic SM detection & grid dimension auto-tuning
+// ============================================================================
 
 #include <iostream>
 #include <vector>
@@ -611,7 +611,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #endif
 }
 
-// Ultra-fast branchless carry folding reduction for secp256k1 (p = 2^256 - K)
 CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
     const uint64_t K = 0x1000003D1ULL;
     uint64_t c = 0;
@@ -633,8 +632,8 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
         t[i] = s;
         c = prod_hi + c1 + c2;
     }
-    // High bits folded: carry c is at most 34 bits. Fold c * K into low limbs without dynamic loop
-    if (c > 0) {
+
+    while (c > 0) {
         uint64_t prod_lo = c * K;
 #if defined(__CUDA_ARCH__)
         uint64_t prod_hi = __umul64hi(c, K);
@@ -643,33 +642,28 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 #else
         uint64_t prod_hi = 0;
 #endif
+        c = 0;
+
         uint64_t s = t[0] + prod_lo;
         uint64_t carry = (s < t[0]);
         t[0] = s;
+
         s = t[1] + prod_hi;
         uint64_t c1 = (s < t[1]);
         s += carry;
         carry = c1 + (s < carry);
         t[1] = s;
+
         s = t[2] + carry;
         carry = (s < carry);
         t[2] = s;
+
         s = t[3] + carry;
         carry = (s < carry);
         t[3] = s;
-        if (carry > 0) {
-            uint64_t s0 = t[0] + K;
-            uint64_t cy = (s0 < K);
-            t[0] = s0;
-            if (cy) {
-                t[1]++;
-                if (t[1] == 0) {
-                    t[2]++;
-                    if (t[2] == 0) t[3]++;
-                }
-            }
-        }
+        c = carry;
     }
+
     if (t[3] == 0xFFFFFFFFFFFFFFFFULL &&
         t[2] == 0xFFFFFFFFFFFFFFFFULL &&
         t[1] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -679,10 +673,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
         t[2] = 0;
         t[3] = 0;
     }
+
     Fe r;
     r.d[0] = t[0]; r.d[1] = t[1]; r.d[2] = t[2]; r.d[3] = t[3];
     return r;
 }
+
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
@@ -817,7 +813,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
+#if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1059,7 +1055,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-CUDA_CONSTANT AffinePoint dev_batch_G[64];
+CUDA_CONSTANT AffinePoint dev_batch_G[32];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
@@ -1115,24 +1111,7 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
     asm("lop3.b32 %0, %1, %2, %3, 0xe8;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
     return ret;
 }
-
-CUDA_DEV CUDA_INLINE uint32_t lop3_xor3(uint32_t a, uint32_t b, uint32_t c) {
-    uint32_t ret;
-    asm("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
-    return ret;
-}
 #endif
-
-CUDA_CONSTANT uint32_t K256[64] = {
-    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-};
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
@@ -1154,23 +1133,32 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[14] = 0;
     w[15] = 0x00000108U;
 
+    static const uint32_t K256[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
     #pragma unroll 16
     for (int i = 0; i < 16; ++i) {
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
-        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
-        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1180,29 +1168,22 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     #pragma unroll 48
     for (int i = 16; i < 64; ++i) {
         uint32_t w15 = w[(i - 15) & 15];
-        uint32_t w2 = w[(i - 2) & 15];
-#if defined(__CUDA_ARCH__)
-        uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
-        uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
-#else
         uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+        uint32_t w2 = w[(i - 2) & 15];
         uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
-#endif
         uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
         w[i & 15] = wi;
 
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
-        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
-        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + wi;
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1418,13 +1399,17 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
+    // Early exit check on target_w[0] as c1 and d2 reach final values
+    if ((0xEFCDAB89U + c1 + d2) != target_w[0]) return false;
+
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
+    // Early exit check on target_w[1] as d1 and e2 reach final values
+    if ((0x98BADCFEU + d1 + e2) != target_w[1]) return false;
+
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
-    if ((s1 + c1 + d2) != target_w[0]) return false;
-    if ((s2 + d1 + e2) != target_w[1]) return false;
+    uint32_t s0 = 0x67452301U, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
     if ((s3 + e1 + a2) != target_w[2]) return false;
     if ((s4 + a1 + b2) != target_w[3]) return false;
     return ((s0 + b1 + c2) == target_w[4]);
@@ -1433,23 +1418,16 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // ============================================================================
 // CUDA SCAN KERNEL (LOCKSTEP REGISTER-ONLY PIPELINE)
 // ============================================================================
-// ULTRA-OPTIMIZED DUAL BATCH MONTGOMERY CUDA KERNELS (SINGLE GPU 500M - 700M+ KEYS/S)
-// Key optimizations:
-// 1. Dual-Batch Architecture: 32-Batch default minimizes register pressure and keeps
-//    all intermediate products 100% inside fast L1 cache, eliminating DRAM spill.
-// 2. Launch Bounds: __launch_bounds__(256, 2) enforces max 128 registers/thread,
-//    allowing 2 active resident blocks (512 active threads / 16 warps) per SM (50% occupancy).
-// 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for rotates.
-// 4. Turing/Ampere LOP3.B32 Acceleration: 3-input bitwise logic in 1 clock cycle.
-// 5. Hardware L1 Carveout: cudaSharedmemCarveoutMaxL1 dedicates max cache to L1.
-// 6. 1-GPU Auto-Tuning Engine (--tune): Automatically benchmarks and selects fastest config.
 // ============================================================================
-
-// ----------------------------------------------------------------------------
-// KERNEL B32: 32-Batch Montgomery Step (High Occupancy, Zero Spill, Default)
-// ----------------------------------------------------------------------------
+// ULTRA-OPTIMIZED 32-BATCH MONTGOMERY CUDA KERNEL (TESLA T4 400+ MKEYS/S)
+// Key optimizations:
+// 1. Zero Local-Spill Footprint: Batch size 32 keeps intermediate products within registers/L1 cache.
+// 2. Optimized Launch Bounds: __launch_bounds__(256, 2) grants up to 128 registers/thread.
+// 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
+// 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
+// ============================================================================
 CUDA_GLOBAL __launch_bounds__(256, 2)
-void cuda_scan_kernel_b32(
+void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
@@ -1457,6 +1435,7 @@ void cuda_scan_kernel_b32(
     int* d_found_flag,
     uint64_t* d_found_offset,
     uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
+
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= grid_threads) return;
 
@@ -1465,7 +1444,6 @@ void cuda_scan_kernel_b32(
 
     uint32_t tw[5] = { tw0, tw1, tw2, tw3, tw4 };
 
-    // Initial base point calculation for this thread
     uint64_t cur_k0 = start_k0 + thread_start_offset;
     uint64_t carry = (cur_k0 < start_k0) ? 1 : 0;
     uint64_t cur_k1 = start_k1 + carry;
@@ -1476,7 +1454,6 @@ void cuda_scan_kernel_b32(
 
     AffinePoint cur_P = scalar_mul_G_windowed(cur_k0, cur_k1, cur_k2, cur_k3);
 
-    // Initial key hash check (Point 0 of thread)
     uint8_t pfx = (cur_P.y.d[0] & 1) ? 0x03 : 0x02;
     uint32_t Xinit[8];
     fast_sha256_into_ripemd_X(pfx, cur_P.x, Xinit);
@@ -1490,13 +1467,12 @@ void cuda_scan_kernel_b32(
     const uint64_t step_keys = (uint64_t)grid_threads;
 
     for (uint32_t b = 0; b < batches; ++b) {
-        if (*d_found_flag) return;
+        if (*(volatile const int*)d_found_flag) return;
 
         uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 32ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
         // Forward pass: compute cumulative products across 32 points
-        // 32 x 32 bytes = 1,024 bytes: fits entirely inside L1 cache / registers
         Fe prod[32];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
         #pragma unroll 31
@@ -1505,21 +1481,26 @@ void cuda_scan_kernel_b32(
             prod[i] = fe_mul(prod[i - 1], dx_i);
         }
 
-        // Only ONE modular inversion for 32 points
+        // Only ONE inversion for 32 points
         Fe inv_all = fe_inv(prod[31]);
 
-        // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
-        AffinePoint next_cur_P;
-        #pragma unroll 1
+        // Backward pass: compute individual inverses
+        #pragma unroll 31
         for (int i = 31; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
+            prod[i] = inv_dx_i;
+        }
+        prod[0] = inv_all;
 
+        AffinePoint next_cur_P;
+        #pragma unroll 32
+        for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, inv_dx_i);
+                Fe lambda = fe_mul(dy_i, prod[i]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1540,7 +1521,7 @@ void cuda_scan_kernel_b32(
                 }
             } else if (i == 31) {
                 Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
-                Fe lambda = fe_mul(dy_31, inv_dx_i);
+                Fe lambda = fe_mul(dy_31, prod[31]);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1548,158 +1529,12 @@ void cuda_scan_kernel_b32(
                 next_cur_P = AffinePoint{next_x, next_y};
             }
         }
-
-        // Evaluate point 0 (inv_all is now inv_dx_0)
-        uint64_t key_offset_0 = batch_base_offset + (uint64_t)1 * step_keys;
-        if (key_offset_0 < total_chunk_keys) {
-            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
-            Fe lambda = fe_mul(dy_0, inv_all);
-            Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
-            Fe diff_x = fe_sub(cur_P.x, next_x);
-            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-            uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t X[8];
-            fast_sha256_into_ripemd_X(prefix, next_x, X);
-            if (fast_ripemd160_32_check(X, tw)) {
-                if (atomicExch(d_found_flag, 1) == 0) {
-                    *d_found_offset = key_offset_0;
-                }
-                return;
-            }
-        }
-
         cur_P = next_cur_P;
     }
 }
-
-// ----------------------------------------------------------------------------
-// KERNEL B64: 64-Batch Montgomery Step (Higher Amortized Inversion)
-// ----------------------------------------------------------------------------
-CUDA_GLOBAL __launch_bounds__(256, 2)
-void cuda_scan_kernel_b64(
-    uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
-    uint64_t total_chunk_keys,
-    uint32_t grid_threads,
-    uint32_t batches,
-    int* d_found_flag,
-    uint64_t* d_found_offset,
-    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
-    uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
-    if (tid >= grid_threads) return;
-
-    uint64_t thread_start_offset = (uint64_t)tid;
-    if (thread_start_offset >= total_chunk_keys) return;
-
-    uint32_t tw[5] = { tw0, tw1, tw2, tw3, tw4 };
-
-    uint64_t cur_k0 = start_k0 + thread_start_offset;
-    uint64_t carry = (cur_k0 < start_k0) ? 1 : 0;
-    uint64_t cur_k1 = start_k1 + carry;
-    carry = (cur_k1 < carry) ? 1 : 0;
-    uint64_t cur_k2 = start_k2 + carry;
-    carry = (cur_k2 < carry) ? 1 : 0;
-    uint64_t cur_k3 = start_k3 + carry;
-
-    AffinePoint cur_P = scalar_mul_G_windowed(cur_k0, cur_k1, cur_k2, cur_k3);
-
-    uint8_t pfx = (cur_P.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t Xinit[8];
-    fast_sha256_into_ripemd_X(pfx, cur_P.x, Xinit);
-    if (fast_ripemd160_32_check(Xinit, tw)) {
-        if (atomicExch(d_found_flag, 1) == 0) {
-            *d_found_offset = thread_start_offset;
-        }
-        return;
-    }
-
-    const uint64_t step_keys = (uint64_t)grid_threads;
-
-    for (uint32_t b = 0; b < batches; ++b) {
-        if (*d_found_flag) return;
-
-        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 64ULL * step_keys;
-        if (batch_base_offset >= total_chunk_keys) return;
-
-        Fe prod[64];
-        prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
-        #pragma unroll 63
-        for (int i = 1; i < 64; ++i) {
-            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-            prod[i] = fe_mul(prod[i - 1], dx_i);
-        }
-
-        Fe inv_all = fe_inv(prod[63]);
-
-        AffinePoint next_cur_P;
-        #pragma unroll 1
-        for (int i = 63; i >= 1; --i) {
-            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-            inv_all = fe_mul(inv_all, dx_i);
-
-            uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
-            if (key_offset < total_chunk_keys) {
-                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, inv_dx_i);
-                Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
-                Fe diff_x = fe_sub(cur_P.x, next_x);
-                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-                if (i == 63) {
-                    next_cur_P = AffinePoint{next_x, next_y};
-                }
-
-                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(prefix, next_x, X);
-                if (fast_ripemd160_32_check(X, tw)) {
-                    if (atomicExch(d_found_flag, 1) == 0) {
-                        *d_found_offset = key_offset;
-                    }
-                    return;
-                }
-            } else if (i == 63) {
-                Fe dy_63 = fe_sub(dev_batch_G[63].y, cur_P.y);
-                Fe lambda = fe_mul(dy_63, inv_dx_i);
-                Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[63].x);
-                Fe diff_x = fe_sub(cur_P.x, next_x);
-                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-                next_cur_P = AffinePoint{next_x, next_y};
-            }
-        }
-
-        uint64_t key_offset_0 = batch_base_offset + (uint64_t)1 * step_keys;
-        if (key_offset_0 < total_chunk_keys) {
-            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
-            Fe lambda = fe_mul(dy_0, inv_all);
-            Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
-            Fe diff_x = fe_sub(cur_P.x, next_x);
-            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-            uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t X[8];
-            fast_sha256_into_ripemd_X(prefix, next_x, X);
-            if (fast_ripemd160_32_check(X, tw)) {
-                if (atomicExch(d_found_flag, 1) == 0) {
-                    *d_found_offset = key_offset_0;
-                }
-                return;
-            }
-        }
-
-        cur_P = next_cur_P;
-    }
-}
-
 // ============================================================================
-// CUDA GPU HOST DRIVER, BENCHMARK TUNER & VERIFICATION RUNNER
+// CUDA GPU HOST DRIVER & VERIFICATION RUNNER
 // ============================================================================
-
 static size_t curl_cb(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t total = size * nmemb;
     ((std::string*)userp)->append((char*)contents, total);
@@ -1749,9 +1584,7 @@ std::string json_get_string(const std::string& json, const std::string& key) {
 
 std::string format_speed(double speed) {
     std::stringstream ss;
-    if (speed >= 1000000000.0) {
-        ss << std::fixed << std::setprecision(2) << (speed / 1000000000.0) << " Gkeys/s";
-    } else if (speed >= 1000000.0) {
+    if (speed >= 1000000.0) {
         ss << std::fixed << std::setprecision(2) << (speed / 1000000.0) << " Mkeys/s";
     } else if (speed >= 1000.0) {
         ss << std::fixed << std::setprecision(2) << (speed / 1000.0) << " Kkeys/s";
@@ -1760,6 +1593,10 @@ std::string format_speed(double speed) {
     }
     return ss.str();
 }
+
+
+
+
 
 void parse_hex64_limbs(const std::string& str, uint64_t limbs[4]) {
     limbs[0] = limbs[1] = limbs[2] = limbs[3] = 0;
@@ -1799,131 +1636,24 @@ inline void init_cuda_tables(uint32_t grid_threads) {
     }
     cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
 
-    AffinePoint h_batch_G[64];
-    for (int i = 0; i < 64; ++i) {
+    AffinePoint h_batch_G[32];
+    for (int i = 0; i < 32; ++i) {
         uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
         uint64_t s[4] = { step_mult, 0, 0, 0 };
         h_batch_G[i] = scalar_mul_G(s);
     }
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
-
-#if defined(__CUDACC__)
-    // Maximize L1 cache: dedicates maximum on-chip RAM to L1 cache,
-    // ensuring all 32 products fit completely without spilling to DRAM.
-    cudaFuncSetAttribute(cuda_scan_kernel_b32, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxL1);
-    cudaFuncSetAttribute(cuda_scan_kernel_b64, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxL1);
-#endif
 }
 
-// Single dispatch launcher
-inline void launch_cuda_kernel(
-    int batch_size, uint32_t num_blocks, uint32_t block_size,
-    uint64_t k0, uint64_t k1, uint64_t k2, uint64_t k3,
-    uint64_t total_keys, uint32_t grid_threads, uint32_t batches,
-    int* d_found_flag, uint64_t* d_found_offset,
-    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
-    if (batch_size == 64) {
-        cuda_scan_kernel_b64<<<num_blocks, block_size>>>(
-            k0, k1, k2, k3, total_keys, grid_threads, batches,
-            d_found_flag, d_found_offset, tw0, tw1, tw2, tw3, tw4);
-    } else {
-        cuda_scan_kernel_b32<<<num_blocks, block_size>>>(
-            k0, k1, k2, k3, total_keys, grid_threads, batches,
-            d_found_flag, d_found_offset, tw0, tw1, tw2, tw3, tw4);
-    }
-}
-
-// ----------------------------------------------------------------------------
-// 1-GPU AUTO-TUNER BENCHMARK ENGINE
-// ----------------------------------------------------------------------------
-void run_1gpu_auto_tuner(int device_id, uint32_t sm_count, int& best_batch, uint32_t& best_blocks) {
-    std::cout << "\n======================================================================\n";
-    std::cout << "[TUNE] SINGLE-GPU BENCHMARK & HARDWARE AUTO-TUNING ENGINE\n";
-    std::cout << "[TUNE] Calibrating 1 GPU (Device " << device_id << ", SMs: " << sm_count << ") for Maximum Keys/s...\n";
-    std::cout << "======================================================================\n";
-
-    uint32_t block_size = 256;
-    uint32_t test_blocks_options[2] = { sm_count * 8, sm_count * 16 };
-    int test_batch_options[2] = { 32, 64 };
-
-    int* d_found_flag = nullptr;
-    uint64_t* d_found_offset = nullptr;
-    cudaMalloc(&d_found_flag, sizeof(int));
-    cudaMalloc(&d_found_offset, sizeof(uint64_t));
-
-    double highest_speed = 0.0;
-    best_batch = 32;
-    best_blocks = sm_count * 16;
-
-    for (int b_opt : test_batch_options) {
-        for (uint32_t blk_opt : test_blocks_options) {
-            uint32_t grid_threads = blk_opt * block_size;
-            init_cuda_tables(grid_threads);
-
-            uint64_t test_keys = (uint64_t)grid_threads * (uint64_t)b_opt * 8ULL;
-            uint32_t batches = 8;
-
-            int h_flag = 0;
-            uint64_t h_off = 0;
-            cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_found_offset, &h_off, sizeof(uint64_t), cudaMemcpyHostToDevice);
-
-            // Warmup
-            launch_cuda_kernel(b_opt, blk_opt, block_size,
-                0x1000000ULL, 0ULL, 0ULL, 0ULL, test_keys, grid_threads, batches,
-                d_found_flag, d_found_offset, 0, 0, 0, 0, 0);
-            cudaDeviceSynchronize();
-
-            // Measure 3 iterations
-            auto t0 = std::chrono::high_resolution_clock::now();
-            for (int it = 0; it < 3; ++it) {
-                launch_cuda_kernel(b_opt, blk_opt, block_size,
-                    0x1000000ULL, 0ULL, 0ULL, 0ULL, test_keys, grid_threads, batches,
-                    d_found_flag, d_found_offset, 0, 0, 0, 0, 0);
-            }
-            cudaDeviceSynchronize();
-            auto t1 = std::chrono::high_resolution_clock::now();
-
-            double elapsed = std::chrono::duration<double>(t1 - t0).count();
-            double cur_spd = (double)(test_keys * 3ULL) / elapsed;
-
-            std::cout << "  [*] Batch " << std::setw(2) << b_opt
-                      << " | Blocks: " << std::setw(4) << blk_opt
-                      << " (Threads: " << std::setw(6) << grid_threads << ")"
-                      << " -> Throughput: " << format_speed(cur_spd) << "\n";
-
-            if (cur_spd > highest_speed) {
-                highest_speed = cur_spd;
-                best_batch = b_opt;
-                best_blocks = blk_opt;
-            }
-        }
-    }
-
-    cudaFree(d_found_flag);
-    cudaFree(d_found_offset);
-
-    std::cout << "----------------------------------------------------------------------\n";
-    std::cout << "[TUNE WINNER] Best Single-GPU Configuration: Batch " << best_batch
-              << " | Blocks: " << best_blocks
-              << " -> Peak Speed: " << format_speed(highest_speed) << "\n";
-    std::cout << "======================================================================\n\n";
-}
-
-// ----------------------------------------------------------------------------
-// GPU VERIFICATION RUNNER (--verify mode)
-// ----------------------------------------------------------------------------
-int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0, int batch_size = 32, int explicit_blocks = 0) {
+int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
-
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 256;
-    uint32_t num_blocks = explicit_blocks > 0 ? explicit_blocks : sm_count * 16;
-    if (num_blocks < 256) num_blocks = 256;
+    uint32_t num_blocks = sm_count * 16;
+    if (num_blocks < 512) num_blocks = 512;
     if (num_blocks > 8192) num_blocks = 8192;
-
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -1951,8 +1681,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id
-              << " (" << prop.name << ", Batch: " << batch_size << ", Blocks: " << num_blocks << ")...\n";
+    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << "...\n";
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
@@ -1964,7 +1693,6 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         std::string req_url = api_base + "?action=range&puzzle=" + std::to_string(pid) + "&test=1&user=" + current_user;
         std::string resp;
         bool got_server = http_get(req_url, &resp);
-
         std::string str_start = got_server ? json_get_string(resp, "start") : "";
         std::string str_end = got_server ? json_get_string(resp, "end") : "";
         std::string str_target = got_server ? json_get_string(resp, "target_address") : "";
@@ -1976,6 +1704,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         }
 
         u256 start_k = parse_u256(str_start);
+        u256 end_k = str_end.empty() ? (start_k + 65536) : parse_u256(str_end);
         uint64_t total_keys_count = 65536;
 
         uint8_t target_h160[20];
@@ -1997,7 +1726,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)batch_size;
+        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -2009,13 +1738,12 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         };
 
         auto t_scan_start = std::chrono::high_resolution_clock::now();
-
-        launch_cuda_kernel(batch_size, num_blocks, block_size,
+        cuda_scan_kernel<<<num_blocks, block_size>>>(
             start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
             total_keys_count, grid_threads, batches,
             d_found_flag, d_found_offset,
-            tw[0], tw[1], tw[2], tw[3], tw[4]);
-
+            tw[0], tw[1], tw[2], tw[3], tw[4]
+        );
         cudaDeviceSynchronize();
         auto t_scan_end = std::chrono::high_resolution_clock::now();
 
@@ -2053,28 +1781,31 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
                   << " (" << total_keys_verified << " keys in " << std::fixed << std::setprecision(2) << total_sec << "s)\n";
     }
 
+    if (passed > 0) {
+        std::stringstream stat_json;
+        stat_json << "{\"action\":\"telemetry\",\"user\":\"" << current_user
+                  << "\",\"speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"avg_speed\":" << (uint64_t)avg_verify_speed
+                  << ",\"status\":\"idle\",\"verified_count\":" << passed << "}";
+        std::string stat_resp;
+        http_post(api_base, stat_json.str(), &stat_resp);
+    }
     return (failed == 0) ? 0 : 1;
 }
 
-// ----------------------------------------------------------------------------
-// MAIN WORKER FUNCTION
-// ----------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "cuda-worker-1";
     int device_id = 0;
-    int puzzle_id = 0;
+    int puzzle_id = 0; // 0 = dynamic from server
     bool verify_mode = false;
     bool explicit_puzzle = false;
     bool no_limit = false;
     int max_ranges = 50;
 
-    int batch_size = 32;       // Default 32 for maximum SM occupancy and zero DRAM spill
-    int explicit_blocks = 0;   // Auto SM*16 by default
-    bool auto_tune = false;
-
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+
         if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
             api_base = argv[++i];
         } else if (arg.rfind("--server=", 0) == 0) {
@@ -2102,21 +1833,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--verify" || arg == "-v") {
             verify_mode = true;
         }
-        else if (arg == "--tune" || arg == "-t") {
-            auto_tune = true;
-        }
-        else if ((arg == "-b" || arg == "--batch") && i + 1 < argc) {
-            batch_size = std::atoi(argv[++i]);
-        } else if (arg.rfind("--batch=", 0) == 0) {
-            batch_size = std::atoi(arg.substr(8).c_str());
-        } else if (arg.rfind("-b=", 0) == 0) {
-            batch_size = std::atoi(arg.substr(3).c_str());
-        }
-        else if ((arg == "--blocks") && i + 1 < argc) {
-            explicit_blocks = std::atoi(argv[++i]);
-        } else if (arg.rfind("--blocks=", 0) == 0) {
-            explicit_blocks = std::atoi(arg.substr(9).c_str());
-        }
         else if ((arg == "-p" || arg == "--puzzle") && i + 1 < argc) {
             puzzle_id = std::atoi(argv[++i]);
             explicit_puzzle = true;
@@ -2129,32 +1845,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (verify_mode) {
+        int verify_target = explicit_puzzle ? puzzle_id : 0;
+        return run_gpu_verify(api_base, user, verify_target, device_id);
+    }
+
+        std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
+    
+
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
-
-    if (auto_tune) {
-        uint32_t tuned_blocks = explicit_blocks > 0 ? explicit_blocks : sm_count * 16;
-        run_1gpu_auto_tuner(device_id, sm_count, batch_size, tuned_blocks);
-        explicit_blocks = (int)tuned_blocks;
-    }
-
-    if (verify_mode) {
-        int verify_target = explicit_puzzle ? puzzle_id : 0;
-        return run_gpu_verify(api_base, user, verify_target, device_id, batch_size, explicit_blocks);
-    }
-
-    std::cout << "[WORKER] 1-GPU Engine: " << prop.name
-              << " | Device: " << device_id
-              << " | Batch: " << batch_size
-              << " | Privacy: ON\n";
-
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 256;
-    uint32_t num_blocks = explicit_blocks > 0 ? explicit_blocks : sm_count * 16;
-    if (num_blocks < 256) num_blocks = 256;
+    uint32_t num_blocks = sm_count * 16;
+    if (num_blocks < 512) num_blocks = 512;
     if (num_blocks > 8192) num_blocks = 8192;
-
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -2163,9 +1869,11 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_found_flag, sizeof(int));
     cudaMalloc(&d_found_offset, sizeof(uint64_t));
 
+    
+
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
-    uint64_t single_range_size = 268435456ULL; // 2^28 keys default
+    uint64_t single_range_size = 268435456ULL; // default 2^28 keys
 
     while (g_running.load()) {
         if (!no_limit && ranges_completed >= max_ranges) {
@@ -2196,6 +1904,7 @@ int main(int argc, char* argv[]) {
         if (!s_puz.empty()) {
             try { puzzle_id = std::stoi(s_puz); } catch (...) {}
         }
+
         std::string str_single_sz = json_get_string(resp, "single_range_size");
         if (!str_single_sz.empty()) {
             try { single_range_size = std::stoull(str_single_sz); } catch (...) {}
@@ -2210,7 +1919,6 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
-
         if (str_start.empty() || str_target.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
@@ -2241,7 +1949,7 @@ int main(int argc, char* argv[]) {
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)batch_size;
+        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -2253,13 +1961,12 @@ int main(int argc, char* argv[]) {
         };
 
         auto t_start = std::chrono::high_resolution_clock::now();
-
-        launch_cuda_kernel(batch_size, num_blocks, block_size,
+        cuda_scan_kernel<<<num_blocks, block_size>>>(
             start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
             total_keys_count, grid_threads, batches,
             d_found_flag, d_found_offset,
-            target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]);
-
+            target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
+        );
         cudaDeviceSynchronize();
         auto t_end = std::chrono::high_resolution_clock::now();
 
@@ -2269,9 +1976,7 @@ int main(int argc, char* argv[]) {
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         if (elapsed <= 0.0) elapsed = 0.0001;
         double final_spd = (double)total_keys_count / elapsed;
-
-        ranges_completed += actual_multiple;
-        last_measured_speed = final_spd;
+        ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
         std::cout << "\r[*] Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
@@ -2296,12 +2001,9 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"0x" << priv_hex
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
-
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
             break;
@@ -2310,11 +2012,8 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
-
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
         }
