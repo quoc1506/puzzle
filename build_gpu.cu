@@ -813,7 +813,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__)
+#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1056,6 +1056,17 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
 CUDA_CONSTANT AffinePoint dev_batch_G[32];
+CUDA_CONSTANT const uint32_t dev_K256[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
@@ -1133,16 +1144,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[14] = 0;
     w[15] = 0x00000108U;
 
-    static const uint32_t K256[64] = {
-        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-    };
+    const uint32_t* K256 = dev_K256;
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
@@ -1399,19 +1401,15 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
-    // Early exit check on target_w[0] as c1 and d2 reach final values
-    if ((0xEFCDAB89U + c1 + d2) != target_w[0]) return false;
-
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
-    // Early exit check on target_w[1] as d1 and e2 reach final values
-    if ((0x98BADCFEU + d1 + e2) != target_w[1]) return false;
-
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    uint32_t s0 = 0x67452301U, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
-    if ((s3 + e1 + a2) != target_w[2]) return false;
-    if ((s4 + a1 + b2) != target_w[3]) return false;
+    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    if (__builtin_expect((s1 + c1 + d2) != target_w[0], 1)) return false;
+    if (__builtin_expect((s2 + d1 + e2) != target_w[1], 1)) return false;
+    if (__builtin_expect((s3 + e1 + a2) != target_w[2], 1)) return false;
+    if (__builtin_expect((s4 + a1 + b2) != target_w[3], 1)) return false;
     return ((s0 + b1 + c2) == target_w[4]);
 }
 
@@ -1426,7 +1424,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(256, 2)
+CUDA_GLOBAL __launch_bounds__(256, 1)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1467,7 +1465,7 @@ void cuda_scan_kernel(
     const uint64_t step_keys = (uint64_t)grid_threads;
 
     for (uint32_t b = 0; b < batches; ++b) {
-        if (*(volatile const int*)d_found_flag) return;
+        if (*d_found_flag) return;
 
         uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 32ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
@@ -1495,7 +1493,7 @@ void cuda_scan_kernel(
         prod[0] = inv_all;
 
         AffinePoint next_cur_P;
-        #pragma unroll 32
+        #pragma unroll 2
         for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
@@ -1651,9 +1649,10 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 256;
-    uint32_t num_blocks = sm_count * 16;
-    if (num_blocks < 512) num_blocks = 512;
-    if (num_blocks > 8192) num_blocks = 8192;
+    // Align with exact SM count (T4 has 40 SMs) to eliminate tail wave quantization penalty
+    uint32_t num_blocks = sm_count * 8;
+    if (num_blocks < 320) num_blocks = 320;
+    if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -1858,9 +1857,10 @@ int main(int argc, char* argv[]) {
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 256;
-    uint32_t num_blocks = sm_count * 16;
-    if (num_blocks < 512) num_blocks = 512;
-    if (num_blocks > 8192) num_blocks = 8192;
+    // Align with exact SM count (T4 has 40 SMs) to eliminate tail wave quantization penalty
+    uint32_t num_blocks = sm_count * 8;
+    if (num_blocks < 320) num_blocks = 320;
+    if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
