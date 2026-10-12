@@ -679,7 +679,73 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
     return r;
 }
 
+// Hardware PTX Assembly Macros for 256-bit Big-Integer Arithmetic (Turing sm_75 / T4)
+#if defined(__CUDA_ARCH__)
+#define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
+#define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UMult(r, a, b) do {     UMULLO((r)[0], (a)[0], b);     UMULLO((r)[1], (a)[1], b);     MADDO((r)[1], (a)[0], b, (r)[1]);     UMULLO((r)[2], (a)[2], b);     MADDC((r)[2], (a)[1], b, (r)[2]);     UMULLO((r)[3], (a)[3], b);     MADDC((r)[3], (a)[2], b, (r)[3]);     MADD((r)[4], (a)[3], b, 0ULL); } while(0)
+#endif
+#define BATCH_SIZE 32
+
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
+#if defined(__CUDA_ARCH__)
+    uint64_t r512[8];
+    uint64_t t[5];
+    uint64_t ah, al;
+    r512[5] = 0; r512[6] = 0; r512[7] = 0;
+    UMult(r512, a.d, b.d[0]);
+    UMult(t, a.d, b.d[1]);
+    UADDO1(r512[1], t[0]);
+    UADDC1(r512[2], t[1]);
+    UADDC1(r512[3], t[2]);
+    UADDC1(r512[4], t[3]);
+    UADD1(r512[5], t[4]);
+    UMult(t, a.d, b.d[2]);
+    UADDO1(r512[2], t[0]);
+    UADDC1(r512[3], t[1]);
+    UADDC1(r512[4], t[2]);
+    UADDC1(r512[5], t[3]);
+    UADD1(r512[6], t[4]);
+    UMult(t, a.d, b.d[3]);
+    UADDO1(r512[3], t[0]);
+    UADDC1(r512[4], t[1]);
+    UADDC1(r512[5], t[2]);
+    UADDC1(r512[6], t[3]);
+    UADD1(r512[7], t[4]);
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    UMult(t, (r512 + 4), SECP_K);
+    UADDO1(r512[0], t[0]);
+    UADDC1(r512[1], t[1]);
+    UADDC1(r512[2], t[2]);
+    UADDC1(r512[3], t[3]);
+    UADD1(t[4], 0ULL);
+    UMULLO(al, t[4], SECP_K);
+    UMULHI(ah, t[4], SECP_K);
+    Fe r;
+    asm volatile(
+        "add.cc.u64 %0, %4, %8;\n\t"
+        "addc.cc.u64 %1, %5, %9;\n\t"
+        "addc.cc.u64 %2, %6, 0;\n\t"
+        "addc.u64 %3, %7, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
+        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
+          "l"(al), "l"(ah)
+    );
+    if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        r.d[1] = 0; r.d[2] = 0; r.d[3] = 0;
+    }
+    return r;
+#elif defined(__SIZEOF_INT128__)
 #if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -813,7 +879,114 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #endif
 }
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__)
+    uint64_t r512[8];
+    uint64_t u10, u11;
+    uint64_t r0, r1, r3, r4, t1, t2;
+    const uint64_t* up = a.d;
+    UMULLO(r512[0], up[0], up[0]);
+    UMULHI(r1, up[0], up[0]);
+    UMULLO(r3, up[0], up[1]);
+    UMULHI(r4, up[0], up[1]);
+    UADDO1(r3, r3);
+    UADDC1(r4, r4);
+    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
+    UADDO1(r3, r1);
+    UADDC1(r4, 0ULL);
+    UADD1(t1, 0ULL);
+    r512[1] = r3;
+    UMULLO(r0, up[0], up[2]);
+    UMULHI(r1, up[0], up[2]);
+    UADDO1(r0, r0);
+    UADDC1(r1, r1);
+    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t2));
+    UMULLO(u10, up[1], up[1]);
+    UMULHI(u11, up[1], up[1]);
+    UADDO1(r0, u10);
+    UADDC1(r1, u11);
+    UADD1(t2, 0ULL);
+    UADDO1(r0, r4);
+    UADDC1(r1, t1);
+    UADD1(t2, 0ULL);
+    r512[2] = r0;
+    UMULLO(r3, up[0], up[3]);
+    UMULHI(r4, up[0], up[3]);
+    UMULLO(u10, up[1], up[2]);
+    UMULHI(u11, up[1], up[2]);
+    UADDO1(r3, u10);
+    UADDC1(r4, u11);
+    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
+    UADDO1(r3, r3);
+    UADDC1(r4, r4);
+    UADD1(t1, 0ULL);
+    UADDO1(r3, r1);
+    UADDC1(r4, t2);
+    UADD1(t1, 0ULL);
+    r512[3] = r3;
+    UMULLO(r0, up[1], up[3]);
+    UMULHI(r1, up[1], up[3]);
+    UADDO1(r0, r0);
+    UADDC1(r1, r1);
+    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t2));
+    UMULLO(u10, up[2], up[2]);
+    UMULHI(u11, up[2], up[2]);
+    UADDO1(r0, u10);
+    UADDC1(r1, u11);
+    UADD1(t2, 0ULL);
+    UADDO1(r0, r4);
+    UADDC1(r1, t1);
+    UADD1(t2, 0ULL);
+    r512[4] = r0;
+    UMULLO(r3, up[2], up[3]);
+    UMULHI(r4, up[2], up[3]);
+    UADDO1(r3, r3);
+    UADDC1(r4, r4);
+    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
+    UADDO1(r3, r1);
+    UADDC1(r4, t2);
+    UADD1(t1, 0ULL);
+    r512[5] = r3;
+    UMULLO(r0, up[3], up[3]);
+    UMULHI(r1, up[3], up[3]);
+    UADDO1(r0, r4);
+    UADD1(r1, t1);
+    r512[6] = r0;
+    r512[7] = r1;
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    UMULLO(r0, r512[4], SECP_K);
+    UMULLO(r1, r512[5], SECP_K);
+    MADDO(r1, r512[4], SECP_K, r1);
+    UMULLO(t2, r512[6], SECP_K);
+    MADDC(t2, r512[5], SECP_K, t2);
+    UMULLO(r3, r512[7], SECP_K);
+    MADDC(r3, r512[6], SECP_K, r3);
+    MADD(r4, r512[7], SECP_K, 0ULL);
+    UADDO1(r512[0], r0);
+    UADDC1(r512[1], r1);
+    UADDC1(r512[2], t2);
+    UADDC1(r512[3], r3);
+    UADD1(r4, 0ULL);
+    UMULLO(u10, r4, SECP_K);
+    UMULHI(u11, r4, SECP_K);
+    Fe r;
+    asm volatile(
+        "add.cc.u64 %0, %4, %8;\n\t"
+        "addc.cc.u64 %1, %5, %9;\n\t"
+        "addc.cc.u64 %2, %6, 0;\n\t"
+        "addc.u64 %3, %7, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
+        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
+          "l"(u10), "l"(u11)
+    );
+    if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+        r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
+        r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+        r.d[1] = 0; r.d[2] = 0; r.d[3] = 0;
+    }
+    return r;
+#elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
     // High-performance Comba Column Squaring (Registers Only)
@@ -1055,18 +1228,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-CUDA_CONSTANT AffinePoint dev_batch_G[32];
-CUDA_CONSTANT const uint32_t dev_K256[64] = {
-    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
-};
-
+CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
@@ -1122,7 +1284,24 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_maj(uint32_t a, uint32_t b, uint32_t c) {
     asm("lop3.b32 %0, %1, %2, %3, 0xe8;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
     return ret;
 }
+
+CUDA_DEV CUDA_INLINE uint32_t lop3_xor3(uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t ret;
+    asm("lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"(ret) : "r"(a), "r"(b), "r"(c));
+    return ret;
+}
 #endif
+
+CUDA_CONSTANT uint32_t K256[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
@@ -1144,23 +1323,23 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[14] = 0;
     w[15] = 0x00000108U;
 
-    const uint32_t* K256 = dev_K256;
-
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
     #pragma unroll 16
     for (int i = 0; i < 16; ++i) {
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1170,22 +1349,29 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     #pragma unroll 48
     for (int i = 16; i < 64; ++i) {
         uint32_t w15 = w[(i - 15) & 15];
-        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
         uint32_t w2 = w[(i - 2) & 15];
+#if defined(__CUDA_ARCH__)
+        uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+        uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
         uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
         uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
         w[i & 15] = wi;
 
-        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
 #if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
         uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
 #else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
         uint32_t ch = (e & f) ^ (~e & g);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
 #endif
         uint32_t temp1 = h + S1 + ch + K256[i] + wi;
-        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
         uint32_t temp2 = S0 + maj;
 
         h = g; g = f; f = e; e = d + temp1;
@@ -1406,10 +1592,10 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
     uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
-    if (__builtin_expect((s1 + c1 + d2) != target_w[0], 1)) return false;
-    if (__builtin_expect((s2 + d1 + e2) != target_w[1], 1)) return false;
-    if (__builtin_expect((s3 + e1 + a2) != target_w[2], 1)) return false;
-    if (__builtin_expect((s4 + a1 + b2) != target_w[3], 1)) return false;
+    if ((s1 + c1 + d2) != target_w[0]) return false;
+    if ((s2 + d1 + e2) != target_w[1]) return false;
+    if ((s3 + e1 + a2) != target_w[2]) return false;
+    if ((s4 + a1 + b2) != target_w[3]) return false;
     return ((s0 + b1 + c2) == target_w[4]);
 }
 
@@ -1424,7 +1610,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(256, 1)
+CUDA_GLOBAL __launch_bounds__(256, 2)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1432,8 +1618,8 @@ void cuda_scan_kernel(
     uint32_t batches,
     int* d_found_flag,
     uint64_t* d_found_offset,
-    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4) {
-
+    uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4
+) {
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
     if (tid >= grid_threads) return;
 
@@ -1467,44 +1653,41 @@ void cuda_scan_kernel(
     for (uint32_t b = 0; b < batches; ++b) {
         if (*d_found_flag) return;
 
-        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 32ULL * step_keys;
+        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * (uint64_t)BATCH_SIZE * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
-        // Forward pass: compute cumulative products across 32 points
-        Fe prod[32];
+        // Forward pass: compute cumulative products across 64 points
+        Fe prod[BATCH_SIZE];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
-        #pragma unroll 31
-        for (int i = 1; i < 32; ++i) {
+        #pragma unroll 4
+        for (int i = 1; i < BATCH_SIZE; ++i) {
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             prod[i] = fe_mul(prod[i - 1], dx_i);
         }
 
-        // Only ONE inversion for 32 points
-        Fe inv_all = fe_inv(prod[31]);
+        // Only ONE inversion for 64 points
+        Fe inv_all = fe_inv(prod[BATCH_SIZE - 1]);
 
-        // Backward pass: compute individual inverses
-        #pragma unroll 31
-        for (int i = 31; i >= 1; --i) {
+        // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
+        // Eliminates writing/reading prod[i] array twice, drastically reducing local stack memory traffic and register pressure
+        AffinePoint next_cur_P;
+
+        #pragma unroll 1
+        for (int i = BATCH_SIZE - 1; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
-            prod[i] = inv_dx_i;
-        }
-        prod[0] = inv_all;
 
-        AffinePoint next_cur_P;
-        #pragma unroll 2
-        for (int i = 0; i < 32; ++i) {
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, prod[i]);
+                Fe lambda = fe_mul(dy_i, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
-                if (i == 31) {
+                if (i == BATCH_SIZE - 1) {
                     next_cur_P = AffinePoint{next_x, next_y};
                 }
 
@@ -1517,16 +1700,38 @@ void cuda_scan_kernel(
                     }
                     return;
                 }
-            } else if (i == 31) {
-                Fe dy_31 = fe_sub(dev_batch_G[31].y, cur_P.y);
-                Fe lambda = fe_mul(dy_31, prod[31]);
+            } else if (i == BATCH_SIZE - 1) {
+                Fe dy_last = fe_sub(dev_batch_G[BATCH_SIZE - 1].y, cur_P.y);
+                Fe lambda = fe_mul(dy_last, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[31].x);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[BATCH_SIZE - 1].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
                 next_cur_P = AffinePoint{next_x, next_y};
             }
         }
+
+        // Evaluate point 0 (inv_all is now inv_dx_0)
+        uint64_t key_offset_0 = batch_base_offset + (uint64_t)1 * step_keys;
+        if (key_offset_0 < total_chunk_keys) {
+            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
+            Fe lambda = fe_mul(dy_0, inv_all);
+            Fe lambda_sq = fe_sqr(lambda);
+            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
+            Fe diff_x = fe_sub(cur_P.x, next_x);
+            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+
+            uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t X[8];
+            fast_sha256_into_ripemd_X(prefix, next_x, X);
+            if (fast_ripemd160_32_check(X, tw)) {
+                if (atomicExch(d_found_flag, 1) == 0) {
+                    *d_found_offset = key_offset_0;
+                }
+                return;
+            }
+        }
+
         cur_P = next_cur_P;
     }
 }
@@ -1634,24 +1839,26 @@ inline void init_cuda_tables(uint32_t grid_threads) {
     }
     cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
 
-    AffinePoint h_batch_G[32];
-    for (int i = 0; i < 32; ++i) {
+    AffinePoint h_batch_G[BATCH_SIZE];
+    for (int i = 0; i < BATCH_SIZE; ++i) {
         uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
         uint64_t s[4] = { step_mult, 0, 0, 0 };
         h_batch_G[i] = scalar_mul_G(s);
     }
     cudaMemcpyToSymbol(dev_batch_G, h_batch_G, sizeof(h_batch_G));
+#if defined(__CUDACC__)
+    cudaFuncSetAttribute(cuda_scan_kernel, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxL1);
+#endif
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 256;
-    // Align with exact SM count (T4 has 40 SMs) to eliminate tail wave quantization penalty
-    uint32_t num_blocks = sm_count * 8;
-    if (num_blocks < 320) num_blocks = 320;
+    uint32_t num_blocks = sm_count * 12;
+    if (num_blocks < 256) num_blocks = 256;
     if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
@@ -1725,7 +1932,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
+        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -1855,11 +2062,10 @@ int main(int argc, char* argv[]) {
     cudaSetDevice(device_id);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 256;
-    // Align with exact SM count (T4 has 40 SMs) to eliminate tail wave quantization penalty
-    uint32_t num_blocks = sm_count * 8;
-    if (num_blocks < 320) num_blocks = 320;
+    uint32_t num_blocks = sm_count * 12;
+    if (num_blocks < 256) num_blocks = 256;
     if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
@@ -1949,7 +2155,7 @@ int main(int argc, char* argv[]) {
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * 32ULL;
+        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -1978,7 +2184,7 @@ int main(int argc, char* argv[]) {
         double final_spd = (double)total_keys_count / elapsed;
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
-        std::cout << "\r[*] Speed: " << format_speed(final_spd)
+        std::cout << "\r[*]Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
@@ -1995,7 +2201,7 @@ int main(int argc, char* argv[]) {
             found_limbs[3] += (uint64_t)(s_carry >> 64);
 
             std::string priv_hex = limbs_to_hex(found_limbs);
-            std::cout << "\n [WINNER] TARGET MATCHED! Submitting solution to server...\n";
+            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
 
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
