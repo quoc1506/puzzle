@@ -1995,7 +1995,7 @@ int main(int argc, char* argv[]) {
             found_limbs[3] += (uint64_t)(s_carry >> 64);
 
             std::string priv_hex = limbs_to_hex(found_limbs);
-            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
+            std::cout << "\n [WINNER] TARGET MATCHED! Submitting solution to server...\n";
 
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
