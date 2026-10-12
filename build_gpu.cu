@@ -697,47 +697,145 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     uint64_t r512[8];
     uint64_t t[5];
-    uint64_t ah, al;
-    r512[5] = 0; r512[6] = 0; r512[7] = 0;
-    UMult(r512, a.d, b.d[0]);
-    UMult(t, a.d, b.d[1]);
-    UADDO1(r512[1], t[0]);
-    UADDC1(r512[2], t[1]);
-    UADDC1(r512[3], t[2]);
-    UADDC1(r512[4], t[3]);
-    UADD1(r512[5], t[4]);
 
-    UMult(t, a.d, b.d[2]);
-    UADDO1(r512[2], t[0]);
-    UADDC1(r512[3], t[1]);
-    UADDC1(r512[4], t[2]);
-    UADDC1(r512[5], t[3]);
-    UADD1(r512[6], t[4]);
-
-    UMult(t, a.d, b.d[3]);
-    UADDO1(r512[3], t[0]);
-    UADDC1(r512[4], t[1]);
-    UADDC1(r512[5], t[2]);
-    UADDC1(r512[6], t[3]);
-    UADD1(r512[7], t[4]);
-
-    const uint64_t SECP_K = 0x1000003D1ULL;
-    UMult(t, (r512 + 4), SECP_K);
-    UADDO1(r512[0], t[0]);
-    UADDC1(r512[1], t[1]);
-    UADDC1(r512[2], t[2]);
-    UADDC1(r512[3], t[3]);
-    UADD1(t[4], 0ULL);
-
-    UMULLO(al, t[4], SECP_K);
-    UMULHI(ah, t[4], SECP_K);
-    Fe r;
+    // Limb 0: a * b[0]
     asm volatile(
-        "add.cc.u64 %0, %4, %8; addc.cc.u64 %1, %5, %9; addc.cc.u64 %2, %6, 0; addc.u64 %3, %7, 0;"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
+        "mul.lo.u64 %0, %5, %9; "
+        "mul.lo.u64 %1, %6, %9; "
+        "mul.lo.u64 %2, %7, %9; "
+        "mul.lo.u64 %3, %8, %9; "
+        "mad.hi.cc.u64 %1, %5, %9, %1; "
+        "madc.hi.cc.u64 %2, %6, %9, %2; "
+        "madc.hi.cc.u64 %3, %7, %9, %3; "
+        "madc.hi.u64 %4, %8, %9, 0;"
+        : "=l"(r512[0]), "=l"(r512[1]), "=l"(r512[2]), "=l"(r512[3]), "=l"(r512[4])
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]), "l"(b.d[0])
+    );
+    r512[5] = 0; r512[6] = 0; r512[7] = 0;
+
+    // Limb 1: a * b[1]
+    asm volatile(
+        "mul.lo.u64 %0, %5, %9; "
+        "mul.lo.u64 %1, %6, %9; "
+        "mul.lo.u64 %2, %7, %9; "
+        "mul.lo.u64 %3, %8, %9; "
+        "mad.hi.cc.u64 %1, %5, %9, %1; "
+        "madc.hi.cc.u64 %2, %6, %9, %2; "
+        "madc.hi.cc.u64 %3, %7, %9, %3; "
+        "madc.hi.u64 %4, %8, %9, 0;"
+        : "=l"(t[0]), "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]), "l"(b.d[1])
+    );
+    asm volatile(
+        "add.cc.u64 %0, %0, %5; "
+        "addc.cc.u64 %1, %1, %6; "
+        "addc.cc.u64 %2, %2, %7; "
+        "addc.cc.u64 %3, %3, %8; "
+        "addc.u64 %4, %4, %9;"
+        : "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
+
+    // Limb 2: a * b[2]
+    asm volatile(
+        "mul.lo.u64 %0, %5, %9; "
+        "mul.lo.u64 %1, %6, %9; "
+        "mul.lo.u64 %2, %7, %9; "
+        "mul.lo.u64 %3, %8, %9; "
+        "mad.hi.cc.u64 %1, %5, %9, %1; "
+        "madc.hi.cc.u64 %2, %6, %9, %2; "
+        "madc.hi.cc.u64 %3, %7, %9, %3; "
+        "madc.hi.u64 %4, %8, %9, 0;"
+        : "=l"(t[0]), "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]), "l"(b.d[2])
+    );
+    asm volatile(
+        "add.cc.u64 %0, %0, %5; "
+        "addc.cc.u64 %1, %1, %6; "
+        "addc.cc.u64 %2, %2, %7; "
+        "addc.cc.u64 %3, %3, %8; "
+        "addc.u64 %4, %4, %9;"
+        : "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
+
+    // Limb 3: a * b[3]
+    asm volatile(
+        "mul.lo.u64 %0, %5, %9; "
+        "mul.lo.u64 %1, %6, %9; "
+        "mul.lo.u64 %2, %7, %9; "
+        "mul.lo.u64 %3, %8, %9; "
+        "mad.hi.cc.u64 %1, %5, %9, %1; "
+        "madc.hi.cc.u64 %2, %6, %9, %2; "
+        "madc.hi.cc.u64 %3, %7, %9, %3; "
+        "madc.hi.u64 %4, %8, %9, 0;"
+        : "=l"(t[0]), "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]), "l"(b.d[3])
+    );
+    asm volatile(
+        "add.cc.u64 %0, %0, %5; "
+        "addc.cc.u64 %1, %1, %6; "
+        "addc.cc.u64 %2, %2, %7; "
+        "addc.cc.u64 %3, %3, %8; "
+        "addc.u64 %4, %4, %9;"
+        : "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6]), "+l"(r512[7])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
+
+    // Reduction mod p = 2^256 - K, K = 0x1000003D1
+    const uint64_t SECP_K = 0x1000003D1ULL;
+    asm volatile(
+        "mul.lo.u64 %0, %5, %9; "
+        "mul.lo.u64 %1, %6, %9; "
+        "mul.lo.u64 %2, %7, %9; "
+        "mul.lo.u64 %3, %8, %9; "
+        "mad.hi.cc.u64 %1, %5, %9, %1; "
+        "madc.hi.cc.u64 %2, %6, %9, %2; "
+        "madc.hi.cc.u64 %3, %7, %9, %3; "
+        "madc.hi.u64 %4, %8, %9, 0;"
+        : "=l"(t[0]), "=l"(t[1]), "=l"(t[2]), "=l"(t[3]), "=l"(t[4])
+        : "l"(r512[4]), "l"(r512[5]), "l"(r512[6]), "l"(r512[7]), "l"(SECP_K)
+    );
+
+    uint64_t c_red = 0;
+    asm volatile(
+        "add.cc.u64 %0, %0, %5; "
+        "addc.cc.u64 %1, %1, %6; "
+        "addc.cc.u64 %2, %2, %7; "
+        "addc.cc.u64 %3, %3, %8; "
+        "addc.u64 %4, %9, 0;"
+        : "+l"(r512[0]), "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3]), "=l"(c_red)
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
+
+    uint64_t al = c_red * SECP_K;
+    uint64_t ah = __umul64hi(c_red, SECP_K);
+
+    Fe r;
+    uint64_t c_final = 0;
+    asm volatile(
+        "add.cc.u64 %0, %5, %9; "
+        "addc.cc.u64 %1, %6, %10; "
+        "addc.cc.u64 %2, %7, 0; "
+        "addc.cc.u64 %3, %8, 0; "
+        "addc.u64 %4, 0, 0;"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(c_final)
         : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
           "l"(al), "l"(ah)
     );
+
+    if (c_final != 0) {
+        uint64_t k_extra = c_final * SECP_K;
+        asm volatile(
+            "add.cc.u64 %0, %0, %4; "
+            "addc.cc.u64 %1, %1, 0; "
+            "addc.cc.u64 %2, %2, 0; "
+            "addc.u64 %3, %3, 0;"
+            : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
+            : "l"(k_extra)
+        );
+    }
+
     if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
         r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
         r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -857,119 +955,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__CUDA_ARCH__)
-    uint64_t r512[8];
-    uint64_t u10, u11;
-    uint64_t r0, r1, r3, r4, t1, t2;
-    const uint64_t* up = a.d;
-
-    UMULLO(r512[0], up[0], up[0]);
-    UMULHI(r1, up[0], up[0]);
-
-    UMULLO(r3, up[0], up[1]);
-    UMULHI(r4, up[0], up[1]);
-    UADDO1(r3, r3);
-    UADDC1(r4, r4);
-    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
-    UADDO1(r3, r1);
-    UADDC1(r4, 0ULL);
-    UADD1(t1, 0ULL);
-    r512[1] = r3;
-
-    UMULLO(r0, up[0], up[2]);
-    UMULHI(r1, up[0], up[2]);
-    UADDO1(r0, r0);
-    UADDC1(r1, r1);
-    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t2));
-    UMULLO(u10, up[1], up[1]);
-    UMULHI(u11, up[1], up[1]);
-    UADDO1(r0, u10);
-    UADDC1(r1, u11);
-    UADD1(t2, 0ULL);
-    UADDO1(r0, r4);
-    UADDC1(r1, t1);
-    UADD1(t2, 0ULL);
-    r512[2] = r0;
-
-    UMULLO(r3, up[0], up[3]);
-    UMULHI(r4, up[0], up[3]);
-    UMULLO(u10, up[1], up[2]);
-    UMULHI(u11, up[1], up[2]);
-    UADDO1(r3, u10);
-    UADDC1(r4, u11);
-    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
-    UADDO1(r3, r3);
-    UADDC1(r4, r4);
-    UADD1(t1, 0ULL);
-    UADDO1(r3, r1);
-    UADDC1(r4, t2);
-    UADD1(t1, 0ULL);
-    r512[3] = r3;
-
-    UMULLO(r0, up[1], up[3]);
-    UMULHI(r1, up[1], up[3]);
-    UADDO1(r0, r0);
-    UADDC1(r1, r1);
-    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t2));
-    UMULLO(u10, up[2], up[2]);
-    UMULHI(u11, up[2], up[2]);
-    UADDO1(r0, u10);
-    UADDC1(r1, u11);
-    UADD1(t2, 0ULL);
-    UADDO1(r0, r4);
-    UADDC1(r1, t1);
-    UADD1(t2, 0ULL);
-    r512[4] = r0;
-
-    UMULLO(r3, up[2], up[3]);
-    UMULHI(r4, up[2], up[3]);
-    UADDO1(r3, r3);
-    UADDC1(r4, r4);
-    asm volatile("addc.u64 %0, 0, 0;" : "=l"(t1));
-    UADDO1(r3, r1);
-    UADDC1(r4, t2);
-    UADD1(t1, 0ULL);
-    r512[5] = r3;
-
-    UMULLO(r0, up[3], up[3]);
-    UMULHI(r1, up[3], up[3]);
-    UADDO1(r0, r4);
-    UADD1(r1, t1);
-    r512[6] = r0;
-    r512[7] = r1;
-
-    const uint64_t SECP_K = 0x1000003D1ULL;
-    UMULLO(r0, r512[4], SECP_K);
-    UMULLO(r1, r512[5], SECP_K);
-    MADDO(r1, r512[4], SECP_K, r1);
-    UMULLO(t2, r512[6], SECP_K);
-    MADDC(t2, r512[5], SECP_K, t2);
-    UMULLO(r3, r512[7], SECP_K);
-    MADDC(r3, r512[6], SECP_K, r3);
-    MADD(r4, r512[7], SECP_K, 0ULL);
-
-    UADDO1(r512[0], r0);
-    UADDC1(r512[1], r1);
-    UADDC1(r512[2], t2);
-    UADDC1(r512[3], r3);
-    UADD1(r4, 0ULL);
-
-    UMULLO(u10, r4, SECP_K);
-    UMULHI(u11, r4, SECP_K);
-    Fe r;
-    asm volatile(
-        "add.cc.u64 %0, %4, %8; addc.cc.u64 %1, %5, %9; addc.cc.u64 %2, %6, 0; addc.u64 %3, %7, 0;"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
-        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
-          "l"(u10), "l"(u11)
-    );
-    if (r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[0] >= 0xFFFFFFFEFFFFFC2FULL) {
-        r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        r.d[1] = 0; r.d[2] = 0; r.d[3] = 0;
-    }
-    return r;
+    return fe_mul(a, a);
 #elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     u128 c = (u128)a0 * a1;
