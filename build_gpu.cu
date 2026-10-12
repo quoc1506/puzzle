@@ -706,18 +706,21 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     UADDC1(r512[3], t[2]);
     UADDC1(r512[4], t[3]);
     UADD1(r512[5], t[4]);
+
     UMult(t, a.d, b.d[2]);
     UADDO1(r512[2], t[0]);
     UADDC1(r512[3], t[1]);
     UADDC1(r512[4], t[2]);
     UADDC1(r512[5], t[3]);
     UADD1(r512[6], t[4]);
+
     UMult(t, a.d, b.d[3]);
     UADDO1(r512[3], t[0]);
     UADDC1(r512[4], t[1]);
     UADDC1(r512[5], t[2]);
     UADDC1(r512[6], t[3]);
     UADD1(r512[7], t[4]);
+
     const uint64_t SECP_K = 0x1000003D1ULL;
     UMult(t, (r512 + 4), SECP_K);
     UADDO1(r512[0], t[0]);
@@ -725,14 +728,19 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     UADDC1(r512[2], t[2]);
     UADDC1(r512[3], t[3]);
     UADD1(t[4], 0ULL);
+
     UMULLO(al, t[4], SECP_K);
     UMULHI(ah, t[4], SECP_K);
     Fe r;
     asm volatile(
-        "add.cc.u64 %0, %4, %8;\n\t"
-        "addc.cc.u64 %1, %5, %9;\n\t"
-        "addc.cc.u64 %2, %6, 0;\n\t"
-        "addc.u64 %3, %7, 0;\n\t"
+        "add.cc.u64 %0, %4, %8;
+    "
+        "addc.cc.u64 %1, %5, %9;
+    "
+        "addc.cc.u64 %2, %6, 0;
+    "
+        "addc.u64 %3, %7, 0;
+    "
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
         : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
           "l"(al), "l"(ah)
@@ -746,95 +754,71 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     }
     return r;
 #elif defined(__SIZEOF_INT128__)
-#if defined(__SIZEOF_INT128__) || defined(__CUDA_ARCH__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
-
-    // Branchless 4x4 limb schoolbook multiplier
     u128 p = (u128)a0 * b0;
     uint64_t t0 = (uint64_t)p;
     u128 c = p >> 64;
-
     p = (u128)a0 * b1 + c;
     uint64_t t1 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a0 * b2 + c;
     uint64_t t2 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a0 * b3 + c;
     uint64_t t3 = (uint64_t)p;
     uint64_t t4 = (uint64_t)(p >> 64);
     uint64_t t5 = 0, t6 = 0, t7 = 0;
-
     p = (u128)a1 * b0 + t1;
     t1 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a1 * b1 + t2 + c;
     t2 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a1 * b2 + t3 + c;
     t3 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a1 * b3 + t4 + c;
     t4 = (uint64_t)p;
     t5 = (uint64_t)(p >> 64);
-
     p = (u128)a2 * b0 + t2;
     t2 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a2 * b1 + t3 + c;
     t3 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a2 * b2 + t4 + c;
     t4 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a2 * b3 + t5 + c;
     t5 = (uint64_t)p;
     t6 = (uint64_t)(p >> 64);
-
     p = (u128)a3 * b0 + t3;
     t3 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a3 * b1 + t4 + c;
     t4 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a3 * b2 + t5 + c;
     t5 = (uint64_t)p;
     c = p >> 64;
-
     p = (u128)a3 * b3 + t6 + c;
     t6 = (uint64_t)p;
     t7 = (uint64_t)(p >> 64);
-
-    // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
     u128 prod0 = (u128)t4 * SECP_K + t0;
     uint64_t r0 = (uint64_t)prod0;
     u128 carry = prod0 >> 64;
-
     u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
     uint64_t r1 = (uint64_t)prod1;
     carry = prod1 >> 64;
-
     u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
     uint64_t r2 = (uint64_t)prod2;
     carry = prod2 >> 64;
-
     u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
     uint64_t r3 = (uint64_t)prod3;
     carry = prod3 >> 64;
-
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if defined(__x86_64__) || defined(_M_X64)
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
@@ -864,7 +848,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         r3 += (uint64_t)c3;
     }
 #endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -878,14 +861,17 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     return r;
 #endif
 }
+
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__CUDA_ARCH__)
     uint64_t r512[8];
     uint64_t u10, u11;
     uint64_t r0, r1, r3, r4, t1, t2;
     const uint64_t* up = a.d;
+
     UMULLO(r512[0], up[0], up[0]);
     UMULHI(r1, up[0], up[0]);
+
     UMULLO(r3, up[0], up[1]);
     UMULHI(r4, up[0], up[1]);
     UADDO1(r3, r3);
@@ -895,6 +881,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UADDC1(r4, 0ULL);
     UADD1(t1, 0ULL);
     r512[1] = r3;
+
     UMULLO(r0, up[0], up[2]);
     UMULHI(r1, up[0], up[2]);
     UADDO1(r0, r0);
@@ -909,6 +896,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UADDC1(r1, t1);
     UADD1(t2, 0ULL);
     r512[2] = r0;
+
     UMULLO(r3, up[0], up[3]);
     UMULHI(r4, up[0], up[3]);
     UMULLO(u10, up[1], up[2]);
@@ -923,6 +911,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UADDC1(r4, t2);
     UADD1(t1, 0ULL);
     r512[3] = r3;
+
     UMULLO(r0, up[1], up[3]);
     UMULHI(r1, up[1], up[3]);
     UADDO1(r0, r0);
@@ -937,6 +926,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UADDC1(r1, t1);
     UADD1(t2, 0ULL);
     r512[4] = r0;
+
     UMULLO(r3, up[2], up[3]);
     UMULHI(r4, up[2], up[3]);
     UADDO1(r3, r3);
@@ -946,12 +936,14 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UADDC1(r4, t2);
     UADD1(t1, 0ULL);
     r512[5] = r3;
+
     UMULLO(r0, up[3], up[3]);
     UMULHI(r1, up[3], up[3]);
     UADDO1(r0, r4);
     UADD1(r1, t1);
     r512[6] = r0;
     r512[7] = r1;
+
     const uint64_t SECP_K = 0x1000003D1ULL;
     UMULLO(r0, r512[4], SECP_K);
     UMULLO(r1, r512[5], SECP_K);
@@ -961,19 +953,25 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UMULLO(r3, r512[7], SECP_K);
     MADDC(r3, r512[6], SECP_K, r3);
     MADD(r4, r512[7], SECP_K, 0ULL);
+
     UADDO1(r512[0], r0);
     UADDC1(r512[1], r1);
     UADDC1(r512[2], t2);
     UADDC1(r512[3], r3);
     UADD1(r4, 0ULL);
+
     UMULLO(u10, r4, SECP_K);
     UMULHI(u11, r4, SECP_K);
     Fe r;
     asm volatile(
-        "add.cc.u64 %0, %4, %8;\n\t"
-        "addc.cc.u64 %1, %5, %9;\n\t"
-        "addc.cc.u64 %2, %6, 0;\n\t"
-        "addc.u64 %3, %7, 0;\n\t"
+        "add.cc.u64 %0, %4, %8;
+    "
+        "addc.cc.u64 %1, %5, %9;
+    "
+        "addc.cc.u64 %2, %6, 0;
+    "
+        "addc.u64 %3, %7, 0;
+    "
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
         : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
           "l"(u10), "l"(u11)
@@ -988,34 +986,24 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     return r;
 #elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-
-    // High-performance Comba Column Squaring (Registers Only)
-    // Cross products
     u128 c = (u128)a0 * a1;
     uint64_t c1 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)a0 * a2;
     uint64_t c2 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)a0 * a3;
     uint64_t c3 = (uint64_t)c;
     uint64_t c4 = (uint64_t)(c >> 64);
-
     c = (u128)c3 + (u128)a1 * a2;
     c3 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)c4 + (u128)a1 * a3;
     c4 = (uint64_t)c;
     uint64_t c5 = (uint64_t)(c >> 64);
-
     c = (u128)c5 + (u128)a2 * a3;
     c5 = (uint64_t)c;
     uint64_t c6 = (uint64_t)(c >> 64);
-
-    // Double cross-products
     uint64_t t7 = c6 >> 63;
     uint64_t t6 = (c6 << 1) | (c5 >> 63);
     uint64_t t5 = (c5 << 1) | (c4 >> 63);
@@ -1023,55 +1011,41 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t t3 = (c3 << 1) | (c2 >> 63);
     uint64_t t2 = (c2 << 1) | (c1 >> 63);
     uint64_t t1 = (c1 << 1);
-
-    // Add squares
     c = (u128)a0 * a0;
     uint64_t t0 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t1;
     t1 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t2 + (u128)a1 * a1;
     t2 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t3;
     t3 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t4 + (u128)a2 * a2;
     t4 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t5;
     t5 = (uint64_t)c;
     c >>= 64;
-
     c += (u128)t6 + (u128)a3 * a3;
     t6 = (uint64_t)c;
     t7 += (uint64_t)(c >> 64);
-
-    // Fast reduction mod p
     const uint64_t SECP_K = 0x1000003D1ULL;
     u128 prod0 = (u128)t4 * SECP_K + t0;
     uint64_t r0 = (uint64_t)prod0;
     u128 carry = prod0 >> 64;
-
     u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
     uint64_t r1 = (uint64_t)prod1;
     carry = prod1 >> 64;
-
     u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
     uint64_t r2 = (uint64_t)prod2;
     carry = prod2 >> 64;
-
     u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
     uint64_t r3 = (uint64_t)prod3;
     carry = prod3 >> 64;
-
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if defined(__x86_64__) || defined(_M_X64)
     u128 k_prod = (u128)carry * SECP_K;
     uint64_t k_lo = (uint64_t)k_prod;
     uint64_t k_hi = (uint64_t)(k_prod >> 64);
@@ -1101,7 +1075,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         r3 += (uint64_t)c3;
     }
 #endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -1109,16 +1082,13 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
-
     return Fe{{r0, r1, r2, r3}};
 #else
     Fe r = {0};
     return r;
 #endif
 }
-// ============================================================================
-// MODULAR INVERSION VIA FERMAT'S LITTLE THEOREM: a^(p - 2) mod p
-// ============================================================================
+
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
     for (int i = 0; i < n; ++i) {
         a = fe_sqr(a);
