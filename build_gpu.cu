@@ -733,14 +733,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     UMULHI(ah, t[4], SECP_K);
     Fe r;
     asm volatile(
-        "add.cc.u64 %0, %4, %8;
-    "
-        "addc.cc.u64 %1, %5, %9;
-    "
-        "addc.cc.u64 %2, %6, 0;
-    "
-        "addc.u64 %3, %7, 0;
-    "
+        "add.cc.u64 %0, %4, %8; addc.cc.u64 %1, %5, %9; addc.cc.u64 %2, %6, 0; addc.u64 %3, %7, 0;"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
         : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
           "l"(al), "l"(ah)
@@ -964,14 +957,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     UMULHI(u11, r4, SECP_K);
     Fe r;
     asm volatile(
-        "add.cc.u64 %0, %4, %8;
-    "
-        "addc.cc.u64 %1, %5, %9;
-    "
-        "addc.cc.u64 %2, %6, 0;
-    "
-        "addc.u64 %3, %7, 0;
-    "
+        "add.cc.u64 %0, %4, %8; addc.cc.u64 %1, %5, %9; addc.cc.u64 %2, %6, 0; addc.u64 %3, %7, 0;"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
         : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
           "l"(u10), "l"(u11)
