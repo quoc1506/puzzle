@@ -45,6 +45,9 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
+#ifndef __launch_bounds__
+#define __launch_bounds__(...)
+#endif
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -1945,9 +1948,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_launch != cudaSuccess || err_sync != cudaSuccess || err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
             failed++;
-            std::cerr << "[FAIL] Target #" << pid << " -> CUDA error: "
-                      << cudaGetErrorString(err_sync != cudaSuccess ? err_sync : err_launch) << "
-";
+            std::cerr << "[FAIL] Target #" << pid << " -> CUDA runtime error: " << cudaGetErrorString(err_sync != cudaSuccess ? err_sync : err_launch) << std::endl;
             continue;
         }
 
@@ -2170,20 +2171,14 @@ int main(int argc, char* argv[]) {
         );
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
-            std::cerr << "
-[CUDA CRITICAL ERROR] Kernel launch failed: "
-                      << cudaGetErrorString(err_launch) << " (" << err_launch << ")! Skipping submission to prevent corrupt state.
-";
+            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel launch failed: " << cudaGetErrorString(err_launch) << " (" << (int)err_launch << ")! Skipping submission." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         cudaError_t err_sync = cudaDeviceSynchronize();
         if (err_sync != cudaSuccess) {
-            std::cerr << "
-[CUDA CRITICAL ERROR] Kernel execution/sync failed: "
-                      << cudaGetErrorString(err_sync) << " (" << err_sync << ")! Skipping submission to prevent corrupt state.
-";
+            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel execution/sync failed: " << cudaGetErrorString(err_sync) << " (" << (int)err_sync << ")! Skipping submission." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2192,9 +2187,7 @@ int main(int argc, char* argv[]) {
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
-            std::cerr << "
-[CUDA CRITICAL ERROR] cudaMemcpy result failed! Skipping submission to prevent corrupt state.
-";
+            std::cerr << std::endl << "[CUDA CRITICAL ERROR] cudaMemcpy failed! Skipping submission." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
