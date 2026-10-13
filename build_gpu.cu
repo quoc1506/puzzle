@@ -1110,8 +1110,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
-    for (int i = 0; i < n; ++i) {
+template <int N>
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a) {
+    #pragma unroll
+    for (int i = 0; i < N; ++i) {
         a = fe_sqr(a);
     }
     return a;
@@ -1120,20 +1122,20 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x2 = fe_mul(fe_sqr(a), a);
     Fe x3 = fe_mul(fe_sqr(x2), a);
-    Fe x6 = fe_mul(fe_sqr_n(x3, 3), x3);
-    Fe x9 = fe_mul(fe_sqr_n(x6, 3), x3);
-    Fe x11 = fe_mul(fe_sqr_n(x9, 2), x2);
-    Fe x22 = fe_mul(fe_sqr_n(x11, 11), x11);
-    Fe x44 = fe_mul(fe_sqr_n(x22, 22), x22);
-    Fe x88 = fe_mul(fe_sqr_n(x44, 44), x44);
-    Fe x176 = fe_mul(fe_sqr_n(x88, 88), x88);
-    Fe x220 = fe_mul(fe_sqr_n(x176, 44), x44);
-    Fe x223 = fe_mul(fe_sqr_n(x220, 3), x3);
+    Fe x6 = fe_mul(fe_sqr_n<3>(x3), x3);
+    Fe x9 = fe_mul(fe_sqr_n<3>(x6), x3);
+    Fe x11 = fe_mul(fe_sqr_n<2>(x9), x2);
+    Fe x22 = fe_mul(fe_sqr_n<11>(x11), x11);
+    Fe x44 = fe_mul(fe_sqr_n<22>(x22), x22);
+    Fe x88 = fe_mul(fe_sqr_n<44>(x44), x44);
+    Fe x176 = fe_mul(fe_sqr_n<88>(x88), x88);
+    Fe x220 = fe_mul(fe_sqr_n<44>(x176), x44);
+    Fe x223 = fe_mul(fe_sqr_n<3>(x220), x3);
 
     // Exact Fermat addition chain for 2^256 - 2^32 - 979:
     Fe t1 = fe_sqr(x223);
-    Fe t2 = fe_mul(fe_sqr_n(t1, 22), x22);
-    Fe t3 = fe_sqr_n(t2, 10);
+    Fe t2 = fe_mul(fe_sqr_n<22>(t1), x22);
+    Fe t3 = fe_sqr_n<10>(t2);
 
     Fe a2 = fe_sqr(a);
     Fe a4 = fe_sqr(a2);
@@ -1219,7 +1221,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 32
+#define BATCH_SIZE 64
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1602,7 +1604,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(128, 4)
+CUDA_GLOBAL __launch_bounds__(128, 2)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
