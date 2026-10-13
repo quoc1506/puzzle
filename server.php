@@ -1643,6 +1643,11 @@ switch ($action) {
 
             if ($block_id < 0 || $range_idx < 0) error_resp('Missing block or range_idx');
 
+            // 1. CHẶN TỐC ĐỘ ẢO / CRASH GPU (> 10,000 Mkeys/s = 10 Gkeys/s)
+            if ($speed > 10000000000) {
+                error_resp('Rejected: Unrealistic speed reported (' . $speed . ' keys/s)', 400);
+            }
+
             if ($status === 'found') {
                 $priv_key = (string)($input['private_key'] ?? '');
                 if (empty($priv_key)) error_resp('private_key is required when found');
