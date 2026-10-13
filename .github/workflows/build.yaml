@@ -52,14 +52,12 @@ jobs:
           echo "Selected NVCC architecture flags: ${GENCODES}"
 
           SRC_FILE="build_gpu.cu"
-          if [ -f "src/files/build_gpu.cu" ]; then
+          if [ ! -f "$SRC_FILE" ] && [ -f "src/files/build_gpu.cu" ]; then
             SRC_FILE="src/files/build_gpu.cu"
-          elif [ ! -f "$SRC_FILE" ]; then
-            if [ -f "src/files/build_cpu.cpp" ]; then
-              SRC_FILE="src/files/build_cpu.cpp"
-            else
-              SRC_FILE="build_cpu.cpp"
-            fi
+          fi
+          if [ ! -f "$SRC_FILE" ]; then
+            echo "[ERROR] build_gpu.cu not found! Refusing to compile CPU code as bin/build_cuda." >&2
+            exit 1
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
