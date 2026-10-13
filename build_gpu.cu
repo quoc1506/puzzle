@@ -2388,7 +2388,7 @@ int main(int argc, char* argv[]) {
                 std::cerr << std::endl
                           << "[SECURITY GUARD] GPU reported h_flag=1, but independent CPU verification FAILED!"
                           << std::endl
-                          << "Possible memory glitch or uninitialized read. BLOCKING false winner submission."
+                          << "Possible  memory glitch or uninitialized read. BLOCKING false winner submission."
                           << std::endl;
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 continue;
