@@ -63,7 +63,7 @@ jobs:
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
-          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 224 -Xptxas -O3,-v ${GENCODES} \
+          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 160 -Xptxas -O3,-v ${GENCODES} \
             -Xcompiler -O3,-mavx2,-mbmi2,-madx \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl
           strip bin/build_cuda
