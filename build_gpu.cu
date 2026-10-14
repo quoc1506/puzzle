@@ -65,6 +65,7 @@ struct cudaDeviceProp { char name[256]; int major; int minor; int multiProcessor
 inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) { if (p) { p->multiProcessorCount = 40; } return 0; }
 inline cudaError_t cudaDeviceSetLimit(int, size_t) { return 0; }
 inline cudaError_t cudaDeviceSynchronize() { return 0; }
+inline cudaError_t cudaDeviceReset() { return 0; }
 inline cudaError_t cudaGetLastError() { return 0; }
 template<typename T> inline cudaError_t cudaMemcpyToSymbol(T& dst, const void* src, size_t count, size_t offset=0, int kind=0) {
     std::memcpy(((char*)&dst) + offset, src, count);
@@ -686,16 +687,16 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
+#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
 #define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
 #define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
-#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define UMult(r, a, b) do { \
     UMULLO((r)[0], (a)[0], b); \
@@ -1228,7 +1229,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 128
+#define BATCH_SIZE 256
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1317,16 +1318,28 @@ static const uint32_t K256_host[64] = {
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
-    uint64_t x3 = x.d[3], x2 = x.d[2], x1 = x.d[1], x0 = x.d[0];
-    w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x3 >> 40);
-    w[1] = (uint32_t)(x3 >> 8);
-    w[2] = ((uint32_t)x3 << 24) | (uint32_t)(x2 >> 40);
-    w[3] = (uint32_t)(x2 >> 8);
-    w[4] = ((uint32_t)x2 << 24) | (uint32_t)(x1 >> 40);
-    w[5] = (uint32_t)(x1 >> 8);
-    w[6] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
-    w[7] = (uint32_t)(x0 >> 8);
-    w[8] = ((uint32_t)x0 << 24) | 0x00800000U;
+    const uint32_t* x32 = (const uint32_t*)x.d;
+#if defined(__CUDA_ARCH__)
+    w[0] = ((uint32_t)prefix << 24) | (x32[7] >> 8);
+    w[1] = __funnelshift_r(x32[6], x32[7], 8);
+    w[2] = __funnelshift_r(x32[5], x32[6], 8);
+    w[3] = __funnelshift_r(x32[4], x32[5], 8);
+    w[4] = __funnelshift_r(x32[3], x32[4], 8);
+    w[5] = __funnelshift_r(x32[2], x32[3], 8);
+    w[6] = __funnelshift_r(x32[1], x32[2], 8);
+    w[7] = __funnelshift_r(x32[0], x32[1], 8);
+    w[8] = (x32[0] << 24) | 0x00800000U;
+#else
+    w[0] = ((uint32_t)prefix << 24) | (x32[7] >> 8);
+    w[1] = (x32[7] << 24) | (x32[6] >> 8);
+    w[2] = (x32[6] << 24) | (x32[5] >> 8);
+    w[3] = (x32[5] << 24) | (x32[4] >> 8);
+    w[4] = (x32[4] << 24) | (x32[3] >> 8);
+    w[5] = (x32[3] << 24) | (x32[2] >> 8);
+    w[6] = (x32[2] << 24) | (x32[1] >> 8);
+    w[7] = (x32[1] << 24) | (x32[0] >> 8);
+    w[8] = (x32[0] << 24) | 0x00800000U;
+#endif
     w[9] = 0;
     w[10] = 0;
     w[11] = 0;
@@ -1442,6 +1455,16 @@ CUDA_HOSTDEV CUDA_INLINE void btc_round(uint32_t& a, uint32_t b, uint32_t& c, ui
     c = btc_rol(c, 10);
 }
 
+CUDA_HOSTDEV CUDA_INLINE void btc_round_0(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t f, int r) {
+    a = btc_rol(a + f, r) + e;
+    c = btc_rol(c, 10);
+}
+
+CUDA_HOSTDEV CUDA_INLINE void btc_round_k(uint32_t& a, uint32_t b, uint32_t& c, uint32_t d, uint32_t e, uint32_t f, uint32_t k, int r) {
+    a = btc_rol(a + f + k, r) + e;
+    c = btc_rol(c, 10);
+}
+
 CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]) {
     uint32_t a1 = 0x67452301U, b1 = 0xEFCDAB89U, c1 = 0x98BADCFEU, d1 = 0x10325476U, e1 = 0xC3D2E1F0U;
     uint32_t a2 = a1, b2 = b1, c2 = c1, d2 = d1, e2 = e1;
@@ -1449,163 +1472,163 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), X[0], 0U, 11);
     btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), X[5], 0x50A28BE6U, 8);
     btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), X[1], 0U, 14);
-    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 256U, 0x50A28BE6U, 9);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0x50A28CE6U, 9);
     btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), X[2], 0U, 15);
     btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[7], 0x50A28BE6U, 9);
     btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), X[3], 0U, 12);
     btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), X[0], 0x50A28BE6U, 11);
     btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), X[4], 0U, 5);
-    btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), 0U, 0x50A28BE6U, 13);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), 0x50A28BE6U, 13);
     btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), X[5], 0U, 8);
     btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), X[2], 0x50A28BE6U, 15);
     btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), X[6], 0U, 7);
-    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0U, 0x50A28BE6U, 15);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0x50A28BE6U, 15);
     btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), X[7], 0U, 9);
     btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[4], 0x50A28BE6U, 5);
-    btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 0x00000080U, 0U, 11);
-    btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0U, 0x50A28BE6U, 7);
-    btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 0U, 0U, 13);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 0x00000080U, 11);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0x50A28BE6U, 7);
+    btc_round_0(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 13);
     btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), X[6], 0x50A28BE6U, 7);
-    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 0U, 0U, 14);
-    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0U, 0x50A28BE6U, 8);
-    btc_round(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), 0U, 0U, 15);
-    btc_round(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0x00000080U, 0x50A28BE6U, 11);
-    btc_round(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), 0U, 0U, 6);
+    btc_round_0(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 14);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0x50A28BE6U, 8);
+    btc_round_0(e1, a1, b1, c1, d1, btc_f1(a1, b1, c1), 15);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f5(a2, b2, c2), 0x50A28C66U, 11);
+    btc_round_0(d1, e1, a1, b1, c1, btc_f1(e1, a1, b1), 6);
     btc_round(d2, e2, a2, b2, c2, btc_f5(e2, a2, b2), X[1], 0x50A28BE6U, 14);
-    btc_round(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 0U, 0U, 7);
-    btc_round(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0U, 0x50A28BE6U, 14);
-    btc_round(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 256U, 0U, 9);
+    btc_round_0(c1, d1, e1, a1, b1, btc_f1(d1, e1, a1), 7);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f5(d2, e2, a2), 0x50A28BE6U, 14);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f1(c1, d1, e1), 0x00000100U, 9);
     btc_round(b2, c2, d2, e2, a2, btc_f5(c2, d2, e2), X[3], 0x50A28BE6U, 12);
-    btc_round(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 0U, 0U, 8);
-    btc_round(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0U, 0x50A28BE6U, 6);
+    btc_round_0(a1, b1, c1, d1, e1, btc_f1(b1, c1, d1), 8);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f5(b2, c2, d2), 0x50A28BE6U, 6);
     btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), X[7], 0x5A827999U, 7);
     btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), X[6], 0x5C4DD124U, 9);
     btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), X[4], 0x5A827999U, 6);
-    btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0U, 0x5C4DD124U, 13);
-    btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), 0U, 0x5A827999U, 8);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0x5C4DD124U, 13);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), 0x5A827999U, 8);
     btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), X[3], 0x5C4DD124U, 15);
     btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), X[1], 0x5A827999U, 13);
     btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), X[7], 0x5C4DD124U, 7);
-    btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0U, 0x5A827999U, 11);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0x5A827999U, 11);
     btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), X[0], 0x5C4DD124U, 12);
     btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), X[6], 0x5A827999U, 9);
-    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0U, 0x5C4DD124U, 8);
-    btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), 0U, 0x5A827999U, 7);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0x5C4DD124U, 8);
+    btc_round_k(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), 0x5A827999U, 7);
     btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), X[5], 0x5C4DD124U, 9);
     btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), X[3], 0x5A827999U, 15);
-    btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), 0U, 0x5C4DD124U, 11);
-    btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 0U, 0x5A827999U, 7);
-    btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 256U, 0x5C4DD124U, 7);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), 0x5C4DD124U, 11);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 0x5A827999U, 7);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 0x5C4DD224U, 7);
     btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), X[0], 0x5A827999U, 12);
-    btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), 0U, 0x5C4DD124U, 7);
-    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0U, 0x5A827999U, 15);
-    btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0x00000080U, 0x5C4DD124U, 12);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), 0x5C4DD124U, 7);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0x5A827999U, 15);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), 0x5C4DD1A4U, 12);
     btc_round(d1, e1, a1, b1, c1, btc_f2(e1, a1, b1), X[5], 0x5A827999U, 9);
-    btc_round(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0U, 0x5C4DD124U, 7);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f4(e2, a2, b2), 0x5C4DD124U, 7);
     btc_round(c1, d1, e1, a1, b1, btc_f2(d1, e1, a1), X[2], 0x5A827999U, 11);
     btc_round(c2, d2, e2, a2, b2, btc_f4(d2, e2, a2), X[4], 0x5C4DD124U, 6);
-    btc_round(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 256U, 0x5A827999U, 7);
-    btc_round(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 0U, 0x5C4DD124U, 15);
-    btc_round(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0U, 0x5A827999U, 13);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f2(c1, d1, e1), 0x5A827A99U, 7);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f4(c2, d2, e2), 0x5C4DD124U, 15);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f2(b1, c1, d1), 0x5A827999U, 13);
     btc_round(a2, b2, c2, d2, e2, btc_f4(b2, c2, d2), X[1], 0x5C4DD124U, 13);
-    btc_round(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0x00000080U, 0x5A827999U, 12);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f2(a1, b1, c1), 0x5A827A19U, 12);
     btc_round(e2, a2, b2, c2, d2, btc_f4(a2, b2, c2), X[2], 0x5C4DD124U, 11);
     btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), X[3], 0x6ED9EBA1U, 11);
-    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 9);
-    btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0U, 0x6ED9EBA1U, 13);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0x6D703EF3U, 9);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0x6ED9EBA1U, 13);
     btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[5], 0x6D703EF3U, 7);
-    btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 256U, 0x6ED9EBA1U, 6);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 0x6ED9ECA1U, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), X[1], 0x6D703EF3U, 15);
     btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), X[4], 0x6ED9EBA1U, 7);
     btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), X[3], 0x6D703EF3U, 11);
-    btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), 0U, 0x6ED9EBA1U, 14);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), 0x6ED9EBA1U, 14);
     btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), X[7], 0x6D703EF3U, 8);
-    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0U, 0x6ED9EBA1U, 9);
-    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 256U, 0x6D703EF3U, 6);
-    btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0x00000080U, 0x6ED9EBA1U, 13);
+    btc_round_k(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0x6ED9EBA1U, 9);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0x6D703FF3U, 6);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), 0x6ED9EC21U, 13);
     btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[6], 0x6D703EF3U, 6);
     btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), X[1], 0x6ED9EBA1U, 15);
-    btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0U, 0x6D703EF3U, 14);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0x6D703EF3U, 14);
     btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), X[2], 0x6ED9EBA1U, 14);
-    btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), 0U, 0x6D703EF3U, 12);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), 0x6D703EF3U, 12);
     btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), X[7], 0x6ED9EBA1U, 8);
-    btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), 0x00000080U, 0x6D703EF3U, 13);
+    btc_round_k(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), 0x6D703F73U, 13);
     btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), X[0], 0x6ED9EBA1U, 13);
-    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0x6D703EF3U, 5);
     btc_round(c1, d1, e1, a1, b1, btc_f3(d1, e1, a1), X[6], 0x6ED9EBA1U, 6);
     btc_round(c2, d2, e2, a2, b2, btc_f3(d2, e2, a2), X[2], 0x6D703EF3U, 14);
-    btc_round(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 0U, 0x6ED9EBA1U, 5);
-    btc_round(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0U, 0x6D703EF3U, 13);
-    btc_round(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), 0U, 0x6ED9EBA1U, 12);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f3(c1, d1, e1), 0x6ED9EBA1U, 5);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f3(c2, d2, e2), 0x6D703EF3U, 13);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f3(b1, c1, d1), 0x6ED9EBA1U, 12);
     btc_round(a2, b2, c2, d2, e2, btc_f3(b2, c2, d2), X[0], 0x6D703EF3U, 13);
     btc_round(e1, a1, b1, c1, d1, btc_f3(a1, b1, c1), X[5], 0x6ED9EBA1U, 7);
     btc_round(e2, a2, b2, c2, d2, btc_f3(a2, b2, c2), X[4], 0x6D703EF3U, 7);
-    btc_round(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0U, 0x6ED9EBA1U, 5);
-    btc_round(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0U, 0x6D703EF3U, 5);
+    btc_round_k(d1, e1, a1, b1, c1, btc_f3(e1, a1, b1), 0x6ED9EBA1U, 5);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f3(e2, a2, b2), 0x6D703EF3U, 5);
     btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[1], 0x8F1BBCDCU, 11);
-    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0x00000080U, 0x7A6D76E9U, 15);
-    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 12);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0x7A6D7769U, 15);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0x8F1BBCDCU, 12);
     btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), X[6], 0x7A6D76E9U, 5);
-    btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 0U, 0x8F1BBCDCU, 14);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 0x8F1BBCDCU, 14);
     btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), X[4], 0x7A6D76E9U, 8);
-    btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0U, 0x8F1BBCDCU, 15);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0x8F1BBCDCU, 15);
     btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[1], 0x7A6D76E9U, 11);
     btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[0], 0x8F1BBCDCU, 14);
     btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), X[3], 0x7A6D76E9U, 14);
-    btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), 0x00000080U, 0x8F1BBCDCU, 15);
-    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0U, 0x7A6D76E9U, 14);
-    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 9);
-    btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0U, 0x7A6D76E9U, 6);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), 0x8F1BBD5CU, 15);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0x7A6D76E9U, 14);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0x8F1BBCDCU, 9);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0x7A6D76E9U, 6);
     btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), X[4], 0x8F1BBCDCU, 8);
     btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), X[0], 0x7A6D76E9U, 14);
-    btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0U, 0x8F1BBCDCU, 9);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), 0x8F1BBCDCU, 9);
     btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[5], 0x7A6D76E9U, 6);
     btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[3], 0x8F1BBCDCU, 14);
-    btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0U, 0x7A6D76E9U, 9);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0x7A6D76E9U, 9);
     btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[7], 0x8F1BBCDCU, 5);
     btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), X[2], 0x7A6D76E9U, 12);
-    btc_round(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0U, 0x8F1BBCDCU, 6);
-    btc_round(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0U, 0x7A6D76E9U, 9);
-    btc_round(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 256U, 0x8F1BBCDCU, 8);
-    btc_round(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), 0U, 0x7A6D76E9U, 12);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f4(c1, d1, e1), 0x8F1BBCDCU, 6);
+    btc_round_k(b2, c2, d2, e2, a2, btc_f2(c2, d2, e2), 0x7A6D76E9U, 9);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f4(b1, c1, d1), 0x8F1BBDDCU, 8);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f2(b2, c2, d2), 0x7A6D76E9U, 12);
     btc_round(e1, a1, b1, c1, d1, btc_f4(a1, b1, c1), X[5], 0x8F1BBCDCU, 6);
     btc_round(e2, a2, b2, c2, d2, btc_f2(a2, b2, c2), X[7], 0x7A6D76E9U, 5);
     btc_round(d1, e1, a1, b1, c1, btc_f4(e1, a1, b1), X[6], 0x8F1BBCDCU, 5);
-    btc_round(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0U, 0x7A6D76E9U, 15);
+    btc_round_k(d2, e2, a2, b2, c2, btc_f2(e2, a2, b2), 0x7A6D76E9U, 15);
     btc_round(c1, d1, e1, a1, b1, btc_f4(d1, e1, a1), X[2], 0x8F1BBCDCU, 12);
-    btc_round(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 256U, 0x7A6D76E9U, 8);
+    btc_round_k(c2, d2, e2, a2, b2, btc_f2(d2, e2, a2), 0x7A6D77E9U, 8);
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), X[4], 0xA953FD4EU, 9);
-    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 8);
+    btc_round_0(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 8);
     btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), X[0], 0xA953FD4EU, 15);
-    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0U, 0U, 5);
+    btc_round_0(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 5);
     btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), X[5], 0xA953FD4EU, 5);
-    btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), 0U, 0U, 12);
-    btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 0U, 0xA953FD4EU, 11);
+    btc_round_0(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), 12);
+    btc_round_k(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 0xA953FD4EU, 11);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[4], 0U, 9);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), X[7], 0xA953FD4EU, 6);
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), X[1], 0U, 12);
-    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 8);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0xA953FD4EU, 8);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), X[5], 0U, 5);
     btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), X[2], 0xA953FD4EU, 13);
-    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0x00000080U, 0U, 14);
-    btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0U, 0xA953FD4EU, 12);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0x00000080U, 14);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0xA953FD4EU, 12);
     btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), X[7], 0U, 6);
-    btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 256U, 0xA953FD4EU, 5);
+    btc_round_k(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), 0xA953FE4EU, 5);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[6], 0U, 8);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), X[1], 0xA953FD4EU, 12);
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), X[2], 0U, 13);
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), X[3], 0xA953FD4EU, 13);
-    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 6);
-    btc_round(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), 0x00000080U, 0xA953FD4EU, 14);
-    btc_round(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 256U, 0U, 5);
-    btc_round(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0U, 0xA953FD4EU, 11);
+    btc_round_0(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 6);
+    btc_round_k(a1, b1, c1, d1, e1, btc_f5(b1, c1, d1), 0xA953FDCEU, 14);
+    btc_round_k(a2, b2, c2, d2, e2, btc_f1(b2, c2, d2), 0x00000100U, 5);
+    btc_round_k(e1, a1, b1, c1, d1, btc_f5(a1, b1, c1), 0xA953FD4EU, 11);
     btc_round(e2, a2, b2, c2, d2, btc_f1(a2, b2, c2), X[0], 0U, 15);
     btc_round(d1, e1, a1, b1, c1, btc_f5(e1, a1, b1), X[6], 0xA953FD4EU, 8);
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
-    btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
-    btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
-    btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
-    btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
+    btc_round_k(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0xA953FD4EU, 5);
+    btc_round_0(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 11);
+    btc_round_k(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0xA953FD4EU, 6);
+    btc_round_0(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 11);
 
     uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
     if ((s1 + c1 + d2) != target_w[0]) return false;
@@ -1632,8 +1655,8 @@ void cuda_scan_kernel(
     uint64_t total_chunk_keys,
     uint32_t grid_threads,
     uint32_t batches,
-    int* d_found_flag,
-    uint64_t* d_found_offset,
+    int* __restrict__ d_found_flag,
+    uint64_t* __restrict__ d_found_offset,
     uint32_t tw0, uint32_t tw1, uint32_t tw2, uint32_t tw3, uint32_t tw4
 ) {
     uint32_t tid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -1683,28 +1706,29 @@ void cuda_scan_kernel(
         // Only ONE inversion for BATCH_SIZE points
         Fe inv_all = fe_inv(prod[BATCH_SIZE - 1]);
 
-        // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
+        // Ultra-Pipelined Fused Backward Pass: ILP latency hiding & subtraction-based key progression
         AffinePoint next_cur_P;
+        uint64_t running_key_offset = batch_base_offset + (uint64_t)BATCH_SIZE * step_keys;
 
         #pragma unroll 1
         for (int i = BATCH_SIZE - 1; i >= 1; --i) {
-            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-            inv_all = fe_mul(inv_all, dx_i);
+            uint64_t key_offset = running_key_offset;
+            running_key_offset -= step_keys;
 
-            uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
+            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
+            Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
+            Fe lambda = fe_mul(dy_i, inv_dx_i);
+            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
+            inv_all = fe_mul(inv_all, dx_i); // Overlapped with EC point calculation
+
             if (key_offset < total_chunk_keys) {
-                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                Fe lambda = fe_mul(dy_i, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
                 if (i == (BATCH_SIZE - 1)) {
                     next_cur_P = AffinePoint{next_x, next_y};
                 }
-
                 uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(prefix, next_x, X);
@@ -1715,8 +1739,6 @@ void cuda_scan_kernel(
                     return;
                 }
             } else if (i == (BATCH_SIZE - 1)) {
-                Fe dy_last = fe_sub(dev_batch_G[BATCH_SIZE - 1].y, cur_P.y);
-                Fe lambda = fe_mul(dy_last, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
                 Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[BATCH_SIZE - 1].x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
@@ -1734,7 +1756,6 @@ void cuda_scan_kernel(
             Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
             Fe diff_x = fe_sub(cur_P.x, next_x);
             Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
             uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
             uint32_t X[8];
             fast_sha256_into_ripemd_X(prefix, next_x, X);
@@ -1745,7 +1766,6 @@ void cuda_scan_kernel(
                 return;
             }
         }
-
         cur_P = next_cur_P;
     }
 }
@@ -1870,6 +1890,8 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         std::cerr << "[FAIL] Unable to select CUDA device " << device_id << std::endl;
         return 1;
     }
+    // Allocate 16KB stack per thread for BATCH_SIZE 256 local product pipeline
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
@@ -2112,6 +2134,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "[CUDA CRITICAL ERROR] Failed to set device " << device_id << std::endl;
         return 1;
     }
+    // Allocate 16KB stack per thread for BATCH_SIZE 256 local product pipeline
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
@@ -2212,7 +2236,7 @@ int main(int argc, char* argv[]) {
         if (cpy_in1 != cudaSuccess || cpy_in2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
                       << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
-                      << "! Resetting CUDA context to prevent false submission." << std::endl;
+                      << "! Resetting device & skipping server submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2234,17 +2258,19 @@ int main(int argc, char* argv[]) {
         };
 
         auto t_start = std::chrono::high_resolution_clock::now();
+
         cuda_scan_kernel<<<num_blocks, block_size>>>(
             start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
             total_keys_count, grid_threads, batches,
             d_found_flag, d_found_offset,
             target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
         );
+
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
                       << cudaGetErrorString(err_launch) << " (" << (int)err_launch
-                      << ")! Aborting submit & reinitializing device." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2258,7 +2284,7 @@ int main(int argc, char* argv[]) {
         if (err_sync != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
                       << cudaGetErrorString(err_sync) << " (" << (int)err_sync
-                      << ")! Aborting submit & resetting device." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2269,12 +2295,13 @@ int main(int argc, char* argv[]) {
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
+
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] cudaMemcpy result failed: "
                       << cudaGetErrorString(err_cpy1 != cudaSuccess ? err_cpy1 : err_cpy2)
-                      << "! Aborting submit & resetting device." << std::endl;
+                      << "! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2285,18 +2312,24 @@ int main(int argc, char* argv[]) {
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.05) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
+        if (elapsed <= 0.010 || (double)total_keys_count / elapsed > 3500000000.0) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s) or impossible speed. Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
+
         double final_spd = (double)total_keys_count / elapsed;
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
+        ranges_completed += actual_multiple;
+        last_measured_speed = final_spd;
 
         std::cout << "\r[*]Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
+            if (h_offset >= total_keys_count) {
+                std::cerr << std::endl << "[CUDA ERROR TRAP] Found offset out of bounds! Rejecting false positive." << std::endl;
+                continue;
+            }
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
             u128 s_carry = (u128)found_limbs[0] + h_offset;
@@ -2315,7 +2348,6 @@ int main(int argc, char* argv[]) {
             uint32_t X_chk[8];
             fast_sha256_into_ripemd_X(pfx_chk, P_chk.x, X_chk);
             bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
-
             if (!verified_ok) {
                 std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
                 continue;
@@ -2328,21 +2360,35 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"0x" << priv_hex
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
             break;
-        } else {
+        } else if (h_flag == 0) {
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
+        } else {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Corrupted flag received (" << h_flag << ")! Aborting submit to prevent database corruption." << std::endl;
+            cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            continue;
         }
     }
 
