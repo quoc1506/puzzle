@@ -45,9 +45,6 @@
 #define CUDA_GLOBAL
 #define CUDA_INLINE inline
 #define CUDA_CONSTANT
-#ifndef __launch_bounds__
-#define __launch_bounds__(...)
-#endif
 struct uint3 { unsigned int x, y, z; };
 struct dim3 { unsigned int x, y, z; dim3(unsigned int _x=1, unsigned int _y=1, unsigned int _z=1): x(_x), y(_y), z(_z) {} };
 static uint3 threadIdx = {0,0,0};
@@ -526,26 +523,24 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
-    uint64_t borrow = 0;
-    asm volatile(
-        "sub.cc.u64 %0, %5, %9;\n\t"
-        "subc.cc.u64 %1, %6, %10;\n\t"
-        "subc.cc.u64 %2, %7, %11;\n\t"
-        "subc.cc.u64 %3, %8, %12;\n\t"
-        "subc.u64 %4, 0, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]), "=l"(borrow)
-        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
-          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
-    );
+    uint64_t brw, k_mask;
     const uint64_t K = 0x1000003D1ULL;
-    uint64_t sub_k = borrow ? K : 0ULL;
     asm volatile(
-        "sub.cc.u64 %0, %0, %4;\n\t"
+        "sub.cc.u64 %0, %6, %11;\n\t"
+        "subc.cc.u64 %1, %7, %12;\n\t"
+        "subc.cc.u64 %2, %8, %13;\n\t"
+        "subc.cc.u64 %3, %9, %14;\n\t"
+        "subc.u64 %4, 0, 0;\n\t"
+        "and.b64 %5, %4, %10;\n\t"
+        "sub.cc.u64 %0, %0, %5;\n\t"
         "subc.cc.u64 %1, %1, 0;\n\t"
         "subc.cc.u64 %2, %2, 0;\n\t"
         "subc.u64 %3, %3, 0;\n\t"
-        : "+l"(r.d[0]), "+l"(r.d[1]), "+l"(r.d[2]), "+l"(r.d[3])
-        : "l"(sub_k)
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]),
+          "=&l"(brw), "=&l"(k_mask)
+        : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
+          "l"(K),
+          "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
     return r;
 #elif (defined(__x86_64__) || defined(_M_X64))
@@ -686,18 +681,27 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
+#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
 #define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
 #define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
-#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define UMult(r, a, b) do {     UMULLO((r)[0], (a)[0], b);     UMULLO((r)[1], (a)[1], b);     MADDO((r)[1], (a)[0], b, (r)[1]);     UMULLO((r)[2], (a)[2], b);     MADDC((r)[2], (a)[1], b, (r)[2]);     UMULLO((r)[3], (a)[3], b);     MADDC((r)[3], (a)[2], b, (r)[3]);     MADD((r)[4], (a)[3], b, 0ULL); } while(0)
+#define UMult(r, a, b) do { \
+    UMULLO((r)[0], (a)[0], b); \
+    UMULLO((r)[1], (a)[1], b); \
+    MADDO((r)[1], (a)[0], b, (r)[1]); \
+    UMULLO((r)[2], (a)[2], b); \
+    MADDC((r)[2], (a)[1], b, (r)[2]); \
+    UMULLO((r)[3], (a)[3], b); \
+    MADDC((r)[3], (a)[2], b, (r)[3]); \
+    MADD((r)[4], (a)[3], b, 0ULL); \
+} while(0)
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
@@ -1110,8 +1114,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #endif
 }
 
-CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
-    for (int i = 0; i < n; ++i) {
+template<int N>
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a) {
+    #pragma unroll
+    for (int i = 0; i < N; ++i) {
         a = fe_sqr(a);
     }
     return a;
@@ -1120,20 +1126,20 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
     Fe x2 = fe_mul(fe_sqr(a), a);
     Fe x3 = fe_mul(fe_sqr(x2), a);
-    Fe x6 = fe_mul(fe_sqr_n(x3, 3), x3);
-    Fe x9 = fe_mul(fe_sqr_n(x6, 3), x3);
-    Fe x11 = fe_mul(fe_sqr_n(x9, 2), x2);
-    Fe x22 = fe_mul(fe_sqr_n(x11, 11), x11);
-    Fe x44 = fe_mul(fe_sqr_n(x22, 22), x22);
-    Fe x88 = fe_mul(fe_sqr_n(x44, 44), x44);
-    Fe x176 = fe_mul(fe_sqr_n(x88, 88), x88);
-    Fe x220 = fe_mul(fe_sqr_n(x176, 44), x44);
-    Fe x223 = fe_mul(fe_sqr_n(x220, 3), x3);
+    Fe x6 = fe_mul(fe_sqr_n<3>(x3), x3);
+    Fe x9 = fe_mul(fe_sqr_n<3>(x6), x3);
+    Fe x11 = fe_mul(fe_sqr_n<2>(x9), x2);
+    Fe x22 = fe_mul(fe_sqr_n<11>(x11), x11);
+    Fe x44 = fe_mul(fe_sqr_n<22>(x22), x22);
+    Fe x88 = fe_mul(fe_sqr_n<44>(x44), x44);
+    Fe x176 = fe_mul(fe_sqr_n<88>(x88), x88);
+    Fe x220 = fe_mul(fe_sqr_n<44>(x176), x44);
+    Fe x223 = fe_mul(fe_sqr_n<3>(x220), x3);
 
     // Exact Fermat addition chain for 2^256 - 2^32 - 979:
     Fe t1 = fe_sqr(x223);
-    Fe t2 = fe_mul(fe_sqr_n(t1, 22), x22);
-    Fe t3 = fe_sqr_n(t2, 10);
+    Fe t2 = fe_mul(fe_sqr_n<22>(t1), x22);
+    Fe t3 = fe_sqr_n<10>(t2);
 
     Fe a2 = fe_sqr(a);
     Fe a4 = fe_sqr(a2);
@@ -1219,8 +1225,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 128
-CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
+CUDA_CONSTANT AffinePoint dev_batch_G[64];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
@@ -1297,6 +1302,23 @@ CUDA_CONSTANT uint32_t K256[64] = {
 
 CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]) {
     uint32_t w[16];
+#if defined(__CUDA_ARCH__)
+    const uint32_t* x32 = (const uint32_t*)x.d;
+    uint32_t x3_lo = x32[6], x3_hi = x32[7];
+    uint32_t x2_lo = x32[4], x2_hi = x32[5];
+    uint32_t x1_lo = x32[2], x1_hi = x32[3];
+    uint32_t x0_lo = x32[0], x0_hi = x32[1];
+
+    w[0] = ((uint32_t)prefix << 24) | (x3_hi >> 8);
+    w[1] = __funnelshift_r(x3_lo, x3_hi, 8);
+    w[2] = __funnelshift_r(x2_hi, x3_lo, 8);
+    w[3] = __funnelshift_r(x2_lo, x2_hi, 8);
+    w[4] = __funnelshift_r(x1_hi, x2_lo, 8);
+    w[5] = __funnelshift_r(x1_lo, x1_hi, 8);
+    w[6] = __funnelshift_r(x0_hi, x1_lo, 8);
+    w[7] = __funnelshift_r(x0_lo, x0_hi, 8);
+    w[8] = (x0_lo << 24) | 0x00800000U;
+#else
     uint64_t x3 = x.d[3], x2 = x.d[2], x1 = x.d[1], x0 = x.d[0];
     w[0] = ((uint32_t)prefix << 24) | (uint32_t)(x3 >> 40);
     w[1] = (uint32_t)(x3 >> 8);
@@ -1307,6 +1329,7 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[6] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
     w[7] = (uint32_t)(x0 >> 8);
     w[8] = ((uint32_t)x0 << 24) | 0x00800000U;
+#endif
     w[9] = 0;
     w[10] = 0;
     w[11] = 0;
@@ -1315,11 +1338,19 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     w[14] = 0;
     w[15] = 0x00000108U;
 
-    uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
-    uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+    // Round 0: Constant folded (S1, ch, S0, maj precomputed)
+    uint32_t temp1_0 = 0xf377ed68U + w[0];
+    uint32_t a = temp1_0 + 0x08909ae5U;
+    uint32_t b = 0x6a09e667U;
+    uint32_t c = 0xbb67ae85U;
+    uint32_t d = 0x3c6ef372U;
+    uint32_t e = 0xa54ff53aU + temp1_0;
+    uint32_t f = 0x510e527fU;
+    uint32_t g = 0x9b05688cU;
+    uint32_t h = 0x1f83d9abU;
 
-    #pragma unroll 16
-    for (int i = 0; i < 16; ++i) {
+    #pragma unroll 8
+    for (int i = 1; i < 9; ++i) {
 #if defined(__CUDA_ARCH__)
         uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
@@ -1338,18 +1369,147 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
         d = c; c = b; b = a; a = temp1 + temp2;
     }
 
+    // Rounds 9 to 14: w[i] == 0 (zero addition eliminated)
+    #pragma unroll 6
+    for (int i = 9; i < 15; ++i) {
+#if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
+        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
+#else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+#endif
+        uint32_t temp1 = h + S1 + ch + K256[i];
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    // Round 15: w[15] == 0x00000108U (constant folded)
+    {
+#if defined(__CUDA_ARCH__)
+        uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
+        uint32_t ch = lop3_ch(e, f, g);
+        uint32_t maj = lop3_maj(a, b, c);
+        uint32_t S0 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
+#else
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+#endif
+        uint32_t temp1 = h + S1 + ch + (K256[15] + 0x00000108U);
+        uint32_t temp2 = S0 + maj;
+
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    // Rounds 16 to 63 with zero-folded constant-eliminated message schedule
     #pragma unroll 48
     for (int i = 16; i < 64; ++i) {
-        uint32_t w15 = w[(i - 15) & 15];
-        uint32_t w2 = w[(i - 2) & 15];
+        uint32_t wi;
+        if (i == 16) {
+            uint32_t w15 = w[1];
 #if defined(__CUDA_ARCH__)
-        uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
-        uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
 #else
-        uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
-        uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
 #endif
-        uint32_t wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+            wi = w[0] + s0;
+        } else if (i == 17) {
+            uint32_t w15 = w[2];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+#endif
+            wi = w[1] + s0 + 0x00A50000U;
+        } else if (i >= 18 && i <= 21) {
+            uint32_t w15 = w[(i - 15) & 15];
+            uint32_t w2 = w[(i - 2) & 15];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[(i - 16) & 15] + s0 + s1;
+        } else if (i == 22) {
+            uint32_t w15 = w[7];
+            uint32_t w2 = w[4];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[6] + s0 + 0x00000108U + s1;
+        } else if (i == 23) {
+            uint32_t w15 = w[8];
+            uint32_t w2 = w[5];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[7] + s0 + w[0] + s1;
+        } else if (i == 24) {
+            uint32_t w2 = w[6];
+#if defined(__CUDA_ARCH__)
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[8] + w[1] + s1;
+        } else if (i >= 25 && i <= 29) {
+            uint32_t w2 = w[(i - 2) & 15];
+#if defined(__CUDA_ARCH__)
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[(i - 7) & 15] + s1;
+        } else if (i == 30) {
+            uint32_t w2 = w[12];
+#if defined(__CUDA_ARCH__)
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = 0x10420023U + w[7] + s1;
+        } else if (i == 31) {
+            uint32_t w15 = w[0];
+            uint32_t w2 = w[13];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = 0x00000108U + s0 + w[8] + s1;
+        } else {
+            uint32_t w15 = w[(i - 15) & 15];
+            uint32_t w2 = w[(i - 2) & 15];
+#if defined(__CUDA_ARCH__)
+            uint32_t s0 = lop3_xor3(rotr32(w15, 7), rotr32(w15, 18), (w15 >> 3));
+            uint32_t s1 = lop3_xor3(rotr32(w2, 17), rotr32(w2, 19), (w2 >> 10));
+#else
+            uint32_t s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3);
+            uint32_t s1 = rotr32(w2, 17) ^ rotr32(w2, 19) ^ (w2 >> 10);
+#endif
+            wi = w[(i - 16) & 15] + s0 + w[(i - 7) & 15] + s1;
+        }
         w[i & 15] = wi;
 
 #if defined(__CUDA_ARCH__)
@@ -1643,41 +1803,48 @@ void cuda_scan_kernel(
     const uint64_t step_keys = (uint64_t)grid_threads;
 
     for (uint32_t b = 0; b < batches; ++b) {
+#if defined(__CUDA_ARCH__)
+        if ((b & 7) == 0 && __ldg(d_found_flag)) return;
+#else
         if (*d_found_flag) return;
+#endif
 
-        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * (uint64_t)BATCH_SIZE * step_keys;
+        uint64_t batch_base_offset = thread_start_offset + (uint64_t)b * 64ULL * step_keys;
         if (batch_base_offset >= total_chunk_keys) return;
 
-        // Forward pass: compute cumulative products across BATCH_SIZE points
-        Fe prod[BATCH_SIZE];
+        // Forward pass: compute cumulative products across 64 points
+        Fe prod[64];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
-        for (int i = 1; i < BATCH_SIZE; ++i) {
+        #pragma unroll 63
+        for (int i = 1; i < 64; ++i) {
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             prod[i] = fe_mul(prod[i - 1], dx_i);
         }
 
-        // Only ONE inversion for BATCH_SIZE points
-        Fe inv_all = fe_inv(prod[BATCH_SIZE - 1]);
+        // Only ONE inversion for 64 points
+        Fe inv_all = fe_inv(prod[63]);
 
         // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
+        // Eliminates writing/reading prod[i] array twice, drastically reducing local stack memory traffic and register pressure
         AffinePoint next_cur_P;
 
         #pragma unroll 1
-        for (int i = BATCH_SIZE - 1; i >= 1; --i) {
+        for (int i = 63; i >= 1; --i) {
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
+            AffinePoint Gi = dev_batch_G[i];
+            Fe dx_i = fe_sub(Gi.x, cur_P.x);
             inv_all = fe_mul(inv_all, dx_i);
 
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
-                Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
+                Fe dy_i = fe_sub(Gi.y, cur_P.y);
                 Fe lambda = fe_mul(dy_i, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), Gi.x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
-                if (i == (BATCH_SIZE - 1)) {
+                if (i == 63) {
                     next_cur_P = AffinePoint{next_x, next_y};
                 }
 
@@ -1690,11 +1857,11 @@ void cuda_scan_kernel(
                     }
                     return;
                 }
-            } else if (i == (BATCH_SIZE - 1)) {
-                Fe dy_last = fe_sub(dev_batch_G[BATCH_SIZE - 1].y, cur_P.y);
-                Fe lambda = fe_mul(dy_last, inv_dx_i);
+            } else if (i == 63) {
+                Fe dy_63 = fe_sub(Gi.y, cur_P.y);
+                Fe lambda = fe_mul(dy_63, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
-                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[BATCH_SIZE - 1].x);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), Gi.x);
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
                 next_cur_P = AffinePoint{next_x, next_y};
@@ -1704,10 +1871,11 @@ void cuda_scan_kernel(
         // Evaluate point 0 (inv_all is now inv_dx_0)
         uint64_t key_offset_0 = batch_base_offset + (uint64_t)1 * step_keys;
         if (key_offset_0 < total_chunk_keys) {
-            Fe dy_0 = fe_sub(dev_batch_G[0].y, cur_P.y);
+            AffinePoint G0 = dev_batch_G[0];
+            Fe dy_0 = fe_sub(G0.y, cur_P.y);
             Fe lambda = fe_mul(dy_0, inv_all);
             Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[0].x);
+            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), G0.x);
             Fe diff_x = fe_sub(cur_P.x, next_x);
             Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
@@ -1829,8 +1997,8 @@ inline void init_cuda_tables(uint32_t grid_threads) {
     }
     cudaMemcpyToSymbol(dev_G_table, h_table, sizeof(h_table));
 
-    AffinePoint h_batch_G[BATCH_SIZE];
-    for (int i = 0; i < BATCH_SIZE; ++i) {
+    AffinePoint h_batch_G[64];
+    for (int i = 0; i < 64; ++i) {
         uint64_t step_mult = (uint64_t)grid_threads * (uint64_t)(i + 1);
         uint64_t s[4] = { step_mult, 0, 0, 0 };
         h_batch_G[i] = scalar_mul_G(s);
@@ -1847,7 +2015,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // 700M+ Occupancy Tuning (Tesla T4 SM_75)
+    uint32_t num_blocks = sm_count * 16; // 700M+ Occupancy Tuning (Tesla T4 SM_75)
     if (num_blocks < 256) num_blocks = 256;
     if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
@@ -1922,7 +2090,7 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
+        uint64_t chunk_step = (uint64_t)grid_threads * 64ULL;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -1943,11 +2111,17 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaError_t err_launch = cudaGetLastError();
         cudaError_t err_sync = cudaDeviceSynchronize();
         auto t_scan_end = std::chrono::high_resolution_clock::now();
-        cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-        cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-        if (err_launch != cudaSuccess || err_sync != cudaSuccess || err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
+
+        cudaError_t err_d2h_1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaError_t err_d2h_2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+        if (err_launch != cudaSuccess || err_sync != cudaSuccess || err_d2h_1 != cudaSuccess || err_d2h_2 != cudaSuccess) {
+            cudaError_t err_fatal = (err_launch != cudaSuccess) ? err_launch :
+                                    (err_sync != cudaSuccess) ? err_sync :
+                                    (err_d2h_1 != cudaSuccess) ? err_d2h_1 : err_d2h_2;
+            std::cerr << "[CUDA ERROR] Target #" << pid << " execution/copy error: "
+                      << cudaGetErrorString(err_fatal) << "\n";
             failed++;
-            std::cerr << "[FAIL] Target #" << pid << " -> CUDA runtime error: " << cudaGetErrorString(err_sync != cudaSuccess ? err_sync : err_launch) << std::endl;
             continue;
         }
 
@@ -2059,7 +2233,7 @@ int main(int argc, char* argv[]) {
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
     uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // 700M+ Occupancy Tuning (Tesla T4 SM_75)
+    uint32_t num_blocks = sm_count * 16; // 700M+ Occupancy Tuning (Tesla T4 SM_75)
     if (num_blocks < 256) num_blocks = 256;
     if (num_blocks > 4096) num_blocks = 4096;
     uint32_t grid_threads = num_blocks * block_size;
@@ -2150,7 +2324,7 @@ int main(int argc, char* argv[]) {
         cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
-        uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
+        uint64_t chunk_step = (uint64_t)grid_threads * 64ULL;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
         if (batches == 0) batches = 1;
 
@@ -2169,26 +2343,22 @@ int main(int argc, char* argv[]) {
             target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
         );
         cudaError_t err_launch = cudaGetLastError();
-        if (err_launch != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel launch failed: " << cudaGetErrorString(err_launch) << " (" << (int)err_launch << ")! Skipping submission." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            continue;
-        }
-
         cudaError_t err_sync = cudaDeviceSynchronize();
-        if (err_sync != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel execution/sync failed: " << cudaGetErrorString(err_sync) << " (" << (int)err_sync << ")! Skipping submission." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            continue;
-        }
-
         auto t_end = std::chrono::high_resolution_clock::now();
-        cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
-        cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
-        if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] cudaMemcpy result failed! Skipping submission." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(2));
-            continue;
+
+        cudaError_t err_d2h_1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
+        cudaError_t err_d2h_2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+
+        // STOPS FALSE RESULTS ON CUDA ERRORS (Prevents database corruption)
+        if (err_launch != cudaSuccess || err_sync != cudaSuccess || err_d2h_1 != cudaSuccess || err_d2h_2 != cudaSuccess) {
+            cudaError_t err_fatal = (err_launch != cudaSuccess) ? err_launch :
+                                    (err_sync != cudaSuccess) ? err_sync :
+                                    (err_d2h_1 != cudaSuccess) ? err_d2h_1 : err_d2h_2;
+            std::cerr << "\n[CUDA FATAL ERROR] Kernel execution or memory transfer failed: "
+                      << cudaGetErrorString(err_fatal) << " (code: " << err_fatal << ")\n"
+                      << "[PROTECTION INTERCEPTOR] ABORTING range result submit! Server will NOT mark this range as 'done'.\n";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            break;
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
