@@ -400,7 +400,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t c0 = 0;
-    asm volatile(
+    asm(
         "add.cc.u64 %0, %5, %9;\n\t"
         "addc.cc.u64 %1, %6, %10;\n\t"
         "addc.cc.u64 %2, %7, %11;\n\t"
@@ -413,7 +413,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r_k;
     uint64_t c1 = 0;
     const uint64_t K = 0x1000003D1ULL;
-    asm volatile(
+    asm(
         "add.cc.u64 %0, %5, %9;\n\t"
         "addc.cc.u64 %1, %6, 0;\n\t"
         "addc.cc.u64 %2, %7, 0;\n\t"
@@ -527,7 +527,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t borrow = 0;
-    asm volatile(
+    asm(
         "sub.cc.u64 %0, %5, %9;\n\t"
         "subc.cc.u64 %1, %6, %10;\n\t"
         "subc.cc.u64 %2, %7, %11;\n\t"
@@ -539,7 +539,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     );
     const uint64_t K = 0x1000003D1ULL;
     uint64_t sub_k = borrow ? K : 0ULL;
-    asm volatile(
+    asm(
         "sub.cc.u64 %0, %0, %4;\n\t"
         "subc.cc.u64 %1, %1, 0;\n\t"
         "subc.cc.u64 %2, %2, 0;\n\t"
@@ -684,28 +684,37 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 
 // =========================================================================
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
+// Zero-Memory-Clobber Unbroken Carry Chains for Colab Tesla T4 sm_75
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
-#define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define UADDO(c, a, b) asm("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDC(c, a, b) asm("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADD(c, a, b) asm("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDO1(c, a) asm("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDC1(c, a) asm("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADD1(c, a) asm("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UMULLO(lo, a, b) asm("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
+#define UMULHI(hi, a, b) asm("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
+#define MADDO(r, a, b, c) asm("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDC(r, a, b, c) asm("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADD(r, a, b, c) asm("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+
 #define UMult(r, a, b) do { \
-    UMULLO((r)[0], (a)[0], b); \
-    UMULLO((r)[1], (a)[1], b); \
-    MADDO((r)[1], (a)[0], b, (r)[1]); \
-    UMULLO((r)[2], (a)[2], b); \
-    MADDC((r)[2], (a)[1], b, (r)[2]); \
-    UMULLO((r)[3], (a)[3], b); \
-    MADDC((r)[3], (a)[2], b, (r)[3]); \
-    MADD((r)[4], (a)[3], b, 0ULL); \
+    uint64_t _l0, _l1, _l2, _l3; \
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l0) : "l"((a)[0]), "l"(b)); \
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l1) : "l"((a)[1]), "l"(b)); \
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l2) : "l"((a)[2]), "l"(b)); \
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l3) : "l"((a)[3]), "l"(b)); \
+    (r)[0] = _l0; \
+    asm( \
+        "mad.hi.cc.u64 %0, %4, %8, %0;\n\t" \
+        "madc.hi.cc.u64 %1, %5, %8, %1;\n\t" \
+        "madc.hi.cc.u64 %2, %6, %8, %2;\n\t" \
+        "madc.hi.u64 %3, %7, %8, 0;\n\t" \
+        : "+l"(_l1), "+l"(_l2), "+l"(_l3), "=l"((r)[4]) \
+        : "l"((a)[0]), "l"((a)[1]), "l"((a)[2]), "l"((a)[3]), "l"(b) \
+    ); \
+    (r)[1] = _l1; (r)[2] = _l2; (r)[3] = _l3; \
 } while(0)
 #endif
 
@@ -718,46 +727,69 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     r512[6] = 0;
     r512[7] = 0;
 
-    // PTX Assembly Carry-Chain: 256x256-bit Big-Integer Multiplier (mul.lo + mad.hi carry-chain)
+    // PTX Assembly Carry-Chain: 256x256-bit Big-Integer Multiplier
     UMult(r512, a.d, b.d[0]);
+
     UMult(t, a.d, b.d[1]);
-    UADDO1(r512[1], t[0]);
-    UADDC1(r512[2], t[1]);
-    UADDC1(r512[3], t[2]);
-    UADDC1(r512[4], t[3]);
-    UADD1(r512[5], t[4]);
+    asm(
+        "add.cc.u64 %0, %0, %5;\n\t"
+        "addc.cc.u64 %1, %1, %6;\n\t"
+        "addc.cc.u64 %2, %2, %7;\n\t"
+        "addc.cc.u64 %3, %3, %8;\n\t"
+        "addc.u64 %4, %4, %9;\n\t"
+        : "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
 
     UMult(t, a.d, b.d[2]);
-    UADDO1(r512[2], t[0]);
-    UADDC1(r512[3], t[1]);
-    UADDC1(r512[4], t[2]);
-    UADDC1(r512[5], t[3]);
-    UADD1(r512[6], t[4]);
+    asm(
+        "add.cc.u64 %0, %0, %5;\n\t"
+        "addc.cc.u64 %1, %1, %6;\n\t"
+        "addc.cc.u64 %2, %2, %7;\n\t"
+        "addc.cc.u64 %3, %3, %8;\n\t"
+        "addc.u64 %4, %4, %9;\n\t"
+        : "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
 
     UMult(t, a.d, b.d[3]);
-    UADDO1(r512[3], t[0]);
-    UADDC1(r512[4], t[1]);
-    UADDC1(r512[5], t[2]);
-    UADDC1(r512[6], t[3]);
-    UADD1(r512[7], t[4]);
+    asm(
+        "add.cc.u64 %0, %0, %5;\n\t"
+        "addc.cc.u64 %1, %1, %6;\n\t"
+        "addc.cc.u64 %2, %2, %7;\n\t"
+        "addc.cc.u64 %3, %3, %8;\n\t"
+        "addc.u64 %4, %4, %9;\n\t"
+        : "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6]), "+l"(r512[7])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
+    );
 
     // Fast Secp256k1 Modular Reduction from 512 to 320 bits (K = 0x1000003D1)
     const uint64_t SECP_K = 0x1000003D1ULL;
     UMult(t, (r512 + 4), SECP_K);
-    UADDO1(r512[0], t[0]);
-    UADDC1(r512[1], t[1]);
-    UADDC1(r512[2], t[2]);
-    UADDC1(r512[3], t[3]);
+    asm(
+        "add.cc.u64 %0, %0, %4;\n\t"
+        "addc.cc.u64 %1, %1, %5;\n\t"
+        "addc.cc.u64 %2, %2, %6;\n\t"
+        "addc.cc.u64 %3, %3, %7;\n\t"
+        : "+l"(r512[0]), "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3])
+    );
 
     // Reduce from 320 to 256 bits
-    UADD1(t[4], 0ULL);
-    UMULLO(al, t[4], SECP_K);
-    UMULHI(ah, t[4], SECP_K);
+    uint64_t c_hi = 0;
+    asm("addc.u64 %0, %1, 0;" : "=l"(c_hi) : "l"(t[4]));
+    UMULLO(al, c_hi, SECP_K);
+    UMULHI(ah, c_hi, SECP_K);
     Fe r;
-    UADDO(r.d[0], r512[0], al);
-    UADDC(r.d[1], r512[1], ah);
-    UADDC(r.d[2], r512[2], 0ULL);
-    UADD(r.d[3], r512[3], 0ULL);
+    asm(
+        "add.cc.u64 %0, %4, %8;\n\t"
+        "addc.cc.u64 %1, %5, %9;\n\t"
+        "addc.cc.u64 %2, %6, 0;\n\t"
+        "addc.u64 %3, %7, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
+        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
+          "l"(al), "l"(ah)
+    );
 
     if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -769,7 +801,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     return r;
 #elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
-    uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
     u128 p = (u128)a0 * b0;
     uint64_t t0 = (uint64_t)p;
     u128 c = p >> 64;
@@ -824,18 +855,18 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     t7 = (uint64_t)(p >> 64);
 
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 prod0 = (u128)t4 * SECP_K + t0;
-    uint64_t r0 = (uint64_t)prod0;
-    u128 carry = prod0 >> 64;
-    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
-    uint64_t r1 = (uint64_t)prod1;
-    carry = prod1 >> 64;
-    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
-    uint64_t r2 = (uint64_t)prod2;
-    carry = prod2 >> 64;
-    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
-    uint64_t r3 = (uint64_t)prod3;
-    carry = prod3 >> 64;
+    u128 red = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)red;
+    c = red >> 64;
+    red = (u128)t5 * SECP_K + t1 + c;
+    uint64_t r1 = (uint64_t)red;
+    c = red >> 64;
+    red = (u128)t6 * SECP_K + t2 + c;
+    uint64_t r2 = (uint64_t)red;
+    c = red >> 64;
+    red = (u128)t7 * SECP_K + t3 + c;
+    uint64_t r3 = (uint64_t)red;
+    uint64_t carry = (uint64_t)(red >> 64);
 
 #if (defined(__x86_64__) || defined(_M_X64))
     u128 k_prod = (u128)carry * SECP_K;
@@ -975,30 +1006,32 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 
     // Fast Secp256k1 Modular Reduction from 512 to 320 bits
     const uint64_t SECP_K = 0x1000003D1ULL;
-    UMULLO(r0, r512[4], SECP_K);
-    UMULLO(r1, r512[5], SECP_K);
-    MADDO(r1, r512[4], SECP_K, r1);
-    UMULLO(t2, r512[6], SECP_K);
-    MADDC(t2, r512[5], SECP_K, t2);
-    UMULLO(r3, r512[7], SECP_K);
-    MADDC(r3, r512[6], SECP_K, r3);
-    MADD(r4, r512[7], SECP_K, 0ULL);
-
-    UADDO1(r512[0], r0);
-    UADDC1(r512[1], r1);
-    UADDC1(r512[2], t2);
-    UADDC1(r512[3], r3);
+    uint64_t t[5];
+    UMult(t, (r512 + 4), SECP_K);
+    asm(
+        "add.cc.u64 %0, %0, %4;\n\t"
+        "addc.cc.u64 %1, %1, %5;\n\t"
+        "addc.cc.u64 %2, %2, %6;\n\t"
+        "addc.cc.u64 %3, %3, %7;\n\t"
+        : "+l"(r512[0]), "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3])
+        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3])
+    );
 
     // Reduce from 320 to 256 bits
-    UADD1(r4, 0ULL);
-    UMULLO(u10, r4, SECP_K);
-    UMULHI(u11, r4, SECP_K);
+    uint64_t c_hi = 0;
+    asm("addc.u64 %0, %1, 0;" : "=l"(c_hi) : "l"(t[4]));
+    UMULLO(u10, c_hi, SECP_K);
+    UMULHI(u11, c_hi, SECP_K);
     Fe r;
-    UADDO(r.d[0], r512[0], u10);
-    UADDC(r.d[1], r512[1], u11);
-    UADDC(r.d[2], r512[2], 0ULL);
-    UADD(r.d[3], r512[3], 0ULL);
-
+    asm(
+        "add.cc.u64 %0, %4, %8;\n\t"
+        "addc.cc.u64 %1, %5, %9;\n\t"
+        "addc.cc.u64 %2, %6, 0;\n\t"
+        "addc.u64 %3, %7, 0;\n\t"
+        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
+        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
+          "l"(u10), "l"(u11)
+    );
     if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -1228,7 +1261,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 128
+#define BATCH_SIZE 32
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1626,7 +1659,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(128, 2)
+CUDA_GLOBAL __launch_bounds__(128, 4)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1673,59 +1706,27 @@ void cuda_scan_kernel(
         if (batch_base_offset >= total_chunk_keys) return;
 
         // Forward pass: compute cumulative products across BATCH_SIZE points
-        // Only prod[0 .. BATCH_SIZE - 2] need to be stored
-        Fe prod[BATCH_SIZE - 1];
+        Fe prod[BATCH_SIZE];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
-        for (int i = 1; i < BATCH_SIZE - 1; ++i) {
+        for (int i = 1; i < BATCH_SIZE; ++i) {
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             prod[i] = fe_mul(prod[i - 1], dx_i);
         }
-        Fe dx_last = fe_sub(dev_batch_G[BATCH_SIZE - 1].x, cur_P.x);
-        Fe prod_last = fe_mul(prod[BATCH_SIZE - 2], dx_last);
 
-        // Only ONE modular inversion for all 128 points in the batch
-        Fe inv_all = fe_inv(prod_last);
+        // Only ONE inversion for BATCH_SIZE points
+        Fe inv_all = fe_inv(prod[BATCH_SIZE - 1]);
 
-        // Peeled last iteration (i = BATCH_SIZE - 1): advances cur_P into next_cur_P cleanly with 0 branches
+        // Fused Backward Pass: computes individual inverses and immediately evaluates EC point + hashes
         AffinePoint next_cur_P;
-        {
-            const int i = BATCH_SIZE - 1;
-            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-            inv_all = fe_mul(inv_all, dx_last);
 
-            Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-            Fe lambda = fe_mul(dy_i, inv_dx_i);
-            Fe lambda_sq = fe_sqr(lambda);
-            Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
-            Fe diff_x = fe_sub(cur_P.x, next_x);
-            Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-            next_cur_P = AffinePoint{next_x, next_y};
+        #pragma unroll 1
+        for (int i = BATCH_SIZE - 1; i >= 1; --i) {
+            Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
+            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
+            inv_all = fe_mul(inv_all, dx_i);
 
             uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
             if (key_offset < total_chunk_keys) {
-                uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(prefix, next_x, X);
-                if (fast_ripemd160_32_check(X, tw)) {
-                    if (atomicExch(d_found_flag, 1) == 0) {
-                        *d_found_offset = key_offset;
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Backward Pass: evaluate remaining points from BATCH_SIZE - 2 down to 1
-        bool is_full_batch = (batch_base_offset + (uint64_t)BATCH_SIZE * step_keys <= total_chunk_keys);
-
-        if (is_full_batch) {
-            #pragma unroll 1
-            for (int i = BATCH_SIZE - 2; i >= 1; --i) {
-                Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-                Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-                inv_all = fe_mul(inv_all, dx_i);
-
-                uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
                 Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
                 Fe lambda = fe_mul(dy_i, inv_dx_i);
                 Fe lambda_sq = fe_sqr(lambda);
@@ -1733,6 +1734,10 @@ void cuda_scan_kernel(
                 Fe diff_x = fe_sub(cur_P.x, next_x);
                 Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
 
+                if (i == (BATCH_SIZE - 1)) {
+                    next_cur_P = AffinePoint{next_x, next_y};
+                }
+
                 uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(prefix, next_x, X);
@@ -1742,33 +1747,14 @@ void cuda_scan_kernel(
                     }
                     return;
                 }
-            }
-        } else {
-            #pragma unroll 1
-            for (int i = BATCH_SIZE - 2; i >= 1; --i) {
-                Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-                Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-                inv_all = fe_mul(inv_all, dx_i);
-
-                uint64_t key_offset = batch_base_offset + (uint64_t)(i + 1) * step_keys;
-                if (key_offset < total_chunk_keys) {
-                    Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx_i);
-                    Fe lambda_sq = fe_sqr(lambda);
-                    Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[i].x);
-                    Fe diff_x = fe_sub(cur_P.x, next_x);
-                    Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
-
-                    uint8_t prefix = (next_y.d[0] & 1) ? 0x03 : 0x02;
-                    uint32_t X[8];
-                    fast_sha256_into_ripemd_X(prefix, next_x, X);
-                    if (fast_ripemd160_32_check(X, tw)) {
-                        if (atomicExch(d_found_flag, 1) == 0) {
-                            *d_found_offset = key_offset;
-                        }
-                        return;
-                    }
-                }
+            } else if (i == (BATCH_SIZE - 1)) {
+                Fe dy_last = fe_sub(dev_batch_G[BATCH_SIZE - 1].y, cur_P.y);
+                Fe lambda = fe_mul(dy_last, inv_dx_i);
+                Fe lambda_sq = fe_sqr(lambda);
+                Fe next_x = fe_sub(fe_sub(lambda_sq, cur_P.x), dev_batch_G[BATCH_SIZE - 1].x);
+                Fe diff_x = fe_sub(cur_P.x, next_x);
+                Fe next_y = fe_sub(fe_mul(lambda, diff_x), cur_P.y);
+                next_cur_P = AffinePoint{next_x, next_y};
             }
         }
 
@@ -2179,7 +2165,6 @@ int main(int argc, char* argv[]) {
 
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
-    int consecutive_cuda_errors = 0;
     uint64_t single_range_size = 268435456ULL; // default 2^28 keys
 
     while (g_running.load()) {
@@ -2258,14 +2243,13 @@ int main(int argc, char* argv[]) {
         cudaError_t cpy_in1 = cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
         cudaError_t cpy_in2 = cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
         if (cpy_in1 != cudaSuccess || cpy_in2 != cudaSuccess) {
-            consecutive_cuda_errors++;
             std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
                       << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
                       << "! Skipping server submit to prevent false reporting." << std::endl;
-            if (consecutive_cuda_errors >= 3) {
-                std::cerr << "[FATAL] 3 consecutive CUDA device failures. Terminating process to protect server ranges." << std::endl;
-                exit(1);
-            }
+            cudaDeviceReset();
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2290,28 +2274,26 @@ int main(int argc, char* argv[]) {
         );
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
-            consecutive_cuda_errors++;
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
                       << cudaGetErrorString(err_launch) << " (" << (int)err_launch
                       << ")! Aborting submit." << std::endl;
-            if (consecutive_cuda_errors >= 3) {
-                std::cerr << "[FATAL] 3 consecutive CUDA launch failures. Terminating process." << std::endl;
-                exit(1);
-            }
+            cudaDeviceReset();
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         cudaError_t err_sync = cudaDeviceSynchronize();
         if (err_sync != cudaSuccess) {
-            consecutive_cuda_errors++;
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
                       << cudaGetErrorString(err_sync) << " (" << (int)err_sync
                       << ")! Aborting submit." << std::endl;
-            if (consecutive_cuda_errors >= 3) {
-                std::cerr << "[FATAL] 3 consecutive CUDA execution failures. Terminating process." << std::endl;
-                exit(1);
-            }
+            cudaDeviceReset();
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2320,44 +2302,54 @@ int main(int argc, char* argv[]) {
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
-            consecutive_cuda_errors++;
             std::cerr << std::endl << "[CUDA ERROR TRAP] cudaMemcpy result failed: "
                       << cudaGetErrorString(err_cpy1 != cudaSuccess ? err_cpy1 : err_cpy2)
                       << "! Aborting submit." << std::endl;
-            if (consecutive_cuda_errors >= 3) {
-                std::cerr << "[FATAL] 3 consecutive CUDA copy failures. Terminating process." << std::endl;
-                exit(1);
-            }
+            cudaDeviceReset();
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.05 || total_keys_count == 0) {
-            consecutive_cuda_errors++;
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s) or 0 keys. Aborting submit to prevent false reporting." << std::endl;
-            if (consecutive_cuda_errors >= 3) {
-                std::cerr << "[FATAL] 3 consecutive abnormal runs detected. Terminating process." << std::endl;
-                exit(1);
-            }
+        if (elapsed <= 0.005 || std::isnan(elapsed) || std::isinf(elapsed)) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
         double final_spd = (double)total_keys_count / elapsed;
-        if (final_spd > 4000.0 * 1e6) {
-            consecutive_cuda_errors++;
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Impossible speed reading (" << format_speed(final_spd) << "). Aborting submit to prevent false reporting." << std::endl;
+        if (std::isnan(final_spd) || std::isinf(final_spd) || final_spd <= 0.0 || final_spd > 10000000000.0) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal speed calculated. Aborting submit." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
 
-        // All checks passed cleanly: reset error counter
-        consecutive_cuda_errors = 0;
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
+        // Strict verification of flags: must be strictly 0 (no hit) or 1 (winner found)
+        if (h_flag != 0 && h_flag != 1) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Corrupted found_flag (" << h_flag << "). Aborting submit." << std::endl;
+            cudaDeviceReset();
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            init_cuda_tables(grid_threads);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+
+        ranges_completed += actual_multiple;
+        last_measured_speed = final_spd;
 
         std::cout << "\r[*]Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
+            if (h_offset >= total_keys_count) {
+                std::cerr << std::endl << "[CUDA ERROR TRAP] Found offset (" << h_offset
+                          << ") exceeds total keys count (" << total_keys_count << "). False positive rejected." << std::endl;
+                continue;
+            }
+
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
             u128 s_carry = (u128)found_limbs[0] + h_offset;
@@ -2395,7 +2387,7 @@ int main(int argc, char* argv[]) {
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
             break;
-        } else {
+        } else if (h_flag == 0) {
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
