@@ -801,6 +801,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     return r;
 #elif defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
+    uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
     u128 p = (u128)a0 * b0;
     uint64_t t0 = (uint64_t)p;
     u128 c = p >> 64;
@@ -1159,7 +1160,11 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
     return a;
 }
 
+#if defined(__CUDA_ARCH__)
+CUDA_DEV __noinline__ Fe fe_inv(const Fe& a) {
+#else
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
+#endif
     Fe x2 = fe_mul(fe_sqr(a), a);
     Fe x3 = fe_mul(fe_sqr(x2), a);
     Fe x6 = fe_mul(fe_sqr_n(x3, 3), x3);
@@ -1235,7 +1240,11 @@ CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_add_affine(const JacobianPoint& 
     return JacobianPoint{x3, y3, z3, false};
 }
 
+#if defined(__CUDA_ARCH__)
+CUDA_DEV __noinline__ AffinePoint jacobian_to_affine(const JacobianPoint& p) {
+#else
 CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& p) {
+#endif
     if (p.infinity) return AffinePoint{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}};
     Fe z_inv = fe_inv(p.z);
     Fe z_inv2 = fe_sqr(z_inv);
@@ -1264,7 +1273,7 @@ CUDA_CONSTANT AffinePoint dev_G_table[16];
 #define BATCH_SIZE 32
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
-CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
+CUDA_DEV __noinline__ AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
     JacobianPoint res{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
     for (int limb = 3; limb >= 0; --limb) {
@@ -1337,7 +1346,7 @@ CUDA_CONSTANT uint32_t K256[64] = {
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
-static const uint32_t K256_host[64] = {
+[[maybe_unused]] static const uint32_t K256_host[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
     0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
