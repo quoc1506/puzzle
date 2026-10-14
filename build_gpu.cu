@@ -522,26 +522,28 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
+#pragma nv_diag_suppress 550
     Fe r;
-    uint64_t brw, k_mask;
+    uint64_t brw;
     const uint64_t K = 0x1000003D1ULL;
     asm volatile(
-        "sub.cc.u64 %0, %6, %11;\n\t"
-        "subc.cc.u64 %1, %7, %12;\n\t"
-        "subc.cc.u64 %2, %8, %13;\n\t"
-        "subc.cc.u64 %3, %9, %14;\n\t"
+        "sub.cc.u64 %0, %5, %10;\n\t"
+        "subc.cc.u64 %1, %6, %11;\n\t"
+        "subc.cc.u64 %2, %7, %12;\n\t"
+        "subc.cc.u64 %3, %8, %13;\n\t"
         "subc.u64 %4, 0, 0;\n\t"
-        "and.b64 %5, %4, %10;\n\t"
-        "sub.cc.u64 %0, %0, %5;\n\t"
+        "and.b64 %4, %4, %9;\n\t"
+        "sub.cc.u64 %0, %0, %4;\n\t"
         "subc.cc.u64 %1, %1, 0;\n\t"
         "subc.cc.u64 %2, %2, 0;\n\t"
         "subc.u64 %3, %3, 0;\n\t"
         : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3]),
-          "=&l"(brw), "=&l"(k_mask)
+          "=l"(brw)
         : "l"(a.d[0]), "l"(a.d[1]), "l"(a.d[2]), "l"(a.d[3]),
           "l"(K),
           "l"(b.d[0]), "l"(b.d[1]), "l"(b.d[2]), "l"(b.d[3])
     );
+    (void)brw;
     return r;
 #elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
@@ -1349,8 +1351,27 @@ CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe
     uint32_t g = 0x9b05688cU;
     uint32_t h = 0x1f83d9abU;
 
-    #pragma unroll 8
-    for (int i = 1; i < 9; ++i) {
+    // Round 1: Constant folded (f, g, h, K256[1], b, c are compile-time constants)
+    {
+#if defined(__CUDA_ARCH__)
+        uint32_t S1_1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
+        uint32_t S0_1 = lop3_xor3(rotr32(a, 2), rotr32(a, 13), rotr32(a, 22));
+#else
+        uint32_t S1_1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t S0_1 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+#endif
+        uint32_t ch_1 = (e & 0xca0b3af3U) ^ 0x9b05688cU;
+        uint32_t maj_1 = (a & 0xd16e48e2U) ^ 0x2a01a605U;
+        uint32_t temp1_1 = S1_1 + ch_1 + 0x90bb1e3cU + w[1];
+        uint32_t temp2_1 = S0_1 + maj_1;
+
+        h = g; g = f; f = e; e = d + temp1_1;
+        d = c; c = b; b = a; a = temp1_1 + temp2_1;
+    }
+
+    // Rounds 2 to 8
+    #pragma unroll 7
+    for (int i = 2; i < 9; ++i) {
 #if defined(__CUDA_ARCH__)
         uint32_t S1 = lop3_xor3(rotr32(e, 6), rotr32(e, 11), rotr32(e, 25));
         uint32_t ch = lop3_ch(e, f, g);
