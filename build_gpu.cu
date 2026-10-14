@@ -686,16 +686,16 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
+#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
 #define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
 #define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
-#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define UMult(r, a, b) do { \
     UMULLO((r)[0], (a)[0], b); \
@@ -1228,7 +1228,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 128
+#define BATCH_SIZE 32
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1673,9 +1673,10 @@ void cuda_scan_kernel(
         if (batch_base_offset >= total_chunk_keys) return;
 
         // Forward pass: compute cumulative products across BATCH_SIZE points
-        // Only prod[0 .. BATCH_SIZE - 2] need to be stored for backward pass
+        // Only prod[0 .. BATCH_SIZE - 2] need to be stored for backward pass (31 items * 32 bytes = 992 bytes, 100% L1 cache fit)
         Fe prod[BATCH_SIZE - 1];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
+        #pragma unroll
         for (int i = 1; i < BATCH_SIZE - 1; ++i) {
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             prod[i] = fe_mul(prod[i - 1], dx_i);
@@ -1692,8 +1693,7 @@ void cuda_scan_kernel(
         {
             const int i = BATCH_SIZE - 1;
             Fe inv_dx_i = fe_mul(inv_all, prod[i - 1]);
-            Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
-            inv_all = fe_mul(inv_all, dx_i);
+            inv_all = fe_mul(inv_all, dx_last);
 
             Fe dy_i = fe_sub(dev_batch_G[i].y, cur_P.y);
             Fe lambda = fe_mul(dy_i, inv_dx_i);
@@ -2153,6 +2153,7 @@ int main(int argc, char* argv[]) {
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
     uint64_t single_range_size = 268435456ULL; // default 2^28 keys
+    int consecutive_cuda_errors = 0;
 
     while (g_running.load()) {
         if (!no_limit && ranges_completed >= max_ranges) {
@@ -2160,13 +2161,13 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // Dynamic multiple calculation: target submitting roughly every 30-40 seconds
-        // Initialize with 16 ranges (~4.3B keys) to immediately saturate GPU and eliminate HTTP network latency overhead
-        int req_multiple = 16;
+        // Dynamic multiple calculation: target submitting roughly every 15-20 seconds
+        // Initial multiple set to 8 ranges (~2.15B keys) to eliminate curl HTTP round-trip latency bottleneck
+        int req_multiple = 8;
         if (last_measured_speed > 0.0) {
-            double target_keys = last_measured_speed * 30.0;
+            double target_keys = last_measured_speed * 15.0;
             int calc = (int)std::round(target_keys / (double)single_range_size);
-            req_multiple = std::max(4, std::min(128, calc));
+            req_multiple = std::max(4, std::min(64, calc));
         }
 
         std::string req_url = api_base + "?action=range&user=" + user + "&multiple=" + std::to_string(req_multiple);
@@ -2234,6 +2235,11 @@ int main(int argc, char* argv[]) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
                       << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
                       << "! Skipping server submit to prevent false reporting." << std::endl;
+            consecutive_cuda_errors++;
+            if (consecutive_cuda_errors >= 3) {
+                std::cerr << "[CUDA CRITICAL ERROR] Persistent H2D transfer failure. Exiting worker to trigger clean restart." << std::endl;
+                exit(1);
+            }
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2260,7 +2266,12 @@ int main(int argc, char* argv[]) {
         if (err_launch != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
                       << cudaGetErrorString(err_launch) << " (" << (int)err_launch
-                      << ")! Aborting submit." << std::endl;
+                      << ")! Aborting submit to protect server range." << std::endl;
+            consecutive_cuda_errors++;
+            if (consecutive_cuda_errors >= 3) {
+                std::cerr << "[CUDA CRITICAL ERROR] Persistent kernel launch failure. Exiting worker cleanly." << std::endl;
+                exit(1);
+            }
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2269,7 +2280,12 @@ int main(int argc, char* argv[]) {
         if (err_sync != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
                       << cudaGetErrorString(err_sync) << " (" << (int)err_sync
-                      << ")! Aborting submit." << std::endl;
+                      << ")! Aborting submit to protect server range." << std::endl;
+            consecutive_cuda_errors++;
+            if (consecutive_cuda_errors >= 2) {
+                std::cerr << "[CUDA CRITICAL ERROR] Unrecoverable kernel error (" << cudaGetErrorString(err_sync) << "). Exiting worker." << std::endl;
+                exit(1);
+            }
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2286,12 +2302,33 @@ int main(int argc, char* argv[]) {
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.005) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        double min_expected_time = (double)total_keys_count / 3000000000.0; // Max theoretical throughput limit for single Tesla T4 (~3 Gkeys/s)
+        if (elapsed < min_expected_time || elapsed <= 0.005) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s) for "
+                      << total_keys_count << " keys! Skipping submit to prevent corrupting server range." << std::endl;
+            consecutive_cuda_errors++;
+            if (consecutive_cuda_errors >= 3) {
+                std::cerr << "[CUDA CRITICAL ERROR] Persistent timing anomaly detected. Terminating worker to trigger clean restart." << std::endl;
+                exit(1);
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
+
         double final_spd = (double)total_keys_count / elapsed;
+        if (final_spd > 2500000000.0) { // Physical upper limit sanity gate for Tesla T4
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Unrealistic speed reported (" << format_speed(final_spd)
+                      << ")! Aborting submit to protect server integrity." << std::endl;
+            consecutive_cuda_errors++;
+            if (consecutive_cuda_errors >= 3) {
+                std::cerr << "[CUDA CRITICAL ERROR] Persistent abnormal speed. Terminating worker." << std::endl;
+                exit(1);
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        consecutive_cuda_errors = 0; // Verified successful, genuine execution
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
         std::cout << "\r[*]Speed: " << format_speed(final_spd)
@@ -2318,7 +2355,7 @@ int main(int argc, char* argv[]) {
             bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
 
             if (!verified_ok) {
-                std::cerr << std::endl << "[CUDA  ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
+                std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
                 continue;
             }
 
