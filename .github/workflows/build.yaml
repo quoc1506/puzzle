@@ -2,13 +2,13 @@ name: Multiplatform Binary Build
 
 on:
   push:
-    branches: [ "main", "master", "testing" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
       - '.github/workflows/**'
   pull_request:
-    branches: [ "main", "master", "testing" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
   workflow_dispatch:
 
 jobs:
@@ -61,7 +61,7 @@ jobs:
           fi
           echo "Compiling CUDA GPU Solver from: ${SRC_FILE}"
 
-          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --maxrregcount 128 -Xptxas -O3,-v,-dlcm=ca ${GENCODES} \
+          nvcc ${CCBIN_ARG} --threads 0 -O3 -std=c++17 --use_fast_math --extra-device-vectorization -Xptxas -O3,-v,-dlcm=ca ${GENCODES} \
             -Xcompiler -O3,-mavx2,-mbmi2,-madx \
             -x cu ${SRC_FILE} -o bin/build_cuda -lcurl
           strip bin/build_cuda

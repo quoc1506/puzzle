@@ -65,6 +65,7 @@ struct cudaDeviceProp { char name[256]; int major; int minor; int multiProcessor
 inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) { if (p) { p->multiProcessorCount = 40; } return 0; }
 inline cudaError_t cudaDeviceSetLimit(int, size_t) { return 0; }
 inline cudaError_t cudaDeviceSynchronize() { return 0; }
+inline cudaError_t cudaDeviceReset() { return 0; }
 inline cudaError_t cudaGetLastError() { return 0; }
 template<typename T> inline cudaError_t cudaMemcpyToSymbol(T& dst, const void* src, size_t count, size_t offset=0, int kind=0) {
     std::memcpy(((char*)&dst) + offset, src, count);
@@ -400,7 +401,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t c0 = 0;
-    asm(
+    asm volatile(
         "add.cc.u64 %0, %5, %9;\n\t"
         "addc.cc.u64 %1, %6, %10;\n\t"
         "addc.cc.u64 %2, %7, %11;\n\t"
@@ -413,7 +414,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     Fe r_k;
     uint64_t c1 = 0;
     const uint64_t K = 0x1000003D1ULL;
-    asm(
+    asm volatile(
         "add.cc.u64 %0, %5, %9;\n\t"
         "addc.cc.u64 %1, %6, 0;\n\t"
         "addc.cc.u64 %2, %7, 0;\n\t"
@@ -527,7 +528,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t borrow = 0;
-    asm(
+    asm volatile(
         "sub.cc.u64 %0, %5, %9;\n\t"
         "subc.cc.u64 %1, %6, %10;\n\t"
         "subc.cc.u64 %2, %7, %11;\n\t"
@@ -539,7 +540,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     );
     const uint64_t K = 0x1000003D1ULL;
     uint64_t sub_k = borrow ? K : 0ULL;
-    asm(
+    asm volatile(
         "sub.cc.u64 %0, %0, %4;\n\t"
         "subc.cc.u64 %1, %1, 0;\n\t"
         "subc.cc.u64 %2, %2, 0;\n\t"
@@ -684,37 +685,28 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 
 // =========================================================================
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
-// Zero-Memory-Clobber Unbroken Carry Chains for Colab Tesla T4 sm_75
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDC(c, a, b) asm("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADD(c, a, b) asm("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UADDC1(c, a) asm("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UADD1(c, a) asm("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UMULLO(lo, a, b) asm("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
-#define UMULHI(hi, a, b) asm("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define MADDC(r, a, b, c) asm("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define MADD(r, a, b, c) asm("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-
+#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
+#define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
 #define UMult(r, a, b) do { \
-    uint64_t _l0, _l1, _l2, _l3; \
-    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l0) : "l"((a)[0]), "l"(b)); \
-    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l1) : "l"((a)[1]), "l"(b)); \
-    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l2) : "l"((a)[2]), "l"(b)); \
-    asm("mul.lo.u64 %0, %1, %2;" : "=l"(_l3) : "l"((a)[3]), "l"(b)); \
-    (r)[0] = _l0; \
-    asm( \
-        "mad.hi.cc.u64 %0, %4, %8, %0;\n\t" \
-        "madc.hi.cc.u64 %1, %5, %8, %1;\n\t" \
-        "madc.hi.cc.u64 %2, %6, %8, %2;\n\t" \
-        "madc.hi.u64 %3, %7, %8, 0;\n\t" \
-        : "+l"(_l1), "+l"(_l2), "+l"(_l3), "=l"((r)[4]) \
-        : "l"((a)[0]), "l"((a)[1]), "l"((a)[2]), "l"((a)[3]), "l"(b) \
-    ); \
-    (r)[1] = _l1; (r)[2] = _l2; (r)[3] = _l3; \
+    UMULLO((r)[0], (a)[0], b); \
+    UMULLO((r)[1], (a)[1], b); \
+    MADDO((r)[1], (a)[0], b, (r)[1]); \
+    UMULLO((r)[2], (a)[2], b); \
+    MADDC((r)[2], (a)[1], b, (r)[2]); \
+    UMULLO((r)[3], (a)[3], b); \
+    MADDC((r)[3], (a)[2], b, (r)[3]); \
+    MADD((r)[4], (a)[3], b, 0ULL); \
 } while(0)
 #endif
 
@@ -727,69 +719,46 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     r512[6] = 0;
     r512[7] = 0;
 
-    // PTX Assembly Carry-Chain: 256x256-bit Big-Integer Multiplier
+    // PTX Assembly Carry-Chain: 256x256-bit Big-Integer Multiplier (mul.lo + mad.hi carry-chain)
     UMult(r512, a.d, b.d[0]);
-
     UMult(t, a.d, b.d[1]);
-    asm(
-        "add.cc.u64 %0, %0, %5;\n\t"
-        "addc.cc.u64 %1, %1, %6;\n\t"
-        "addc.cc.u64 %2, %2, %7;\n\t"
-        "addc.cc.u64 %3, %3, %8;\n\t"
-        "addc.u64 %4, %4, %9;\n\t"
-        : "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5])
-        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
-    );
+    UADDO1(r512[1], t[0]);
+    UADDC1(r512[2], t[1]);
+    UADDC1(r512[3], t[2]);
+    UADDC1(r512[4], t[3]);
+    UADD1(r512[5], t[4]);
 
     UMult(t, a.d, b.d[2]);
-    asm(
-        "add.cc.u64 %0, %0, %5;\n\t"
-        "addc.cc.u64 %1, %1, %6;\n\t"
-        "addc.cc.u64 %2, %2, %7;\n\t"
-        "addc.cc.u64 %3, %3, %8;\n\t"
-        "addc.u64 %4, %4, %9;\n\t"
-        : "+l"(r512[2]), "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6])
-        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
-    );
+    UADDO1(r512[2], t[0]);
+    UADDC1(r512[3], t[1]);
+    UADDC1(r512[4], t[2]);
+    UADDC1(r512[5], t[3]);
+    UADD1(r512[6], t[4]);
 
     UMult(t, a.d, b.d[3]);
-    asm(
-        "add.cc.u64 %0, %0, %5;\n\t"
-        "addc.cc.u64 %1, %1, %6;\n\t"
-        "addc.cc.u64 %2, %2, %7;\n\t"
-        "addc.cc.u64 %3, %3, %8;\n\t"
-        "addc.u64 %4, %4, %9;\n\t"
-        : "+l"(r512[3]), "+l"(r512[4]), "+l"(r512[5]), "+l"(r512[6]), "+l"(r512[7])
-        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3]), "l"(t[4])
-    );
+    UADDO1(r512[3], t[0]);
+    UADDC1(r512[4], t[1]);
+    UADDC1(r512[5], t[2]);
+    UADDC1(r512[6], t[3]);
+    UADD1(r512[7], t[4]);
 
     // Fast Secp256k1 Modular Reduction from 512 to 320 bits (K = 0x1000003D1)
     const uint64_t SECP_K = 0x1000003D1ULL;
     UMult(t, (r512 + 4), SECP_K);
-    asm(
-        "add.cc.u64 %0, %0, %4;\n\t"
-        "addc.cc.u64 %1, %1, %5;\n\t"
-        "addc.cc.u64 %2, %2, %6;\n\t"
-        "addc.cc.u64 %3, %3, %7;\n\t"
-        : "+l"(r512[0]), "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3])
-        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3])
-    );
+    UADDO1(r512[0], t[0]);
+    UADDC1(r512[1], t[1]);
+    UADDC1(r512[2], t[2]);
+    UADDC1(r512[3], t[3]);
 
     // Reduce from 320 to 256 bits
-    uint64_t c_hi = 0;
-    asm("addc.u64 %0, %1, 0;" : "=l"(c_hi) : "l"(t[4]));
-    UMULLO(al, c_hi, SECP_K);
-    UMULHI(ah, c_hi, SECP_K);
+    UADD1(t[4], 0ULL);
+    UMULLO(al, t[4], SECP_K);
+    UMULHI(ah, t[4], SECP_K);
     Fe r;
-    asm(
-        "add.cc.u64 %0, %4, %8;\n\t"
-        "addc.cc.u64 %1, %5, %9;\n\t"
-        "addc.cc.u64 %2, %6, 0;\n\t"
-        "addc.u64 %3, %7, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
-        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
-          "l"(al), "l"(ah)
-    );
+    UADDO(r.d[0], r512[0], al);
+    UADDC(r.d[1], r512[1], ah);
+    UADDC(r.d[2], r512[2], 0ULL);
+    UADD(r.d[3], r512[3], 0ULL);
 
     if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -856,18 +825,18 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     t7 = (uint64_t)(p >> 64);
 
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 red = (u128)t4 * SECP_K + t0;
-    uint64_t r0 = (uint64_t)red;
-    c = red >> 64;
-    red = (u128)t5 * SECP_K + t1 + c;
-    uint64_t r1 = (uint64_t)red;
-    c = red >> 64;
-    red = (u128)t6 * SECP_K + t2 + c;
-    uint64_t r2 = (uint64_t)red;
-    c = red >> 64;
-    red = (u128)t7 * SECP_K + t3 + c;
-    uint64_t r3 = (uint64_t)red;
-    uint64_t carry = (uint64_t)(red >> 64);
+    u128 prod0 = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)prod0;
+    u128 carry = prod0 >> 64;
+    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
+    uint64_t r1 = (uint64_t)prod1;
+    carry = prod1 >> 64;
+    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
+    uint64_t r2 = (uint64_t)prod2;
+    carry = prod2 >> 64;
+    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
+    uint64_t r3 = (uint64_t)prod3;
+    carry = prod3 >> 64;
 
 #if (defined(__x86_64__) || defined(_M_X64))
     u128 k_prod = (u128)carry * SECP_K;
@@ -1007,32 +976,30 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 
     // Fast Secp256k1 Modular Reduction from 512 to 320 bits
     const uint64_t SECP_K = 0x1000003D1ULL;
-    uint64_t t[5];
-    UMult(t, (r512 + 4), SECP_K);
-    asm(
-        "add.cc.u64 %0, %0, %4;\n\t"
-        "addc.cc.u64 %1, %1, %5;\n\t"
-        "addc.cc.u64 %2, %2, %6;\n\t"
-        "addc.cc.u64 %3, %3, %7;\n\t"
-        : "+l"(r512[0]), "+l"(r512[1]), "+l"(r512[2]), "+l"(r512[3])
-        : "l"(t[0]), "l"(t[1]), "l"(t[2]), "l"(t[3])
-    );
+    UMULLO(r0, r512[4], SECP_K);
+    UMULLO(r1, r512[5], SECP_K);
+    MADDO(r1, r512[4], SECP_K, r1);
+    UMULLO(t2, r512[6], SECP_K);
+    MADDC(t2, r512[5], SECP_K, t2);
+    UMULLO(r3, r512[7], SECP_K);
+    MADDC(r3, r512[6], SECP_K, r3);
+    MADD(r4, r512[7], SECP_K, 0ULL);
+
+    UADDO1(r512[0], r0);
+    UADDC1(r512[1], r1);
+    UADDC1(r512[2], t2);
+    UADDC1(r512[3], r3);
 
     // Reduce from 320 to 256 bits
-    uint64_t c_hi = 0;
-    asm("addc.u64 %0, %1, 0;" : "=l"(c_hi) : "l"(t[4]));
-    UMULLO(u10, c_hi, SECP_K);
-    UMULHI(u11, c_hi, SECP_K);
+    UADD1(r4, 0ULL);
+    UMULLO(u10, r4, SECP_K);
+    UMULHI(u11, r4, SECP_K);
     Fe r;
-    asm(
-        "add.cc.u64 %0, %4, %8;\n\t"
-        "addc.cc.u64 %1, %5, %9;\n\t"
-        "addc.cc.u64 %2, %6, 0;\n\t"
-        "addc.u64 %3, %7, 0;\n\t"
-        : "=l"(r.d[0]), "=l"(r.d[1]), "=l"(r.d[2]), "=l"(r.d[3])
-        : "l"(r512[0]), "l"(r512[1]), "l"(r512[2]), "l"(r512[3]),
-          "l"(u10), "l"(u11)
-    );
+    UADDO(r.d[0], r512[0], u10);
+    UADDC(r.d[1], r512[1], u11);
+    UADDC(r.d[2], r512[2], 0ULL);
+    UADD(r.d[3], r512[3], 0ULL);
+
     if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
                          r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
@@ -1160,11 +1127,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
     return a;
 }
 
-#if defined(__CUDA_ARCH__)
-CUDA_DEV __noinline__ Fe fe_inv(const Fe& a) {
-#else
 CUDA_HOSTDEV CUDA_INLINE Fe fe_inv(const Fe& a) {
-#endif
     Fe x2 = fe_mul(fe_sqr(a), a);
     Fe x3 = fe_mul(fe_sqr(x2), a);
     Fe x6 = fe_mul(fe_sqr_n(x3, 3), x3);
@@ -1240,11 +1203,7 @@ CUDA_HOSTDEV CUDA_INLINE JacobianPoint jacobian_add_affine(const JacobianPoint& 
     return JacobianPoint{x3, y3, z3, false};
 }
 
-#if defined(__CUDA_ARCH__)
-CUDA_DEV __noinline__ AffinePoint jacobian_to_affine(const JacobianPoint& p) {
-#else
 CUDA_HOSTDEV CUDA_INLINE AffinePoint jacobian_to_affine(const JacobianPoint& p) {
-#endif
     if (p.infinity) return AffinePoint{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}};
     Fe z_inv = fe_inv(p.z);
     Fe z_inv2 = fe_sqr(z_inv);
@@ -1273,7 +1232,7 @@ CUDA_CONSTANT AffinePoint dev_G_table[16];
 #define BATCH_SIZE 32
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
-CUDA_DEV __noinline__ AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
+CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
     uint64_t limbs[4] = { s0, s1, s2, s3 };
     JacobianPoint res{Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, Fe{{0, 0, 0, 0}}, true};
     for (int limb = 3; limb >= 0; --limb) {
@@ -1346,7 +1305,7 @@ CUDA_CONSTANT uint32_t K256[64] = {
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
 
-[[maybe_unused]] static const uint32_t K256_host[64] = {
+static const uint32_t K256_host[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
     0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
@@ -1668,7 +1627,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(128, 4)
+CUDA_GLOBAL __launch_bounds__(256, 2)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1915,10 +1874,10 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
-    uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // Colab Tesla T4 SM_75 Tuning (1280 blocks, 163,840 threads)
-    if (num_blocks < 256) num_blocks = 256;
-    if (num_blocks > 2048) num_blocks = 2048;
+    uint32_t block_size = 256;
+    uint32_t num_blocks = sm_count * 8; // Colab Tesla T4 SM_75 Tuning (320 blocks = 81,920 threads)
+    if (num_blocks < 160) num_blocks = 160;
+    if (num_blocks > 1280) num_blocks = 1280;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -2157,10 +2116,10 @@ int main(int argc, char* argv[]) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
-    uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // Colab Tesla T4 SM_75 Architecture Tuning (1280 blocks, 163,840 threads)
-    if (num_blocks < 256) num_blocks = 256;
-    if (num_blocks > 2048) num_blocks = 2048;
+    uint32_t block_size = 256;
+    uint32_t num_blocks = sm_count * 8; // Colab Tesla T4 SM_75 Architecture Tuning (320 blocks = 81,920 threads)
+    if (num_blocks < 160) num_blocks = 160;
+    if (num_blocks > 1280) num_blocks = 1280;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -2254,11 +2213,12 @@ int main(int argc, char* argv[]) {
         if (cpy_in1 != cudaSuccess || cpy_in2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
                       << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
-                      << "! Skipping server submit to prevent false reporting." << std::endl;
+                      << "! Resetting device & skipping server submit." << std::endl;
             cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
             cudaMalloc(&d_found_flag, sizeof(int));
             cudaMalloc(&d_found_offset, sizeof(uint64_t));
-            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2275,21 +2235,24 @@ int main(int argc, char* argv[]) {
         };
 
         auto t_start = std::chrono::high_resolution_clock::now();
+
         cuda_scan_kernel<<<num_blocks, block_size>>>(
             start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
             total_keys_count, grid_threads, batches,
             d_found_flag, d_found_offset,
             target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
         );
+
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
                       << cudaGetErrorString(err_launch) << " (" << (int)err_launch
-                      << ")! Aborting submit." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
             cudaMalloc(&d_found_flag, sizeof(int));
             cudaMalloc(&d_found_offset, sizeof(uint64_t));
-            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2298,54 +2261,41 @@ int main(int argc, char* argv[]) {
         if (err_sync != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
                       << cudaGetErrorString(err_sync) << " (" << (int)err_sync
-                      << ")! Aborting submit." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
             cudaMalloc(&d_found_flag, sizeof(int));
             cudaMalloc(&d_found_offset, sizeof(uint64_t));
-            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
+
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] cudaMemcpy result failed: "
                       << cudaGetErrorString(err_cpy1 != cudaSuccess ? err_cpy1 : err_cpy2)
-                      << "! Aborting submit." << std::endl;
+                      << "! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
             cudaMalloc(&d_found_flag, sizeof(int));
             cudaMalloc(&d_found_offset, sizeof(uint64_t));
-            init_cuda_tables(grid_threads);
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.005 || std::isnan(elapsed) || std::isinf(elapsed)) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
+        if (elapsed <= 0.010 || (double)total_keys_count / elapsed > 3500000000.0) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s) or impossible speed. Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
+
         double final_spd = (double)total_keys_count / elapsed;
-        if (std::isnan(final_spd) || std::isinf(final_spd) || final_spd <= 0.0 || final_spd > 10000000000.0) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal speed calculated. Aborting submit." << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
-        // Strict verification of flags: must be strictly 0 (no hit) or 1 (winner found)
-        if (h_flag != 0 && h_flag != 1) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Corrupted found_flag (" << h_flag << "). Aborting submit." << std::endl;
-            cudaDeviceReset();
-            cudaMalloc(&d_found_flag, sizeof(int));
-            cudaMalloc(&d_found_offset, sizeof(uint64_t));
-            init_cuda_tables(grid_threads);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
-        }
-
         ranges_completed += actual_multiple;
         last_measured_speed = final_spd;
 
@@ -2354,11 +2304,9 @@ int main(int argc, char* argv[]) {
 
         if (h_flag == 1) {
             if (h_offset >= total_keys_count) {
-                std::cerr << std::endl << "[CUDA ERROR TRAP] Found offset (" << h_offset
-                          << ") exceeds total keys count (" << total_keys_count << "). False positive rejected." << std::endl;
+                std::cerr << std::endl << "[CUDA ERROR TRAP] Found offset out of bounds! Rejecting false positive." << std::endl;
                 continue;
             }
-
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
             u128 s_carry = (u128)found_limbs[0] + h_offset;
@@ -2377,7 +2325,6 @@ int main(int argc, char* argv[]) {
             uint32_t X_chk[8];
             fast_sha256_into_ripemd_X(pfx_chk, P_chk.x, X_chk);
             bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
-
             if (!verified_ok) {
                 std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
                 continue;
@@ -2390,9 +2337,12 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"0x" << priv_hex
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
             break;
@@ -2401,10 +2351,21 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
+        } else {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Corrupted flag received (" << h_flag << ")! Aborting submit to prevent database corruption." << std::endl;
+            cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            continue;
         }
     }
 
