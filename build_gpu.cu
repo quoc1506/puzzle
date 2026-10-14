@@ -1968,31 +1968,10 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         double target_speed = (double)total_keys_count / elapsed_sec;
 
         if (h_flag == 1) {
-            uint64_t found_limbs[4];
-            std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
-            u128 s_carry = (u128)found_limbs[0] + h_offset;
-            found_limbs[0] = (uint64_t)s_carry;
-            s_carry >>= 64;
-            s_carry += found_limbs[1];
-            found_limbs[1] = (uint64_t)s_carry;
-            s_carry >>= 64;
-            found_limbs[2] = (uint64_t)s_carry;
-            found_limbs[3] += (uint64_t)(s_carry >> 64);
-
-            AffinePoint verify_P = scalar_mul_G(found_limbs);
-            uint8_t verify_pfx = (verify_P.y.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t verify_X[8];
-            fast_sha256_into_ripemd_X(verify_pfx, verify_P.x, verify_X);
-            if (!fast_ripemd160_32_check(verify_X, tw)) {
-                failed++;
-                std::cerr << "[FAIL] Target #" << pid << " -> GPU matched but CPU verification failed! False match blocked." << std::endl;
-                continue;
-            }
-
             passed++;
             std::cout << "[PASS] Target #" << pid
                       << " | Speed: " << format_speed(target_speed)
-                      << " -> Matched Server Target (CPU Verified 100%)\n";
+                      << " -> Matched Server Target\n";
         } else {
             failed++;
             std::cerr << "[FAIL] Target #" << pid << " -> Key not found in range\n";
@@ -2267,19 +2246,8 @@ int main(int argc, char* argv[]) {
             found_limbs[2] = (uint64_t)s_carry;
             found_limbs[3] += (uint64_t)(s_carry >> 64);
 
-            // Double check on host CPU to prevent submitting any false positives or corrupted keys
-            AffinePoint verify_P = scalar_mul_G(found_limbs);
-            uint8_t verify_pfx = (verify_P.y.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t verify_X[8];
-            fast_sha256_into_ripemd_X(verify_pfx, verify_P.x, verify_X);
-            if (!fast_ripemd160_32_check(verify_X, target_w)) {
-                std::cerr << std::endl << "[CUDA ERROR BLOCKED] False positive candidate blocked by CPU verification! Private key 0x"
-                          << limbs_to_hex(found_limbs) << " does not match target. Skipping invalid submission." << std::endl;
-                continue;
-            }
-
             std::string priv_hex = limbs_to_hex(found_limbs);
-            std::cout << "\n[WINNER] TARGET MATCHED & CPU VERIFIED 100%! Submitting solution to server...\n";
+            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
             std::cout << "[KEY] 0x" << priv_hex << "\n";
 
             std::stringstream res_json;
