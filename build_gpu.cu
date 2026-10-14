@@ -2283,7 +2283,7 @@ int main(int argc, char* argv[]) {
             bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
 
             if (!verified_ok) {
-                std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
+                std::cerr << std::endl << "[CUDA  ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
                 continue;
             }
 
