@@ -65,6 +65,7 @@ struct cudaDeviceProp { char name[256]; int major; int minor; int multiProcessor
 inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) { if (p) { p->multiProcessorCount = 40; } return 0; }
 inline cudaError_t cudaDeviceSetLimit(int, size_t) { return 0; }
 inline cudaError_t cudaDeviceSynchronize() { return 0; }
+inline cudaError_t cudaDeviceReset() { return 0; }
 inline cudaError_t cudaGetLastError() { return 0; }
 template<typename T> inline cudaError_t cudaMemcpyToSymbol(T& dst, const void* src, size_t count, size_t offset=0, int kind=0) {
     std::memcpy(((char*)&dst) + offset, src, count);
@@ -1228,7 +1229,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 128
+#define BATCH_SIZE 256
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1604,16 +1605,11 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     btc_round(d2, e2, a2, b2, c2, btc_f1(e2, a2, b2), X[3], 0U, 13);
     btc_round(c1, d1, e1, a1, b1, btc_f5(d1, e1, a1), 0U, 0xA953FD4EU, 5);
     btc_round(c2, d2, e2, a2, b2, btc_f1(d2, e2, a2), 0U, 0U, 11);
-
-    // Early Hash Rejection: c1 and d2 are finalized after round 78!
-    // Discards 99.99999998% of candidate keys before final 2 rounds!
-    uint32_t s1 = 0xEFCDAB89U;
-    if ((s1 + c1 + d2) != target_w[0]) return false;
-
     btc_round(b1, c1, d1, e1, a1, btc_f5(c1, d1, e1), 0U, 0xA953FD4EU, 6);
     btc_round(b2, c2, d2, e2, a2, btc_f1(c2, d2, e2), 0U, 0U, 11);
 
-    uint32_t s0 = 0x67452301U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    uint32_t s0 = 0x67452301U, s1 = 0xEFCDAB89U, s2 = 0x98BADCFEU, s3 = 0x10325476U, s4 = 0xC3D2E1F0U;
+    if ((s1 + c1 + d2) != target_w[0]) return false;
     if ((s2 + d1 + e2) != target_w[1]) return false;
     if ((s3 + e1 + a2) != target_w[2]) return false;
     if ((s4 + a1 + b2) != target_w[3]) return false;
@@ -1875,6 +1871,8 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         std::cerr << "[FAIL] Unable to select CUDA device " << device_id << std::endl;
         return 1;
     }
+    // Allocate 16KB stack per thread for BATCH_SIZE 256 local product pipeline
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
@@ -2117,6 +2115,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "[CUDA CRITICAL ERROR] Failed to set device " << device_id << std::endl;
         return 1;
     }
+    // Allocate 16KB stack per thread for BATCH_SIZE 256 local product pipeline
+    cudaDeviceSetLimit(cudaLimitStackSize, 16384);
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
     uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
@@ -2217,7 +2217,7 @@ int main(int argc, char* argv[]) {
         if (cpy_in1 != cudaSuccess || cpy_in2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
                       << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
-                      << "! Resetting CUDA context to prevent false submission." << std::endl;
+                      << "! Resetting device & skipping server submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2239,17 +2239,19 @@ int main(int argc, char* argv[]) {
         };
 
         auto t_start = std::chrono::high_resolution_clock::now();
+
         cuda_scan_kernel<<<num_blocks, block_size>>>(
             start_limbs[0], start_limbs[1], start_limbs[2], start_limbs[3],
             total_keys_count, grid_threads, batches,
             d_found_flag, d_found_offset,
             target_w[0], target_w[1], target_w[2], target_w[3], target_w[4]
         );
+
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
                       << cudaGetErrorString(err_launch) << " (" << (int)err_launch
-                      << ")! Aborting submit & reinitializing device." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2263,7 +2265,7 @@ int main(int argc, char* argv[]) {
         if (err_sync != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
                       << cudaGetErrorString(err_sync) << " (" << (int)err_sync
-                      << ")! Aborting submit & resetting device." << std::endl;
+                      << ")! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2274,12 +2276,13 @@ int main(int argc, char* argv[]) {
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
+
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
             std::cerr << std::endl << "[CUDA ERROR TRAP] cudaMemcpy result failed: "
                       << cudaGetErrorString(err_cpy1 != cudaSuccess ? err_cpy1 : err_cpy2)
-                      << "! Aborting submit & resetting device." << std::endl;
+                      << "! Resetting device & aborting submit." << std::endl;
             cudaDeviceReset();
             cudaSetDevice(device_id);
             init_cuda_tables(grid_threads);
@@ -2290,18 +2293,24 @@ int main(int argc, char* argv[]) {
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.05) {
-            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
+        if (elapsed <= 0.010 || (double)total_keys_count / elapsed > 3500000000.0) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s) or impossible speed. Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
+
         double final_spd = (double)total_keys_count / elapsed;
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
+        ranges_completed += actual_multiple;
+        last_measured_speed = final_spd;
 
         std::cout << "\r[*]Speed: " << format_speed(final_spd)
                   << " | Done: " << ranges_completed << " ranges" << std::flush;
 
         if (h_flag == 1) {
+            if (h_offset >= total_keys_count) {
+                std::cerr << std::endl << "[CUDA ERROR TRAP] Found offset out of bounds! Rejecting false positive." << std::endl;
+                continue;
+            }
             uint64_t found_limbs[4];
             std::memcpy(found_limbs, start_limbs, sizeof(start_limbs));
             u128 s_carry = (u128)found_limbs[0] + h_offset;
@@ -2320,7 +2329,6 @@ int main(int argc, char* argv[]) {
             uint32_t X_chk[8];
             fast_sha256_into_ripemd_X(pfx_chk, P_chk.x, X_chk);
             bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
-
             if (!verified_ok) {
                 std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
                 continue;
@@ -2333,21 +2341,35 @@ int main(int argc, char* argv[]) {
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"found\",\"user\":\"" << user
                      << "\",\"private_key\":\"0x" << priv_hex
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
             break;
-        } else {
+        } else if (h_flag == 0) {
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple
+                     << ",\"multiple\":" << actual_multiple
+                     << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
+
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
+        } else {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Corrupted flag received (" << h_flag << ")! Aborting submit to prevent database corruption." << std::endl;
+            cudaDeviceReset();
+            cudaSetDevice(device_id);
+            init_cuda_tables(grid_threads);
+            cudaMalloc(&d_found_flag, sizeof(int));
+            cudaMalloc(&d_found_offset, sizeof(uint64_t));
+            continue;
         }
     }
 
