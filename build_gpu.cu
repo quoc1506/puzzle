@@ -686,18 +686,27 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_reduce(uint64_t t[8]) {
 // PTX Assembly Carry-Chain & Hardware Acceleration (Turing SM_75 / Tesla T4)
 // =========================================================================
 #if defined(__CUDA_ARCH__)
-#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
+#define UADDO(c, a, b) asm volatile ("add.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
+#define UADDC(c, a, b) asm volatile ("addc.cc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b) : "memory")
 #define UADD(c, a, b) asm volatile ("addc.u64 %0, %1, %2;" : "=l"(c) : "l"(a), "l"(b))
-#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
-#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
+#define UADDO1(c, a) asm volatile ("add.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
+#define UADDC1(c, a) asm volatile ("addc.cc.u64 %0, %0, %1;" : "+l"(c) : "l"(a) : "memory")
 #define UADD1(c, a) asm volatile ("addc.u64 %0, %0, %1;" : "+l"(c) : "l"(a))
 #define UMULLO(lo, a, b) asm volatile ("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b))
 #define UMULHI(hi, a, b) asm volatile ("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b))
-#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
+#define MADDO(r, a, b, c) asm volatile ("mad.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
+#define MADDC(r, a, b, c) asm volatile ("madc.hi.cc.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c) : "memory")
 #define MADD(r, a, b, c) asm volatile ("madc.hi.u64 %0, %1, %2, %3;" : "=l"(r) : "l"(a), "l"(b), "l"(c))
-#define UMult(r, a, b) do {     UMULLO((r)[0], (a)[0], b);     UMULLO((r)[1], (a)[1], b);     MADDO((r)[1], (a)[0], b, (r)[1]);     UMULLO((r)[2], (a)[2], b);     MADDC((r)[2], (a)[1], b, (r)[2]);     UMULLO((r)[3], (a)[3], b);     MADDC((r)[3], (a)[2], b, (r)[3]);     MADD((r)[4], (a)[3], b, 0ULL); } while(0)
+#define UMult(r, a, b) do { \
+    UMULLO((r)[0], (a)[0], b); \
+    UMULLO((r)[1], (a)[1], b); \
+    MADDO((r)[1], (a)[0], b, (r)[1]); \
+    UMULLO((r)[2], (a)[2], b); \
+    MADDC((r)[2], (a)[1], b, (r)[2]); \
+    UMULLO((r)[3], (a)[3], b); \
+    MADDC((r)[3], (a)[2], b, (r)[3]); \
+    MADD((r)[4], (a)[3], b, 0ULL); \
+} while(0)
 #endif
 
 CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
@@ -1219,7 +1228,7 @@ inline AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 CUDA_CONSTANT AffinePoint dev_G_table[16];
-#define BATCH_SIZE 32
+#define BATCH_SIZE 128
 CUDA_CONSTANT AffinePoint dev_batch_G[BATCH_SIZE];
 
 CUDA_DEV AffinePoint scalar_mul_G_windowed(uint64_t s0, uint64_t s1, uint64_t s2, uint64_t s3) {
@@ -1284,7 +1293,7 @@ CUDA_DEV CUDA_INLINE uint32_t lop3_xor3(uint32_t a, uint32_t b, uint32_t c) {
 }
 #endif
 
-CUDA_CONSTANT uint32_t K256[64] = {
+static const uint32_t K256[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
     0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
@@ -1602,7 +1611,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
 // 3. Hardware Funnelshift: Single-cycle __funnelshift_r/__funnelshift_l for SHA-256 and RIPEMD-160 rotates.
 // 4. Turing LOP3.B32 Acceleration: All boolean functions execute in 1 clock cycle.
 // ============================================================================
-CUDA_GLOBAL __launch_bounds__(128, 4)
+CUDA_GLOBAL __launch_bounds__(128, 2)
 void cuda_scan_kernel(
     uint64_t start_k0, uint64_t start_k1, uint64_t start_k2, uint64_t start_k3,
     uint64_t total_chunk_keys,
@@ -1651,6 +1660,7 @@ void cuda_scan_kernel(
         // Forward pass: compute cumulative products across BATCH_SIZE points
         Fe prod[BATCH_SIZE];
         prod[0] = fe_sub(dev_batch_G[0].x, cur_P.x);
+        #pragma unroll 4
         for (int i = 1; i < BATCH_SIZE; ++i) {
             Fe dx_i = fe_sub(dev_batch_G[i].x, cur_P.x);
             prod[i] = fe_mul(prod[i - 1], dx_i);
@@ -1842,14 +1852,17 @@ inline void init_cuda_tables(uint32_t grid_threads) {
 }
 
 int run_gpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int device_id = 0) {
-    cudaSetDevice(device_id);
+    if (cudaSetDevice(device_id) != cudaSuccess) {
+        std::cerr << "[FAIL] Unable to select CUDA device " << device_id << std::endl;
+        return 1;
+    }
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, device_id);
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // 700M+ Occupancy Tuning (Tesla T4 SM_75)
+    uint32_t num_blocks = sm_count * 32; // Colab Tesla T4 SM_75 Tuning (1280 blocks, 163,840 threads)
     if (num_blocks < 256) num_blocks = 256;
-    if (num_blocks > 4096) num_blocks = 4096;
+    if (num_blocks > 2048) num_blocks = 2048;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
@@ -1877,15 +1890,13 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
     auto t_global_start = std::chrono::high_resolution_clock::now();
 
     std::cout << "[VERIFY] Connecting to coordinator: " << api_base << "\n";
-    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << "...\n";
+    std::cout << "[VERIFY] Running CUDA GPU Verification on device " << device_id << " (Tesla T4 SM_75)...\n";
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
-    cudaError_t err_vm1 = cudaMalloc(&d_found_flag, sizeof(int));
-    cudaError_t err_vm2 = cudaMalloc(&d_found_offset, sizeof(uint64_t));
-    if (err_vm1 != cudaSuccess || err_vm2 != cudaSuccess || !d_found_flag || !d_found_offset) {
-        std::cerr << "[FAIL] cudaMalloc failed in run_gpu_verify: flag=" << cudaGetErrorString(err_vm1)
-                  << ", offset=" << cudaGetErrorString(err_vm2) << std::endl;
+    if (cudaMalloc(&d_found_flag, sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&d_found_offset, sizeof(uint64_t)) != cudaSuccess) {
+        std::cerr << "[FAIL] cudaMalloc memory allocation failed!" << std::endl;
         return 1;
     }
 
@@ -1924,14 +1935,9 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
 
         int h_flag = 0;
         uint64_t h_offset = 0;
-        cudaError_t err_vrst1 = cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
-        cudaError_t err_vrst2 = cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
-        if (err_vrst1 != cudaSuccess || err_vrst2 != cudaSuccess) {
-            failed++;
-            std::cerr << "[FAIL] Target #" << pid << " -> CUDA flag reset failed: " << cudaGetErrorString(err_vrst1 != cudaSuccess ? err_vrst1 : err_vrst2) << std::endl;
-            continue;
-        }
         cudaGetLastError();
+        cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
 
         uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
@@ -1958,7 +1964,9 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_launch != cudaSuccess || err_sync != cudaSuccess || err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
             failed++;
-            std::cerr << "[FAIL] Target #" << pid << " -> CUDA runtime error: " << cudaGetErrorString(err_sync != cudaSuccess ? err_sync : err_launch) << std::endl;
+            std::cerr << "[FAIL] Target #" << pid << " -> CUDA runtime error: "
+                      << cudaGetErrorString(err_sync != cudaSuccess ? err_sync : (err_launch != cudaSuccess ? err_launch : err_cpy1))
+                      << std::endl;
             continue;
         }
 
@@ -1968,10 +1976,32 @@ int run_gpu_verify(const std::string& api_base, const std::string& current_user 
         double target_speed = (double)total_keys_count / elapsed_sec;
 
         if (h_flag == 1) {
-            passed++;
-            std::cout << "[PASS] Target #" << pid
-                      << " | Speed: " << format_speed(target_speed)
-                      << " -> Matched Server Target\n";
+            // CPU Independent Verification
+            uint64_t f_limbs[4];
+            std::memcpy(f_limbs, start_limbs, sizeof(start_limbs));
+            u128 carry_add = (u128)f_limbs[0] + h_offset;
+            f_limbs[0] = (uint64_t)carry_add;
+            carry_add >>= 64;
+            carry_add += f_limbs[1];
+            f_limbs[1] = (uint64_t)carry_add;
+            carry_add >>= 64;
+            carry_add += f_limbs[2];
+            f_limbs[2] = (uint64_t)carry_add;
+            f_limbs[3] += (uint64_t)(carry_add >> 64);
+
+            AffinePoint pt_chk = scalar_mul_G(f_limbs);
+            uint8_t pfx_chk = (pt_chk.y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t X_chk[8];
+            fast_sha256_into_ripemd_X(pfx_chk, pt_chk.x, X_chk);
+            if (fast_ripemd160_32_check(X_chk, tw)) {
+                passed++;
+                std::cout << "[PASS] Target #" << pid
+                          << " | Speed: " << format_speed(target_speed)
+                          << " -> Matched & Verified Server Target\n";
+            } else {
+                failed++;
+                std::cerr << "[FAIL] Target #" << pid << " -> GPU match failed CPU re-verification!\n";
+            }
         } else {
             failed++;
             std::cerr << "[FAIL] Target #" << pid << " -> Key not found in range\n";
@@ -2062,41 +2092,29 @@ int main(int argc, char* argv[]) {
         return run_gpu_verify(api_base, user, verify_target, device_id);
     }
 
-        std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
-    
+    std::cout << "[WORKER] CUDA Device: " << device_id << " | Privacy: ON\n";
 
-    cudaError_t err_dev = cudaSetDevice(device_id);
-    if (err_dev != cudaSuccess) {
-        std::cerr << "[CUDA CRITICAL ERROR] cudaSetDevice(" << device_id << ") failed: "
-                  << cudaGetErrorString(err_dev) << " (" << (int)err_dev << ")\n";
+    if (cudaSetDevice(device_id) != cudaSuccess) {
+        std::cerr << "[CUDA CRITICAL ERROR] Failed to set device " << device_id << std::endl;
         return 1;
     }
     cudaDeviceProp prop;
-    cudaError_t err_prop = cudaGetDeviceProperties(&prop, device_id);
-    if (err_prop != cudaSuccess) {
-        std::cerr << "[CUDA CRITICAL ERROR] cudaGetDeviceProperties failed: "
-                  << cudaGetErrorString(err_prop) << "\n";
-        return 1;
-    }
-    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 32;
+    cudaGetDeviceProperties(&prop, device_id);
+    uint32_t sm_count = (prop.multiProcessorCount > 0) ? (uint32_t)prop.multiProcessorCount : 40;
     uint32_t block_size = 128;
-    uint32_t num_blocks = sm_count * 32; // 800M+ Occupancy Tuning (Tesla T4 SM_75)
+    uint32_t num_blocks = sm_count * 32; // Colab Tesla T4 SM_75 Architecture Tuning (1280 blocks, 163,840 threads)
     if (num_blocks < 256) num_blocks = 256;
-    if (num_blocks > 4096) num_blocks = 4096;
+    if (num_blocks > 2048) num_blocks = 2048;
     uint32_t grid_threads = num_blocks * block_size;
     init_cuda_tables(grid_threads);
 
     int* d_found_flag = nullptr;
     uint64_t* d_found_offset = nullptr;
-    cudaError_t err_m1 = cudaMalloc(&d_found_flag, sizeof(int));
-    cudaError_t err_m2 = cudaMalloc(&d_found_offset, sizeof(uint64_t));
-    if (err_m1 != cudaSuccess || err_m2 != cudaSuccess || !d_found_flag || !d_found_offset) {
-        std::cerr << "[CUDA CRITICAL ERROR] cudaMalloc failed: flag=" << cudaGetErrorString(err_m1)
-                  << ", offset=" << cudaGetErrorString(err_m2) << std::endl;
+    if (cudaMalloc(&d_found_flag, sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&d_found_offset, sizeof(uint64_t)) != cudaSuccess) {
+        std::cerr << "[CUDA CRITICAL ERROR] cudaMalloc failed on GPU! Terminating to prevent submission errors." << std::endl;
         return 1;
     }
-
-    
 
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
@@ -2146,7 +2164,7 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
-        if (str_start.empty() || str_target.empty()) {
+        if (str_start.empty() || str_target.empty() || str_block.empty() || str_range.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2173,16 +2191,17 @@ int main(int argc, char* argv[]) {
 
         int h_flag = 0;
         uint64_t h_offset = 0;
-        cudaError_t err_rst1 = cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
-        cudaError_t err_rst2 = cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
-        if (err_rst1 != cudaSuccess || err_rst2 != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Failed to reset device found flags: "
-                      << cudaGetErrorString(err_rst1 != cudaSuccess ? err_rst1 : err_rst2)
-                      << "! SKIPPING range submission to protect server." << std::endl;
+        // Strict Error Trap: Reset previous CUDA errors and verify H2D transfer
+        cudaGetLastError();
+        cudaError_t cpy_in1 = cudaMemcpy(d_found_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
+        cudaError_t cpy_in2 = cudaMemcpy(d_found_offset, &h_offset, sizeof(uint64_t), cudaMemcpyHostToDevice);
+        if (cpy_in1 != cudaSuccess || cpy_in2 != cudaSuccess) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Host-to-Device transfer failed: "
+                      << cudaGetErrorString(cpy_in1 != cudaSuccess ? cpy_in1 : cpy_in2)
+                      << "! Skipping server submit to prevent false reporting." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
-        cudaGetLastError(); // Clear stale CUDA errors before launch
 
         uint64_t chunk_step = (uint64_t)grid_threads * (uint64_t)BATCH_SIZE;
         uint32_t batches = (uint32_t)((total_keys_count + chunk_step - 1) / chunk_step);
@@ -2204,14 +2223,18 @@ int main(int argc, char* argv[]) {
         );
         cudaError_t err_launch = cudaGetLastError();
         if (err_launch != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel launch failed: " << cudaGetErrorString(err_launch) << " (" << (int)err_launch << ")! Skipping submission." << std::endl;
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel launch failed: "
+                      << cudaGetErrorString(err_launch) << " (" << (int)err_launch
+                      << ")! Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         cudaError_t err_sync = cudaDeviceSynchronize();
         if (err_sync != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] Kernel execution/sync failed: " << cudaGetErrorString(err_sync) << " (" << (int)err_sync << ")! Skipping submission." << std::endl;
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Kernel execution/sync failed: "
+                      << cudaGetErrorString(err_sync) << " (" << (int)err_sync
+                      << ")! Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2220,13 +2243,19 @@ int main(int argc, char* argv[]) {
         cudaError_t err_cpy1 = cudaMemcpy(&h_flag, d_found_flag, sizeof(int), cudaMemcpyDeviceToHost);
         cudaError_t err_cpy2 = cudaMemcpy(&h_offset, d_found_offset, sizeof(uint64_t), cudaMemcpyDeviceToHost);
         if (err_cpy1 != cudaSuccess || err_cpy2 != cudaSuccess) {
-            std::cerr << std::endl << "[CUDA CRITICAL ERROR] cudaMemcpy result failed! Skipping submission." << std::endl;
+            std::cerr << std::endl << "[CUDA ERROR TRAP] cudaMemcpy result failed: "
+                      << cudaGetErrorString(err_cpy1 != cudaSuccess ? err_cpy1 : err_cpy2)
+                      << "! Aborting submit." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        if (elapsed <= 0.0) elapsed = 0.0001;
+        if (elapsed <= 0.005) {
+            std::cerr << std::endl << "[CUDA ERROR TRAP] Abnormal execution time (" << elapsed << "s). Aborting submit." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
         double final_spd = (double)total_keys_count / elapsed;
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
@@ -2246,9 +2275,20 @@ int main(int argc, char* argv[]) {
             found_limbs[2] = (uint64_t)s_carry;
             found_limbs[3] += (uint64_t)(s_carry >> 64);
 
+            // Mandatory 100% CPU Re-verification Before Server Submission
+            AffinePoint P_chk = scalar_mul_G(found_limbs);
+            uint8_t pfx_chk = (P_chk.y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t X_chk[8];
+            fast_sha256_into_ripemd_X(pfx_chk, P_chk.x, X_chk);
+            bool verified_ok = fast_ripemd160_32_check(X_chk, target_w);
+
+            if (!verified_ok) {
+                std::cerr << std::endl << "[CUDA ERROR TRAP] False positive detected! CPU hash verification failed. Rejecting submission." << std::endl;
+                continue;
+            }
+
             std::string priv_hex = limbs_to_hex(found_limbs);
-            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
-            std::cout << "[KEY] 0x" << priv_hex << "\n";
+            std::cout << "\n[WINNER CONFIRMED] TARGET MATCHED & CPU VERIFIED! Submitting solution to server...\n";
 
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
