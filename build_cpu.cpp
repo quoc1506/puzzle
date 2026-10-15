@@ -1354,7 +1354,7 @@ inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
 // Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
     __m256i W[64];
-    uint32_t w_lanes[16][8];
+    uint32_t w_lanes[9][8];
     #pragma GCC unroll 8
     for (int lane = 0; lane < 8; ++lane) {
         uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
@@ -1367,19 +1367,20 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         w_lanes[6][lane] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
         w_lanes[7][lane] = (uint32_t)(x0 >> 8);
         w_lanes[8][lane] = ((uint32_t)x0 << 24) | 0x00800000U;
-        w_lanes[9][lane]  = 0;
-        w_lanes[10][lane] = 0;
-        w_lanes[11][lane] = 0;
-        w_lanes[12][lane] = 0;
-        w_lanes[13][lane] = 0;
-        w_lanes[14][lane] = 0;
-        w_lanes[15][lane] = 0x00000108U;
     }
 
-    #pragma GCC unroll 16
-    for (int j = 0; j < 16; ++j) {
+    #pragma GCC unroll 9
+    for (int j = 0; j < 9; ++j) {
         W[j] = _mm256_loadu_si256((const __m256i*)w_lanes[j]);
     }
+    __m256i v_zero = _mm256_setzero_si256();
+    W[9]  = v_zero;
+    W[10] = v_zero;
+    W[11] = v_zero;
+    W[12] = v_zero;
+    W[13] = v_zero;
+    W[14] = v_zero;
+    W[15] = _mm256_set1_epi32(0x00000108U);
 
     for (int i = 16; i < 64; ++i) {
         __m256i w15 = W[i - 15];
@@ -1400,6 +1401,12 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     };
 
+    __m256i WK[64];
+    #pragma GCC unroll 16
+    for (int i = 0; i < 64; ++i) {
+        WK[i] = _mm256_add_epi32(W[i], _mm256_set1_epi32(K256[i]));
+    }
+
     __m256i a = _mm256_set1_epi32(0x6a09e667), b = _mm256_set1_epi32(0xbb67ae85);
     __m256i c = _mm256_set1_epi32(0x3c6ef372), d = _mm256_set1_epi32(0xa54ff53a);
     __m256i e = _mm256_set1_epi32(0x510e527f), f = _mm256_set1_epi32(0x9b05688c);
@@ -1408,11 +1415,10 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     #pragma GCC unroll 16
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
-        __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-        __m256i k_val = _mm256_set1_epi32(K256[i]);
-        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
+        __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g)));
+        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, WK[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
-        __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
+        __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b)));
         __m256i temp2 = _mm256_add_epi32(S0, maj);
 
         h = g; g = f; f = e; e = _mm256_add_epi32(d, temp1);
@@ -1942,6 +1948,13 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
+#if defined(__linux__) && !defined(__ANDROID__)
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                unsigned int num_cores = std::thread::hardware_concurrency();
+                if (num_cores > 0) CPU_SET(t % num_cores, &cpuset);
+                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
                 scan_worker_montgomery(start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
@@ -2135,13 +2148,17 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
-        if (str_start.empty() || str_target.empty()) {
+        if (str_start.empty() || str_target.empty() || str_block.empty() || str_range.empty() || puzzle_id <= 0) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
         u256 start_k = parse_u256(str_start);
         u256 end_k = str_end.empty() ? (start_k + 268435456) : parse_u256(str_end);
+        if (end_k <= start_k) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
         u256 diff = end_k - start_k;
         uint64_t total_keys_count = (diff.high > 0) ? 268435456 : (uint64_t)diff.low;
         if (total_keys_count == 0) total_keys_count = 268435456;
@@ -2170,6 +2187,13 @@ int main(int argc, char* argv[]) {
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
+#if defined(__linux__) && !defined(__ANDROID__)
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                unsigned int num_cores = std::thread::hardware_concurrency();
+                if (num_cores > 0) CPU_SET(t % num_cores, &cpuset);
+                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
                 scan_worker_montgomery(start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
@@ -2201,10 +2225,31 @@ int main(int argc, char* argv[]) {
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
         double final_spd = (elapsed > 0) ? ((double)checked_counter.load() / elapsed) : 0;
 
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
+        uint64_t total_scanned = checked_counter.load();
 
         if (found_flag.load()) {
-            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
+            // Cryptographic Double-Check before submitting solution
+            bool key_verified = false;
+            {
+                uint64_t limbs[4] = {
+                    (uint64_t)found_key.low,
+                    (uint64_t)(found_key.low >> 64),
+                    (uint64_t)found_key.high,
+                    (uint64_t)(found_key.high >> 64)
+                };
+                AffinePoint pt = scalar_mul_G_windowed(limbs);
+                uint8_t pfx = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+                uint32_t X[8];
+                fast_sha256_into_ripemd_X(pfx, pt.x, X);
+                key_verified = fast_ripemd160_32_check(X, target_w);
+            }
+
+            if (!key_verified) {
+                std::cerr << "\n[CRITICAL SECURITY] Match double-check failed! Refusing to submit invalid key to server.\n";
+                break;
+            }
+
+            std::cout << "\n[WINNER] TARGET MATCHED & 100% CRYPTOGRAPHICALLY VERIFIED! Submitting solution to server...\n";
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
@@ -2216,6 +2261,17 @@ int main(int argc, char* argv[]) {
             http_post(api_base, res_json.str(), &ack);
             break;
         } else {
+            // Guard against submitting "done" when run was interrupted, aborted, or incomplete!
+            if (!g_running.load() || total_scanned < total_keys_count) {
+                std::cerr << "\n[ABORT] Scan interrupted or incomplete (" 
+                          << total_scanned << "/" << total_keys_count 
+                          << " keys checked). Server range status preserved (NOT marked done).\n";
+                break;
+            }
+
+            ranges_completed += actual_multiple;
+            last_measured_speed = final_spd;
+
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
