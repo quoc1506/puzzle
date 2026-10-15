@@ -86,7 +86,7 @@ case "$OS" in
                     fi
 
                     if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat"
+                        CANDIDATES="bin/build-linux-x86_64-fast bin/build-linux-x86_64 bin/build-linux-u22-x86_64-fast bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64-fast bin/build-linux-musl-x86_64 bin/build bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat"
                     else
                         CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     fi
