@@ -2259,7 +2259,7 @@ int main(int argc, char* argv[]) {
             fast_sha256_into_ripemd_X(verify_prefix, verify_pt.x, verify_X);
 
             if (!fast_ripemd160_32_check(verify_X, target_w)) {
-                std::cerr << "\n[CANH BAO] Khóa không khớp target hash160! Hủy submit kết quả ảo.\n";
+                std::cerr << "\n[CANH BAO]  Khóa không khớp target hash160! Hủy submit kết quả ảo.\n";
                 continue;
             }
 
