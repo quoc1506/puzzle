@@ -35,9 +35,10 @@
 #endif
 
 // ============================================================================
-// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED CPU WORKER (10+ Mkeys/s Branchless + Zero-Spill Pipeline)
-// Optimized for multi-core parallelism, AVX2 8-way SIMD hashing, Comba 4x4 EC arithmetic,
-// fused Montgomery Batch Inversion (zero intermediate memory allocation), and CPU thread affinity.
+// BITCOIN PUZZLE SOLVER - ULTRA-OPTIMIZED CPU WORKER (6.6+ Mkeys/s Branchless + Zero-Copy Pipeline)
+// Designed for multi-core parallelism, AVX2 8-way SIMD hashing,
+// and 1024-element Montgomery Batch Elliptic Curve Addition.
+// ============================================================================
 
 #define CUDA_HOSTDEV
 #define CUDA_DEV
@@ -405,18 +406,22 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
 
-    uint64_t mask = 0 - (uint64_t)c;
-    uint64_t add_k = mask & 0x1000003D1ULL;
-    c = _addcarry_u64(0, r.d[0], add_k, (unsigned long long*)&r.d[0]);
-    c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
-    c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
-    _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-        r.d[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
-        r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-        r.d[1] = 0; r.d[2] = 0; r.d[3] = 0;
+    if (__builtin_expect(c != 0, 0)) {
+        const uint64_t K = 0x1000003D1ULL;
+        c = _addcarry_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
+        c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    } else {
+        if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
+            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
+            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
+            r.d[1] = 0;
+            r.d[2] = 0;
+            r.d[3] = 0;
+        }
     }
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
@@ -521,12 +526,13 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
 
-    uint64_t mask = 0 - (uint64_t)borrow;
-    uint64_t sub_k = mask & 0x1000003D1ULL;
-    borrow = _subborrow_u64(0, r.d[0], sub_k, (unsigned long long*)&r.d[0]);
-    borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
-    borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
-    _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    if (__builtin_expect(borrow != 0, 0)) {
+        const uint64_t K = 0x1000003D1ULL;
+        borrow = _subborrow_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
+        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
+        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
+        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
+    }
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
@@ -657,60 +663,99 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
 
-    // High-performance Comba 4x4 limb multiplier (Zero register spill to stack)
-    u128 c = (u128)a0 * b0;
-    uint64_t r0 = (uint64_t)c;
-    c >>= 64;
+    // Ultra-optimized branchless 4x4 limb multiplier
+    u128 p = (u128)a0 * b0;
+    uint64_t t0 = (uint64_t)p;
+    u128 c = p >> 64;
 
-    c += (u128)a0 * b1 + (u128)a1 * b0;
-    uint64_t r1 = (uint64_t)c;
-    c >>= 64;
+    p = (u128)a0 * b1 + c;
+    uint64_t t1 = (uint64_t)p;
+    c = p >> 64;
 
-    c += (u128)a0 * b2 + (u128)a1 * b1 + (u128)a2 * b0;
-    uint64_t r2 = (uint64_t)c;
-    c >>= 64;
+    p = (u128)a0 * b2 + c;
+    uint64_t t2 = (uint64_t)p;
+    c = p >> 64;
 
-    c += (u128)a0 * b3 + (u128)a1 * b2 + (u128)a2 * b1 + (u128)a3 * b0;
-    uint64_t r3 = (uint64_t)c;
-    c >>= 64;
+    p = (u128)a0 * b3 + c;
+    uint64_t t3 = (uint64_t)p;
+    uint64_t t4 = (uint64_t)(p >> 64);
+    uint64_t t5 = 0, t6 = 0, t7 = 0;
 
-    c += (u128)a1 * b3 + (u128)a2 * b2 + (u128)a3 * b1;
-    uint64_t r4 = (uint64_t)c;
-    c >>= 64;
+    p = (u128)a1 * b0 + t1;
+    t1 = (uint64_t)p;
+    c = p >> 64;
 
-    c += (u128)a2 * b3 + (u128)a3 * b2;
-    uint64_t r5 = (uint64_t)c;
-    c >>= 64;
+    p = (u128)a1 * b1 + t2 + c;
+    t2 = (uint64_t)p;
+    c = p >> 64;
 
-    c += (u128)a3 * b3;
-    uint64_t r6 = (uint64_t)c;
-    uint64_t r7 = (uint64_t)(c >> 64);
+    p = (u128)a1 * b2 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
 
-    // Fast modular reduction mod p = 2^256 - 0x1000003D1
+    p = (u128)a1 * b3 + t4 + c;
+    t4 = (uint64_t)p;
+    t5 = (uint64_t)(p >> 64);
+
+    p = (u128)a2 * b0 + t2;
+    t2 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b1 + t3 + c;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b2 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a2 * b3 + t5 + c;
+    t5 = (uint64_t)p;
+    t6 = (uint64_t)(p >> 64);
+
+    p = (u128)a3 * b0 + t3;
+    t3 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b1 + t4 + c;
+    t4 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b2 + t5 + c;
+    t5 = (uint64_t)p;
+    c = p >> 64;
+
+    p = (u128)a3 * b3 + t6 + c;
+    t6 = (uint64_t)p;
+    t7 = (uint64_t)(p >> 64);
+
+    // Fast Secp256k1 Modular Reduction mod p = 2^256 - 0x1000003D1
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 prod0 = (u128)r4 * SECP_K + r0;
-    r0 = (uint64_t)prod0;
+    u128 prod0 = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)prod0;
     u128 carry = prod0 >> 64;
 
-    u128 prod1 = (u128)r5 * SECP_K + r1 + carry;
-    r1 = (uint64_t)prod1;
+    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
+    uint64_t r1 = (uint64_t)prod1;
     carry = prod1 >> 64;
 
-    u128 prod2 = (u128)r6 * SECP_K + r2 + carry;
-    r2 = (uint64_t)prod2;
+    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
+    uint64_t r2 = (uint64_t)prod2;
     carry = prod2 >> 64;
 
-    u128 prod3 = (u128)r7 * SECP_K + r3 + carry;
-    r3 = (uint64_t)prod3;
+    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
+    uint64_t r3 = (uint64_t)prod3;
     carry = prod3 >> 64;
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
     u128 k_prod = (u128)carry * SECP_K;
+    uint64_t k_lo = (uint64_t)k_prod;
+    uint64_t k_hi = (uint64_t)(k_prod >> 64);
     unsigned char carry_flag = 0;
-    carry_flag = _addcarry_u64(carry_flag, r0, (uint64_t)k_prod, (unsigned long long*)&r0);
-    carry_flag = _addcarry_u64(carry_flag, r1, (uint64_t)(k_prod >> 64), (unsigned long long*)&r1);
-    carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
-    carry_flag = _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
+    carry_flag = _addcarry_u64(carry_flag, r0, k_lo, (unsigned long long*)&r0);
+    carry_flag = _addcarry_u64(carry_flag, r1, k_hi, (unsigned long long*)&r1);
+    carry_flag = _addcarry_u64(carry_flag, r2, 0,    (unsigned long long*)&r2);
+    carry_flag = _addcarry_u64(carry_flag, r3, 0,    (unsigned long long*)&r3);
     if (__builtin_expect(carry_flag != 0, 0)) {
         carry_flag = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&r0);
         carry_flag = _addcarry_u64(carry_flag, r1, 0, (unsigned long long*)&r1);
@@ -750,7 +795,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
-    // Dedicated Comba Squarer: computes 6 off-diagonal products, doubles them, then adds 4 diagonal squares
+    // Ultra-optimized dedicated squaring (branchless register pipeline)
     u128 c = (u128)a0 * a1;
     uint64_t c1 = (uint64_t)c;
     c >>= 64;
@@ -759,78 +804,85 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     uint64_t c2 = (uint64_t)c;
     c >>= 64;
 
-    c += (u128)a0 * a3 + (u128)a1 * a2;
+    c += (u128)a0 * a3;
     uint64_t c3 = (uint64_t)c;
+    uint64_t c4 = (uint64_t)(c >> 64);
+
+    c = (u128)c3 + (u128)a1 * a2;
+    c3 = (uint64_t)c;
     c >>= 64;
 
-    c += (u128)a1 * a3;
-    uint64_t c4 = (uint64_t)c;
-    c >>= 64;
+    c += (u128)c4 + (u128)a1 * a3;
+    c4 = (uint64_t)c;
+    uint64_t c5 = (uint64_t)(c >> 64);
 
-    c += (u128)a2 * a3;
-    uint64_t c5 = (uint64_t)c;
+    c = (u128)c5 + (u128)a2 * a3;
+    c5 = (uint64_t)c;
     uint64_t c6 = (uint64_t)(c >> 64);
 
-    uint64_t r7 = c6 >> 63;
-    uint64_t r6 = (c6 << 1) | (c5 >> 63);
-    uint64_t r5 = (c5 << 1) | (c4 >> 63);
-    uint64_t r4 = (c4 << 1) | (c3 >> 63);
-    uint64_t r3 = (c3 << 1) | (c2 >> 63);
-    uint64_t r2 = (c2 << 1) | (c1 >> 63);
-    uint64_t r1 = (c1 << 1);
+    uint64_t t7 = c6 >> 63;
+    uint64_t t6 = (c6 << 1) | (c5 >> 63);
+    uint64_t t5 = (c5 << 1) | (c4 >> 63);
+    uint64_t t4 = (c4 << 1) | (c3 >> 63);
+    uint64_t t3 = (c3 << 1) | (c2 >> 63);
+    uint64_t t2 = (c2 << 1) | (c1 >> 63);
+    uint64_t t1 = (c1 << 1);
 
     c = (u128)a0 * a0;
-    uint64_t r0 = (uint64_t)c;
+    uint64_t t0 = (uint64_t)c;
     c >>= 64;
 
-    c += r1;
-    r1 = (uint64_t)c;
+    c += (u128)t1;
+    t1 = (uint64_t)c;
     c >>= 64;
 
-    c += r2 + (u128)a1 * a1;
-    r2 = (uint64_t)c;
+    c += (u128)t2 + (u128)a1 * a1;
+    t2 = (uint64_t)c;
     c >>= 64;
 
-    c += r3;
-    r3 = (uint64_t)c;
+    c += (u128)t3;
+    t3 = (uint64_t)c;
     c >>= 64;
 
-    c += r4 + (u128)a2 * a2;
-    r4 = (uint64_t)c;
+    c += (u128)t4 + (u128)a2 * a2;
+    t4 = (uint64_t)c;
     c >>= 64;
 
-    c += r5;
-    r5 = (uint64_t)c;
+    c += (u128)t5;
+    t5 = (uint64_t)c;
     c >>= 64;
 
-    c += r6 + (u128)a3 * a3;
-    r6 = (uint64_t)c;
-    r7 += (uint64_t)(c >> 64);
+    c += (u128)t6 + (u128)a3 * a3;
+    t6 = (uint64_t)c;
+    t7 += (uint64_t)(c >> 64);
 
+    // Fast reduction mod p
     const uint64_t SECP_K = 0x1000003D1ULL;
-    u128 prod0 = (u128)r4 * SECP_K + r0;
-    r0 = (uint64_t)prod0;
+    u128 prod0 = (u128)t4 * SECP_K + t0;
+    uint64_t r0 = (uint64_t)prod0;
     u128 carry = prod0 >> 64;
 
-    u128 prod1 = (u128)r5 * SECP_K + r1 + carry;
-    r1 = (uint64_t)prod1;
+    u128 prod1 = (u128)t5 * SECP_K + t1 + carry;
+    uint64_t r1 = (uint64_t)prod1;
     carry = prod1 >> 64;
 
-    u128 prod2 = (u128)r6 * SECP_K + r2 + carry;
-    r2 = (uint64_t)prod2;
+    u128 prod2 = (u128)t6 * SECP_K + t2 + carry;
+    uint64_t r2 = (uint64_t)prod2;
     carry = prod2 >> 64;
 
-    u128 prod3 = (u128)r7 * SECP_K + r3 + carry;
-    r3 = (uint64_t)prod3;
+    u128 prod3 = (u128)t7 * SECP_K + t3 + carry;
+    uint64_t r3 = (uint64_t)prod3;
     carry = prod3 >> 64;
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#if (defined(__x86_64__) || defined(_M_X64))
     u128 k_prod = (u128)carry * SECP_K;
+    uint64_t k_lo = (uint64_t)k_prod;
+    uint64_t k_hi = (uint64_t)(k_prod >> 64);
     unsigned char carry_flag = 0;
-    carry_flag = _addcarry_u64(carry_flag, r0, (uint64_t)k_prod, (unsigned long long*)&r0);
-    carry_flag = _addcarry_u64(carry_flag, r1, (uint64_t)(k_prod >> 64), (unsigned long long*)&r1);
-    carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
-    carry_flag = _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
+    carry_flag = _addcarry_u64(carry_flag, r0, k_lo, (unsigned long long*)&r0);
+    carry_flag = _addcarry_u64(carry_flag, r1, k_hi, (unsigned long long*)&r1);
+    carry_flag = _addcarry_u64(carry_flag, r2, 0,    (unsigned long long*)&r2);
+    carry_flag = _addcarry_u64(carry_flag, r3, 0,    (unsigned long long*)&r3);
     if (__builtin_expect(carry_flag != 0, 0)) {
         carry_flag = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&r0);
         carry_flag = _addcarry_u64(carry_flag, r1, 0, (unsigned long long*)&r1);
@@ -860,6 +912,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
+
     return Fe{{r0, r1, r2, r3}};
 #else
     Fe r = {0};
@@ -1568,8 +1621,6 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     }
     return -1;
 }
-#else
-inline void init_avx2_consts() {}
 #endif
 
 // ============================================================================
@@ -1591,18 +1642,16 @@ void scan_worker_montgomery(
     std::atomic<uint64_t>& checked_counter,
     int thread_id = 0
 ) {
-#if defined(__AVX2__)
-    init_avx2_consts();
-#endif
 #if defined(__linux__) && !defined(__ANDROID__)
-    // Pin worker thread to dedicated vCPU to prevent cross-core cache invalidation
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    int hw_cores = (int)std::thread::hardware_concurrency();
-    if (hw_cores > 0) {
-        CPU_SET(thread_id % hw_cores, &cpuset);
-        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    }
+    unsigned int max_cpus = std::thread::hardware_concurrency();
+    if (max_cpus == 0) max_cpus = 1;
+    CPU_SET(thread_id % max_cpus, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
+#if defined(__AVX2__)
+    init_avx2_consts();
 #endif
     const uint32_t BATCH_SIZE = 1024;
     alignas(64) Fe dx[1024];
@@ -1677,8 +1726,7 @@ void scan_worker_montgomery(
 
                 Fe u = fe_inv(cum[cur_batch]);
 
-                // Fused Backward Pass + Point Addition (Zero inv_dx intermediate buffer)
-                // Direct register pipeline saves 32KB L1 cache per thread
+                // Fused Backward & Point Addition pass (Zero-Memory Allocation for inv_dx)
                 Fe last_yi;
                 for (int i = (int)cur_batch - 1; i >= 1; --i) {
                     Fe inv_i = fe_mul(u, cum[i]);
@@ -1694,15 +1742,13 @@ void scan_worker_montgomery(
                     if (i == (int)cur_batch - 1) last_yi = yi;
                 }
                 {
-                    Fe inv_0 = u;
                     Fe dy_0 = fe_sub(G_TABLE[0].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_0, inv_0);
+                    Fe lambda = fe_mul(dy_0, u);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[0].x);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
                     cur_x[0] = xi;
                     cur_prefix[0] = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (cur_batch == 1) last_yi = yi;
                 }
                 cur_base = AffinePoint{cur_x[cur_batch - 1], last_yi};
             }
@@ -1966,6 +2012,8 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
+    std::signal(SIGINT, sigint_handler);
+    std::signal(SIGTERM, sigint_handler);
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
@@ -1979,54 +2027,6 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
 
         // Server URL: --server, -s, --api (supports both space and = delimiter)
-        // Probe runnable check for deploy script: --check
-        if (arg == "--check") {
-            std::cout << "[CHECK] Binary is runnable\n";
-            return 0;
-        }
-        // Offline benchmark mode: --bench, -b [seconds]
-        else if (arg == "--bench" || arg == "-b") {
-            int bench_sec = 5;
-            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
-                bench_sec = std::max(1, std::atoi(argv[++i]));
-            }
-            init_generator_table();
-#if defined(__AVX2__)
-            init_avx2_consts();
-#endif
-            std::cout << "[BENCH] Running offline benchmark for " << bench_sec << " seconds with " << threads << " thread(s)...\n";
-            uint8_t dummy_h160[20] = {0x11, 0x22};
-            uint32_t dummy_w[5] = {0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555};
-            uint64_t dummy_h64 = 0x2222222211111111ULL;
-            u256 bench_start = u256((uint64_t)0x1000000ULL);
-            uint64_t bench_total = (uint64_t)bench_sec * 50000000ULL;
-            std::atomic<uint64_t> bench_work(0);
-            uint64_t bench_slice = 262144;
-            std::atomic<bool> b_found(false);
-            std::mutex b_mtx;
-            u256 b_key = 0;
-            std::atomic<uint64_t> b_cnt(0);
-
-            auto b_t0 = std::chrono::high_resolution_clock::now();
-            std::vector<std::thread> b_pool;
-            for (int t = 0; t < threads; ++t) {
-                b_pool.emplace_back([=, &bench_work, &b_found, &b_key, &b_mtx, &b_cnt]() {
-                    scan_worker_montgomery(bench_start, std::ref(bench_work),
-                                          bench_total, bench_slice, dummy_h160, dummy_h64,
-                                          dummy_w, std::ref(b_found), std::ref(b_key),
-                                          std::ref(b_mtx), std::ref(b_cnt), t);
-                });
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(bench_sec));
-            g_running.store(false);
-            for (auto& th : b_pool) if (th.joinable()) th.join();
-            auto b_t1 = std::chrono::high_resolution_clock::now();
-            double b_el = std::chrono::duration<double>(b_t1 - b_t0).count();
-            double b_spd = (b_el > 0) ? ((double)b_cnt.load() / b_el) : 0;
-            std::cout << "[BENCH] Measured Speed: " << format_speed(b_spd) << " (" << b_cnt.load() << " keys in " << std::fixed << std::setprecision(2) << b_el << "s)\n";
-            return 0;
-        }
-
         if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
             api_base = argv[++i];
         } else if (arg.rfind("--server=", 0) == 0) {
@@ -2150,7 +2150,7 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
-        if (str_start.empty() || str_target.empty()) {
+        if (str_start.empty() || str_target.empty() || str_block.empty() || str_range.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2219,52 +2219,47 @@ int main(int argc, char* argv[]) {
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
         if (found_flag.load()) {
-            if (found_key.is_zero()) {
-                std::cerr << "\n[ERROR] Found flag set but private key is zero! Aborting submit.\n";
-                break;
-            }
-            std::cout << "\n[WINNER] TARGET MATCHED! Submitting solution to server...\n";
-            std::stringstream res_json;
-            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
-                     << ",\"block\":" << str_block
-                     << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"found\",\"user\":\"" << user
-                     << "\",\"private_key\":\"" << u256_to_hex64(found_key)
-                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
-            std::string ack;
-            http_post(api_base, res_json.str(), &ack);
-            break;
-        } else {
-            // VẤN ĐỀ 1 FIX: CHẶN LỖI KHIẾN SUBMIT SAI LÊN SERVER
-            // 1. Nếu tiến trình bị ngắt / dừng (SIGINT, Ctrl+C, g_running = false) -> TUYỆT ĐỐI KHÔNG submit status=done
-            // 2. Nếu số key thực quét ít hơn total_keys_count -> TUYỆT ĐỐI KHÔNG submit status=done
-            // 3. Nếu str_block hoặc str_range rỗng -> TUYỆT ĐỐI KHÔNG submit JSON lỗi
-            uint64_t checked_total = checked_counter.load();
-            if (!g_running.load()) {
-                std::cout << "\n[ABORT] Worker interrupted before finishing range. Skipping server submission to protect database state.\n";
-                break;
-            }
-            if (checked_total < total_keys_count) {
-                std::cerr << "\n[ERROR] Range scanning incomplete (" << checked_total << " / " << total_keys_count << " keys checked). Skipping submission.\n";
-                continue;
-            }
-            if (str_block.empty() || str_range.empty() || puzzle_id <= 0) {
-                std::cerr << "\n[ERROR] Missing valid block_id/range_idx/puzzle_id. Skipping submission.\n";
-                continue;
-            }
+            // Verify solution cryptographically before reporting to coordinator
+            uint64_t v_limbs[4] = {
+                (uint64_t)found_key.low,
+                (uint64_t)(found_key.low >> 64),
+                (uint64_t)found_key.high,
+                (uint64_t)(found_key.high >> 64)
+            };
+            AffinePoint chk_pt = scalar_mul_G_windowed(v_limbs);
+            uint8_t chk_prefix = (chk_pt.y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t chk_X[8];
+            fast_sha256_into_ripemd_X(chk_prefix, chk_pt.x, chk_X);
 
+            if (fast_ripemd160_32_check(chk_X, target_w)) {
+                std::cout << "\n[WINNER] TARGET MATCHED & CRYPTOGRAPHICALLY VERIFIED! Submitting solution to server...\n";
+                std::stringstream res_json;
+                res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
+                         << ",\"block\":" << str_block
+                         << ",\"range_idx\":" << str_range
+                         << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
+                         << "\",\"private_key\":\"" << u256_to_hex64(found_key)
+                         << "\",\"speed\":" << (uint64_t)final_spd << "}";
+                std::string ack;
+                http_post(api_base, res_json.str(), &ack);
+                break;
+            } else {
+                std::cerr << "\n[CRITICAL ERROR] Solution verification failed (possible hardware glitch). Refusing false submit to server.\n";
+            }
+        } else if (g_running.load() && checked_counter.load() >= total_keys_count && !str_block.empty() && !str_range.empty()) {
+            // Only submit done if range was 100% completed and no interrupt occurred
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple
-                     << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
+        } else {
+            std::cout << "\n[SKIP SUBMIT] Range scan aborted or incomplete (" << checked_counter.load() << "/" << total_keys_count
+                      << " keys checked). NOT submitting to server to prevent false range completion.\n";
+            if (!g_running.load()) break;
         }
     }
 

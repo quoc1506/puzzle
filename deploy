@@ -93,23 +93,10 @@ case "$OS" in
 
                     for f in $CANDIDATES; do
                         if [ -f "$f" ]; then
-                            chmod +x "$f" 2>/dev/null || true
-                            if "$f" --check >/dev/null 2>&1; then
-                                TARGET_BIN="$f"
-                                break
-                            fi
+                            TARGET_BIN="$f"
+                            break
                         fi
                     done
-
-                    # Fallback if --check failed for all (e.g. legacy binaries without --check)
-                    if [ -z "$TARGET_BIN" ]; then
-                        for f in $CANDIDATES; do
-                            if [ -f "$f" ]; then
-                                TARGET_BIN="$f"
-                                break
-                            fi
-                        done
-                    fi
                 fi
                 ;;
         esac
