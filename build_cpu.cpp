@@ -1568,6 +1568,8 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     }
     return -1;
 }
+#else
+inline void init_avx2_consts() {}
 #endif
 
 // ============================================================================
@@ -1989,7 +1991,9 @@ int main(int argc, char* argv[]) {
                 bench_sec = std::max(1, std::atoi(argv[++i]));
             }
             init_generator_table();
+#if defined(__AVX2__)
             init_avx2_consts();
+#endif
             std::cout << "[BENCH] Running offline benchmark for " << bench_sec << " seconds with " << threads << " thread(s)...\n";
             uint8_t dummy_h160[20] = {0x11, 0x22};
             uint32_t dummy_w[5] = {0x11111111, 0x22222222, 0x33333333, 0x44444444, 0x55555555};
