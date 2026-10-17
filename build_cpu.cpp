@@ -2281,7 +2281,7 @@ int main(int argc, char* argv[]) {
                 std::string ack;
                 for (int attempt = 0; attempt < 10; ++attempt) {
                     if (http_post(api_base, res_json.str(), &ack)) {
-                        std::cout << "[SERVER ACK]: " << ack << "\n";
+                        std::cout << "[SERVER ACK] : " << ack << "\n";
                         break;
                     }
                     std::this_thread::sleep_for(std::chrono::seconds(1));
