@@ -919,6 +919,10 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
     }
     return Fe{{r0, r1, r2, r3}};
 #endif
+#else
+    Fe r = {0};
+    return r;
+#endif
 }
 // ============================================================================
 // MODULAR INVERSION VIA FERMAT'S LITTLE THEOREM: a^(p - 2) mod p
