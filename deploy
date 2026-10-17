@@ -38,6 +38,14 @@ for arg in "$@"; do
     esac
 done
 
+can_execute() {
+    _bin="$1"
+    [ -f "$_bin" ] || return 1
+    chmod +x "$_bin" 2>/dev/null || true
+    "$_bin" --check-compat >/dev/null 2>&1
+    return $?
+}
+
 case "$OS" in
     darwin*)
         IS_APPLE_SILICON=0
@@ -86,29 +94,28 @@ case "$OS" in
                     fi
 
                     if [ "$HAS_AVX2" = "1" ]; then
-                        # Prioritize hardware accelerated fast binaries (AVX2 + BMI2 + ADX + x86-64-v3)
-                        # Static Musl binary is prioritized because it has zero GLIBC dependency,
-                        # completely preventing GLIBC version mismatch crashes across diverse Linux VPS distros.
-                        CANDIDATES="bin/build-linux-musl-x86_64-fast bin/build-linux-u22-x86_64-fast bin/build-linux-x86_64-fast bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-x86_64 bin/build bin/build-linux-musl-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat"
+                        # Prioritize hardware-accelerated -fast binaries, then standard AVX2, then static musl, then compat
+                        CANDIDATES="bin/build-linux-x86_64-fast bin/build-linux-u22-x86_64-fast bin/build-linux-musl-x86_64-fast bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat"
                     else
-                        CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat bin/build-linux-musl-x86_64 bin/build"
+                        CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     fi
 
-                    FIRST_FOUND=""
+                    # Select the first candidate that can execute without dynamic linker / GLIBC errors
                     for f in $CANDIDATES; do
-                        if [ -f "$f" ]; then
-                            chmod +x "$f" 2>/dev/null || true
-                            if [ -z "$FIRST_FOUND" ]; then
-                                FIRST_FOUND="$f"
-                            fi
-                            if "$f" --check-compat >/dev/null 2>&1; then
+                        if can_execute "$f"; then
+                            TARGET_BIN="$f"
+                            break
+                        fi
+                    done
+
+                    # Fallback check if candidate exists (e.g. older binaries without --check-compat)
+                    if [ -z "$TARGET_BIN" ]; then
+                        for f in $CANDIDATES; do
+                            if [ -f "$f" ]; then
                                 TARGET_BIN="$f"
                                 break
                             fi
-                        fi
-                    done
-                    if [ -z "$TARGET_BIN" ]; then
-                        TARGET_BIN="$FIRST_FOUND"
+                        done
                     fi
                 fi
                 ;;

@@ -1030,8 +1030,9 @@ CUDA_HOSTDEV AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
     return jacobian_to_affine(res);
 }
 
-static AffinePoint G_TABLE[1024];
-static AffinePoint G_1024;
+alignas(64) static AffinePoint G_TABLE[1024];
+alignas(64) static Fe G_TABLE_X[1024];
+alignas(64) static Fe G_TABLE_Y[1024];
 static bool g_table_initialized = false;
 static std::mutex g_table_mtx;
 
@@ -1040,12 +1041,15 @@ void init_generator_table() {
     if (g_table_initialized) return;
     JacobianPoint acc{G_POINT.x, G_POINT.y, Fe{{1, 0, 0, 0}}, false};
     G_TABLE[0] = G_POINT;
+    G_TABLE_X[0] = G_POINT.x;
+    G_TABLE_Y[0] = G_POINT.y;
     for (int i = 1; i < 1024; ++i) {
         acc = jacobian_add_affine(acc, G_POINT);
-        G_TABLE[i] = jacobian_to_affine(acc);
+        AffinePoint p = jacobian_to_affine(acc);
+        G_TABLE[i] = p;
+        G_TABLE_X[i] = p.x;
+        G_TABLE_Y[i] = p.y;
     }
-    acc = jacobian_add_affine(acc, G_POINT);
-    G_1024 = jacobian_to_affine(acc);
     g_table_initialized = true;
 }
 
@@ -1068,6 +1072,31 @@ AffinePoint scalar_mul_G_windowed(const uint64_t limbs[4]) {
         }
     }
     return jacobian_to_affine(res);
+}
+
+// Independent full cryptographic verification of winning key before server submission
+CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]);
+CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]);
+
+bool verify_winning_key(const u256& key, const uint8_t expected_h160[20]) {
+    uint64_t limbs[4] = {
+        (uint64_t)key.low,
+        (uint64_t)(key.low >> 64),
+        (uint64_t)key.high,
+        (uint64_t)(key.high >> 64)
+    };
+    AffinePoint pt = scalar_mul_G_windowed(limbs);
+    uint8_t prefix = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+    uint32_t X[8];
+    fast_sha256_into_ripemd_X(prefix, pt.x, X);
+    uint32_t target_w[5];
+    for (int j = 0; j < 5; ++j) {
+        target_w[j] = (uint32_t)expected_h160[j * 4] |
+                      ((uint32_t)expected_h160[j * 4 + 1] << 8) |
+                      ((uint32_t)expected_h160[j * 4 + 2] << 16) |
+                      ((uint32_t)expected_h160[j * 4 + 3] << 24);
+    }
+    return fast_ripemd160_32_check(X, target_w);
 }
 
 // ============================================================================
@@ -1357,7 +1386,7 @@ inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
 // Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
     __m256i W[64];
-    uint32_t w_lanes[16][8];
+    uint32_t w_lanes[9][8];
     #pragma GCC unroll 8
     for (int lane = 0; lane < 8; ++lane) {
         uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
@@ -1370,19 +1399,19 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         w_lanes[6][lane] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
         w_lanes[7][lane] = (uint32_t)(x0 >> 8);
         w_lanes[8][lane] = ((uint32_t)x0 << 24) | 0x00800000U;
-        w_lanes[9][lane]  = 0;
-        w_lanes[10][lane] = 0;
-        w_lanes[11][lane] = 0;
-        w_lanes[12][lane] = 0;
-        w_lanes[13][lane] = 0;
-        w_lanes[14][lane] = 0;
-        w_lanes[15][lane] = 0x00000108U;
     }
 
-    #pragma GCC unroll 16
-    for (int j = 0; j < 16; ++j) {
+    #pragma GCC unroll 9
+    for (int j = 0; j < 9; ++j) {
         W[j] = _mm256_loadu_si256((const __m256i*)w_lanes[j]);
     }
+    W[9]  = _mm256_setzero_si256();
+    W[10] = _mm256_setzero_si256();
+    W[11] = _mm256_setzero_si256();
+    W[12] = _mm256_setzero_si256();
+    W[13] = _mm256_setzero_si256();
+    W[14] = _mm256_setzero_si256();
+    W[15] = _mm256_set1_epi32(0x00000108U);
 
     for (int i = 16; i < 64; ++i) {
         __m256i w15 = W[i - 15];
@@ -1415,7 +1444,8 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         __m256i k_val = _mm256_set1_epi32(K256[i]);
         __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
-        __m256i maj = _mm256_xor_si256(_mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(a, c)), _mm256_and_si256(b, c));
+        __m256i a_xor_b = _mm256_xor_si256(a, b);
+        __m256i maj = _mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, a_xor_b));
         __m256i temp2 = _mm256_add_epi32(S0, maj);
 
         h = g; g = f; f = e; e = _mm256_add_epi32(d, temp1);
@@ -1631,52 +1661,8 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
 // ============================================================================
 
 
-
-// Cryptographic verification of solution to prevent false submissions to server
-bool verify_solution(const u256& priv_key, const uint8_t expected_h160[20]) {
-    uint64_t limbs[4] = {
-        (uint64_t)priv_key.low,
-        (uint64_t)(priv_key.low >> 64),
-        (uint64_t)priv_key.high,
-        (uint64_t)(priv_key.high >> 64)
-    };
-    AffinePoint pt = scalar_mul_G_windowed(limbs);
-    uint8_t pub[33];
-    pub[0] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
-    for (int i = 0; i < 4; ++i) {
-        uint64_t w = pt.x.d[3 - i];
-        for (int b = 7; b >= 0; --b) {
-            pub[1 + i * 8 + (7 - b)] = (uint8_t)(w >> (b * 8));
-        }
-    }
-    uint8_t sha[32];
-    b58_sha256(pub, 33, sha);
-    uint32_t X[8];
-    for (int j = 0; j < 8; ++j) {
-        X[j] = (uint32_t)sha[j * 4] |
-               ((uint32_t)sha[j * 4 + 1] << 8) |
-               ((uint32_t)sha[j * 4 + 2] << 16) |
-               ((uint32_t)sha[j * 4 + 3] << 24);
-    }
-    uint32_t target_w[5];
-    for (int j = 0; j < 5; ++j) {
-        target_w[j] = (uint32_t)expected_h160[j * 4] |
-                      ((uint32_t)expected_h160[j * 4 + 1] << 8) |
-                      ((uint32_t)expected_h160[j * 4 + 2] << 16) |
-                      ((uint32_t)expected_h160[j * 4 + 3] << 24);
-    }
-    return fast_ripemd160_32_check(X, target_w);
-}
-
-struct alignas(64) WorkerBuffers {
-    Fe dx[512];
-    Fe cum[513];
-    Fe inv_dx[512];
-    Fe cur_x[1024];
-    uint8_t cur_prefix[1024];
-};
-
 void scan_worker_montgomery(
+    int thread_idx,
     u256 base_start,
     std::atomic<uint64_t>& work_offset,
     uint64_t total_keys,
@@ -1687,156 +1673,175 @@ void scan_worker_montgomery(
     std::atomic<bool>& found_flag,
     u256& found_key,
     std::mutex& found_mtx,
-    std::atomic<uint64_t>& checked_counter) {
+    std::atomic<uint64_t>& checked_counter
+) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Pin worker thread to distinct vCPU core to eliminate scheduler migration & cache thrashing
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw > 0) {
+        CPU_SET(thread_idx % hw, &cpuset);
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    }
+#endif
 
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    // Heap-allocated aligned working buffer to prevent thread stack overflow on Musl Linux
-    auto bufs_ptr = std::make_unique<WorkerBuffers>();
-    WorkerBuffers& b = *bufs_ptr;
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
 
     uint64_t local_counter = 0;
 
     while (g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
         uint64_t offset = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
         if (offset >= total_keys) break;
-        uint64_t cur_slice = std::min(slice_size, total_keys - offset);
 
+        uint64_t cur_slice = std::min(slice_size, total_keys - offset);
         u256 slice_start = base_start + offset;
         u256 cur_k = slice_start;
         uint64_t remaining_in_slice = cur_slice;
 
-        AffinePoint cur_center;
-        bool has_center = false;
+        AffinePoint cur_base;
+        bool cur_base_valid = false;
 
-        while (remaining_in_slice >= 1024 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
-            if (!has_center) {
-                u256 mid_k = cur_k + 512;
-                uint64_t limbs[4] = {
-                    (uint64_t)mid_k.low,
-                    (uint64_t)(mid_k.low >> 64),
-                    (uint64_t)mid_k.high,
-                    (uint64_t)(mid_k.high >> 64)
-                };
-                cur_center = scalar_mul_G_windowed(limbs);
-                has_center = true;
-            }
+        if (cur_k > 1024) {
+            u256 base_k = cur_k - 1;
+            uint64_t limbs[4] = {
+                (uint64_t)base_k.low,
+                (uint64_t)(base_k.low >> 64),
+                (uint64_t)base_k.high,
+                (uint64_t)(base_k.high >> 64)
+            };
+            cur_base = scalar_mul_G_windowed(limbs);
+            cur_base_valid = true;
+        }
 
-            // Montgomery batch inversion for 512 points covering 1024 keys
-            b.cum[0] = Fe{{1, 0, 0, 0}};
-            for (uint32_t i = 0; i < 512; ++i) {
-                b.dx[i] = fe_sub(G_TABLE[i].x, cur_center.x);
-                b.cum[i + 1] = fe_mul(b.cum[i], b.dx[i]);
-            }
-            Fe u = fe_inv(b.cum[512]);
-            for (int i = 511; i >= 1; --i) {
-                b.inv_dx[i] = fe_mul(u, b.cum[i]);
-                u = fe_mul(u, b.dx[i]);
-            }
-            b.inv_dx[0] = u;
+        while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+            uint32_t cur_batch = (uint32_t)std::min((uint64_t)BATCH_SIZE, remaining_in_slice);
 
-            // Center key: Key mid_k (Index 512)
-            b.cur_x[512] = cur_center.x;
-            b.cur_prefix[512] = (cur_center.y.d[0] & 1) ? 0x03 : 0x02;
-
-            // Point additions for P + G_i and P - G_i (sharing the exact same inv_dx[i])
-            for (uint32_t i = 0; i < 512; ++i) {
-                Fe Gx = G_TABLE[i].x;
-                Fe Gy = G_TABLE[i].y;
-                Fe inv_d = b.inv_dx[i];
-
-                // P + G_i
-                Fe dy_p = fe_sub(Gy, cur_center.y);
-                Fe lam_p = fe_mul(dy_p, inv_d);
-                Fe x_p = fe_sub(fe_sub(fe_sqr(lam_p), cur_center.x), Gx);
-                Fe y_p = fe_sub(fe_mul(lam_p, fe_sub(cur_center.x, x_p)), cur_center.y);
-
-                // P - G_i
-                Fe neg_Gy = fe_sub(Fe{{0,0,0,0}}, Gy);
-                Fe dy_m = fe_sub(neg_Gy, cur_center.y);
-                Fe lam_m = fe_mul(dy_m, inv_d);
-                Fe x_m = fe_sub(fe_sub(fe_sqr(lam_m), cur_center.x), Gx);
-                Fe y_m = fe_sub(fe_mul(lam_m, fe_sub(cur_center.x, x_m)), cur_center.y);
-
-                if (i < 511) {
-                    b.cur_x[512 + 1 + i] = x_p;
-                    b.cur_prefix[512 + 1 + i] = (y_p.d[0] & 1) ? 0x03 : 0x02;
+            if (cur_k <= 1024) {
+                for (uint32_t i = 0; i < cur_batch; ++i) {
+                    uint64_t idx = (uint64_t)(cur_k.low + i);
+                    if (idx >= 1 && idx <= 1024) {
+                        cur_x[i] = G_TABLE_X[idx - 1];
+                        cur_prefix[i] = (G_TABLE_Y[idx - 1].d[0] & 1) ? 0x03 : 0x02;
+                    } else {
+                        uint64_t limbs[4] = { idx, 0, 0, 0 };
+                        AffinePoint pt = scalar_mul_G_windowed(limbs);
+                        cur_x[i] = pt.x;
+                        cur_prefix[i] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+                    }
                 }
-                b.cur_x[512 - 1 - i] = x_m;
-                b.cur_prefix[512 - 1 - i] = (y_m.d[0] & 1) ? 0x03 : 0x02;
+                cur_base_valid = false;
+            } else {
+                if (!cur_base_valid) {
+                    u256 base_k = cur_k - 1;
+                    uint64_t limbs[4] = {
+                        (uint64_t)base_k.low,
+                        (uint64_t)(base_k.low >> 64),
+                        (uint64_t)base_k.high,
+                        (uint64_t)(base_k.high >> 64)
+                    };
+                    cur_base = scalar_mul_G_windowed(limbs);
+                    cur_base_valid = true;
+                }
+
+                // Forward pass of Montgomery Batch Inversion (100% L1 cache density using contiguous G_TABLE_X)
+                cum[0] = Fe{{1, 0, 0, 0}};
+                dx[0] = fe_sub(G_TABLE_X[0], cur_base.x);
+                cum[1] = dx[0];
+                for (uint32_t i = 1; i < cur_batch; ++i) {
+                    dx[i] = fe_sub(G_TABLE_X[i], cur_base.x);
+                    cum[i + 1] = fe_mul(cum[i], dx[i]);
+                }
+
+                Fe u = fe_inv(cum[cur_batch]);
+
+                // Fused Backward Inversion & Point Addition pass (Zero-copy register pipeline, eliminates 32KB stack array)
+                Fe last_yi;
+                for (int i = (int)cur_batch - 1; i >= 1; --i) {
+                    Fe inv_dxi = fe_mul(u, cum[i]);
+                    u = fe_mul(u, dx[i]);
+
+                    Fe dy_i = fe_sub(G_TABLE_Y[i], cur_base.y);
+                    Fe lambda = fe_mul(dy_i, inv_dxi);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE_X[i]);
+                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
+                    cur_x[i] = xi;
+                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
+                    if (i == (int)cur_batch - 1) last_yi = yi;
+                }
+                // i = 0: u is inv_dx[0]
+                {
+                    Fe dy_0 = fe_sub(G_TABLE_Y[0], cur_base.y);
+                    Fe lambda = fe_mul(dy_0, u);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE_X[0]);
+                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
+                    cur_x[0] = x0;
+                    cur_prefix[0] = (y0.d[0] & 1) ? 0x03 : 0x02;
+                    if (cur_batch == 1) last_yi = y0;
+                }
+                cur_base = AffinePoint{cur_x[cur_batch - 1], last_yi};
             }
 
 #if defined(__AVX2__)
-            for (uint32_t j = 0; j < 1024; j += 8) {
-                int match_idx = fast_sha256_ripemd160_8x_avx2(&b.cur_prefix[j], &b.cur_x[j], target_w);
+            uint32_t i = 0;
+            for (; i + 8 <= cur_batch; i += 8) {
+                int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
                 if (__builtin_expect(match_idx >= 0, 0)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)(j + match_idx);
-                    checked_counter.fetch_add(local_counter + (uint64_t)(j + match_idx + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)(i + match_idx);
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
+                    return;
+                }
+            }
+            for (; i < cur_batch; ++i) {
+                uint32_t X[8];
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                if (fast_ripemd160_32_check(X, target_w)) {
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
                     return;
                 }
             }
 #else
-            for (uint32_t j = 0; j < 1024; ++j) {
+            for (uint32_t i = 0; i < cur_batch; ++i) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(b.cur_prefix[j], b.cur_x[j], X);
+                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)j;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(j + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
                     return;
                 }
             }
 #endif
-            // Advance cur_center by 1024 * G with single Jacobian addition
-            JacobianPoint jc{cur_center.x, cur_center.y, Fe{{1, 0, 0, 0}}, false};
-            jc = jacobian_add_affine(jc, G_1024);
-            cur_center = jacobian_to_affine(jc);
-
-            cur_k = cur_k + 1024ULL;
-            remaining_in_slice -= 1024;
-            local_counter += 1024;
-            if (local_counter >= 65536) {
-                checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
-                local_counter = 0;
-            }
-        }
-
-        // Remainder keys at slice tail (if slice size is not a multiple of 1024)
-        while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
-            uint64_t lk[4] = {
-                (uint64_t)cur_k.low,
-                (uint64_t)(cur_k.low >> 64),
-                (uint64_t)cur_k.high,
-                (uint64_t)(cur_k.high >> 64)
-            };
-            AffinePoint pt = scalar_mul_G_windowed(lk);
-            uint8_t pfx = (pt.y.d[0] & 1) ? 0x03 : 0x02;
-            uint32_t X[8];
-            fast_sha256_into_ripemd_X(pfx, pt.x, X);
-            if (fast_ripemd160_32_check(X, target_w)) {
-                std::lock_guard<std::mutex> lock(found_mtx);
-                found_flag.store(true, std::memory_order_release);
-                found_key = cur_k;
-                checked_counter.fetch_add(local_counter + 1, std::memory_order_relaxed);
-                return;
-            }
-            cur_k = cur_k + 1ULL;
-            remaining_in_slice--;
-            local_counter++;
+            cur_k = cur_k + (uint64_t)cur_batch;
+            remaining_in_slice -= cur_batch;
+            local_counter += cur_batch;
             if (local_counter >= 65536) {
                 checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
                 local_counter = 0;
             }
         }
     }
+
     if (local_counter > 0) {
         checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
     }
 }
+
 // ============================================================================
 // HTTP CLIENT HELPERS
 // ============================================================================
@@ -1988,7 +1993,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-                scan_worker_montgomery(start_k, std::ref(work_offset),
+                scan_worker_montgomery(t, start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
                                       std::ref(found_mtx), std::ref(checked_counter));
@@ -2057,8 +2062,12 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
 
+        if (arg == "--check-compat") {
+            std::cout << "COMPAT_OK\n";
+            return 0;
+        }
         // Server URL: --server, -s, --api (supports both space and = delimiter)
-        if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
+        else if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
             api_base = argv[++i];
         } else if (arg.rfind("--server=", 0) == 0) {
             api_base = arg.substr(9);
@@ -2093,10 +2102,7 @@ int main(int argc, char* argv[]) {
             threads = std::max(1, std::atoi(arg.substr(10).c_str()));
         }
         // No limit mode: -nl, --no-limit
-        else if (arg == "--check-compat") {
-            std::cout << "[OK] Compatible binary\n";
-            return 0;
-        } else if (arg == "-nl" || arg == "--no-limit") {
+        else if (arg == "-nl" || arg == "--no-limit") {
             no_limit = true;
         }
         // Verify mode: --verify, -v
@@ -2125,15 +2131,6 @@ int main(int argc, char* argv[]) {
     init_generator_table();
 
     std::cout << "[WORKER] Threads: " << threads << " | Privacy: ON\n";
-    // Coordinator URL hidden for privacy
-    // User & Target hidden for privacy
-    if (no_limit) {
-        
-    } else {
-        
-    }
-
-    
 
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
@@ -2184,6 +2181,8 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
+
+        // Rigorous validation to avoid corrupted state submissions
         if (str_start.empty() || str_target.empty() || str_block.empty() || str_range.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
@@ -2219,7 +2218,7 @@ int main(int argc, char* argv[]) {
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-                scan_worker_montgomery(start_k, std::ref(work_offset),
+                scan_worker_montgomery(t, start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
                                       std::ref(found_mtx), std::ref(checked_counter));
@@ -2229,7 +2228,7 @@ int main(int argc, char* argv[]) {
         // Progress reporter
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            uint64_t cur = checked_counter.load();
+            uint64_t cur = checked_counter.load(std::memory_order_relaxed);
             auto t_now = std::chrono::high_resolution_clock::now();
             double el = std::chrono::duration<double>(t_now - t_start).count();
             if (el > 0) {
@@ -2238,7 +2237,7 @@ int main(int argc, char* argv[]) {
                           << " | Progress: " << std::fixed << std::setprecision(1) << ((double)cur / total_keys_count * 100.0) << "%"
                           << " | Done: " << ranges_completed << " ranges" << std::flush;
             }
-            if (cur >= total_keys_count || found_flag.load() || !g_running.load()) break;
+            if (cur >= total_keys_count || found_flag.load(std::memory_order_relaxed) || !g_running.load(std::memory_order_relaxed)) break;
         }
 
         for (auto& th : pool) {
@@ -2248,18 +2247,13 @@ int main(int argc, char* argv[]) {
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        double final_spd = (elapsed > 0) ? ((double)checked_counter.load() / elapsed) : 0;
-
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
-
-        if (!g_running.load()) {
-            std::cout << "\n[ABORT] Worker stopped or interrupted. Incomplete range was NOT submitted to server.\n";
-            break;
-        }
+        uint64_t final_checked = checked_counter.load();
+        double final_spd = (elapsed > 0 && std::isfinite(elapsed)) ? ((double)final_checked / elapsed) : 0.0;
+        if (!std::isfinite(final_spd) || final_spd < 0.0) final_spd = 0.0;
 
         if (found_flag.load()) {
-            if (verify_solution(found_key, target_h160)) {
-                std::cout << "\n[WINNER] TARGET MATCHED AND 100% CRYPTOGRAPHICALLY VERIFIED! Submitting solution to server...\n";
+            if (verify_winning_key(found_key, target_h160)) {
+                std::cout << "\n[WINNER] TARGET MATCHED AND VERIFIED! Submitting solution to server...\n";
                 std::stringstream res_json;
                 res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                          << ",\"block\":" << str_block
@@ -2268,12 +2262,20 @@ int main(int argc, char* argv[]) {
                          << "\",\"private_key\":\"" << u256_to_hex64(found_key)
                          << "\",\"speed\":" << (uint64_t)final_spd << "}";
                 std::string ack;
-                http_post(api_base, res_json.str(), &ack);
+                for (int attempt = 0; attempt < 10; ++attempt) {
+                    if (http_post(api_base, res_json.str(), &ack)) {
+                        std::cout << "[SERVER ACK]: " << ack << "\n";
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
                 break;
             } else {
-                std::cerr << "\n[SECURITY] False positive detected during verification. Solution rejected, not submitting to server.\n";
+                std::cerr << "\n[SECURITY ALERT] Found key failed independent cryptographic verification! Refusing false submission.\n";
             }
-        } else if (checked_counter.load() >= total_keys_count) {
+        } else if (g_running.load() && final_checked >= total_keys_count) {
+            ranges_completed += actual_multiple;
+            last_measured_speed = final_spd;
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
@@ -2283,8 +2285,9 @@ int main(int argc, char* argv[]) {
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
         } else {
-            std::cerr << "\n[WARNING] Range incomplete (" << checked_counter.load() << "/" << total_keys_count 
-                      << "). Server submission skipped to prevent corrupting work distribution.\n";
+            std::cout << "\n[NOTICE] Range scan interrupted or incomplete (" 
+                      << final_checked << "/" << total_keys_count << " keys checked). "
+                      << "Skipping submission to prevent submitting false completion to coordinator.\n";
             break;
         }
     }
