@@ -406,22 +406,13 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
     c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
 
-    if (__builtin_expect(c != 0, 0)) {
-        const uint64_t K = 0x1000003D1ULL;
-        c = _addcarry_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
-        c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    } else {
-        if (__builtin_expect(r.d[3] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[2] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[1] == 0xFFFFFFFFFFFFFFFFULL &&
-            r.d[0] >= 0xFFFFFFFEFFFFFC2FULL, 0)) {
-            r.d[0] -= 0xFFFFFFFEFFFFFC2FULL;
-            r.d[1] = 0;
-            r.d[2] = 0;
-            r.d[3] = 0;
-        }
+    uint64_t s0, s1, s2, s3;
+    unsigned char c2 = _addcarry_u64(0, r.d[0], 0x1000003D1ULL, (unsigned long long*)&s0);
+    c2 = _addcarry_u64(c2, r.d[1], 0, (unsigned long long*)&s1);
+    c2 = _addcarry_u64(c2, r.d[2], 0, (unsigned long long*)&s2);
+    c2 = _addcarry_u64(c2, r.d[3], 0, (unsigned long long*)&s3);
+    if (c | c2) {
+        r.d[0] = s0; r.d[1] = s1; r.d[2] = s2; r.d[3] = s3;
     }
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
@@ -526,13 +517,12 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
     borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
 
-    if (__builtin_expect(borrow != 0, 0)) {
-        const uint64_t K = 0x1000003D1ULL;
-        borrow = _subborrow_u64(0, r.d[0], K, (unsigned long long*)&r.d[0]);
-        borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
-        borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
-        _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
-    }
+    uint64_t sub_k = borrow ? 0x1000003D1ULL : 0ULL;
+    unsigned char b2 = 0;
+    b2 = _subborrow_u64(b2, r.d[0], sub_k, (unsigned long long*)&r.d[0]);
+    b2 = _subborrow_u64(b2, r.d[1], 0, (unsigned long long*)&r.d[1]);
+    b2 = _subborrow_u64(b2, r.d[2], 0, (unsigned long long*)&r.d[2]);
+    _subborrow_u64(b2, r.d[3], 0, (unsigned long long*)&r.d[3]);
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
@@ -762,6 +752,15 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
+    uint64_t s0, s1, s2, s3;
+    unsigned char c_red = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&s0);
+    c_red = _addcarry_u64(c_red, r1, 0, (unsigned long long*)&s1);
+    c_red = _addcarry_u64(c_red, r2, 0, (unsigned long long*)&s2);
+    c_red = _addcarry_u64(c_red, r3, 0, (unsigned long long*)&s3);
+    if (c_red) {
+        r0 = s0; r1 = s1; r2 = s2; r3 = s3;
+    }
+    return Fe{{r0, r1, r2, r3}};
 #else
     u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
     r0 = (uint64_t)c2_red; c2_red >>= 64;
@@ -776,8 +775,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
         r3 += (uint64_t)c3;
     }
-#endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -786,6 +783,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
         r1 = 0; r2 = 0; r3 = 0;
     }
     return Fe{{r0, r1, r2, r3}};
+#endif
 #else
     Fe r = {0};
     return r;
@@ -889,6 +887,15 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
+    uint64_t s0, s1, s2, s3;
+    unsigned char c_red = _addcarry_u64(0, r0, SECP_K, (unsigned long long*)&s0);
+    c_red = _addcarry_u64(c_red, r1, 0, (unsigned long long*)&s1);
+    c_red = _addcarry_u64(c_red, r2, 0, (unsigned long long*)&s2);
+    c_red = _addcarry_u64(c_red, r3, 0, (unsigned long long*)&s3);
+    if (c_red) {
+        r0 = s0; r1 = s1; r2 = s2; r3 = s3;
+    }
+    return Fe{{r0, r1, r2, r3}};
 #else
     u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
     r0 = (uint64_t)c2_red; c2_red >>= 64;
@@ -903,8 +910,6 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
         r3 += (uint64_t)c3;
     }
-#endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -912,11 +917,7 @@ CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
-
     return Fe{{r0, r1, r2, r3}};
-#else
-    Fe r = {0};
-    return r;
 #endif
 }
 // ============================================================================
@@ -1375,18 +1376,26 @@ void init_avx2_consts() {}
 #define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
 #define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
 
-inline __m256i as_m256i(__m256i v) { return v; }
-inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
+template<uint32_t K>
+CUDA_INLINE __m256i add_xk(__m256i x) {
+    if constexpr (K == 0) return x;
+    else return _mm256_add_epi32(x, _mm256_set1_epi32(K));
+}
+
+template<uint32_t K>
+CUDA_INLINE __m256i add_xk(uint32_t x) {
+    return _mm256_set1_epi32(x + K);
+}
 
 #define ROUND_AVX2(a, b, c, d, e, f, x, k, r) do { \
-    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), _mm256_add_epi32(as_m256i(x), _mm256_set1_epi32(k))), r), e); \
+    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), add_xk<k>(x)), r), e); \
     c = ROL256(c, 10); \
 } while(0)
 
 // Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
-    __m256i W[64];
-    uint32_t w_lanes[9][8];
+    alignas(64) __m256i W[64];
+    alignas(64) uint32_t w_lanes[9][8];
     #pragma GCC unroll 8
     for (int lane = 0; lane < 8; ++lane) {
         uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
@@ -1403,7 +1412,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
 
     #pragma GCC unroll 9
     for (int j = 0; j < 9; ++j) {
-        W[j] = _mm256_loadu_si256((const __m256i*)w_lanes[j]);
+        W[j] = _mm256_load_si256((const __m256i*)w_lanes[j]);
     }
     W[9]  = _mm256_setzero_si256();
     W[10] = _mm256_setzero_si256();
@@ -1432,6 +1441,12 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     };
 
+    alignas(64) __m256i WK[64];
+    #pragma GCC unroll 16
+    for (int i = 0; i < 64; ++i) {
+        WK[i] = _mm256_add_epi32(W[i], _mm256_set1_epi32(K256[i]));
+    }
+
     __m256i a = _mm256_set1_epi32(0x6a09e667), b = _mm256_set1_epi32(0xbb67ae85);
     __m256i c = _mm256_set1_epi32(0x3c6ef372), d = _mm256_set1_epi32(0xa54ff53a);
     __m256i e = _mm256_set1_epi32(0x510e527f), f = _mm256_set1_epi32(0x9b05688c);
@@ -1441,8 +1456,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
         __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
-        __m256i k_val = _mm256_set1_epi32(K256[i]);
-        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(_mm256_add_epi32(ch, k_val), W[i]));
+        __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, WK[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
         __m256i a_xor_b = _mm256_xor_si256(a, b);
         __m256i maj = _mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, a_xor_b));
@@ -1689,11 +1703,11 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 1024;
-    alignas(64) Fe dx[1024];
-    alignas(64) Fe cum[1025];
-    alignas(64) Fe cur_x[1024];
-    alignas(64) uint8_t cur_prefix[1024];
+    const uint32_t BATCH_SIZE = 256;
+    alignas(64) Fe dx[256];
+    alignas(64) Fe cum[257];
+    alignas(64) Fe cur_x[256];
+    alignas(64) uint8_t cur_prefix[256];
 
     uint64_t local_counter = 0;
 
@@ -1709,7 +1723,7 @@ void scan_worker_montgomery(
         AffinePoint cur_base;
         bool cur_base_valid = false;
 
-        if (cur_k > 1024) {
+        if (cur_k > 256) {
             u256 base_k = cur_k - 1;
             uint64_t limbs[4] = {
                 (uint64_t)base_k.low,
@@ -1724,7 +1738,7 @@ void scan_worker_montgomery(
         while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
             uint32_t cur_batch = (uint32_t)std::min((uint64_t)BATCH_SIZE, remaining_in_slice);
 
-            if (cur_k <= 1024) {
+            if (cur_k <= 256) {
                 for (uint32_t i = 0; i < cur_batch; ++i) {
                     uint64_t idx = (uint64_t)(cur_k.low + i);
                     if (idx >= 1 && idx <= 1024) {
