@@ -2,13 +2,13 @@ name: Multiplatform Binary Build
 
 on:
   push:
-    branches: [ "main", "master", "testing", "master_cuda_about_600m_cpu_about_3m", "master_cuda_about_570m_cpu_about_3m" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
       - '.github/workflows/**'
   pull_request:
-    branches: [ "main", "master", "testing", "master_cuda_about_600m_cpu_about_3m", "master_cuda_about_570m_cpu_about_3m" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
   workflow_dispatch:
 
 jobs:
@@ -83,7 +83,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential clang cmake git libsecp256k1-dev libssl-dev zlib1g-dev
 
       - name: Build static libcurl
         run: |
@@ -121,8 +121,8 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          # Maximum hardware optimization: AVX2 + BMI2 + ADX + FMA + unrolling
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          # Maximum hardware optimization: Clang + AVX2 + BMI2 + ADX + SHA-NI + FMA + unrolling
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -msha -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -172,7 +172,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake git libsecp256k1-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential clang cmake git libsecp256k1-dev libssl-dev zlib1g-dev
 
       - name: Build static libcurl
         run: |
@@ -210,8 +210,8 @@ jobs:
           CRYPTO_A=$(find /usr -name "libcrypto.a" 2>/dev/null | head -n 1)
           CURL_INC="/tmp/curl_build/curl/dist/include"
 
-          # Maximum hardware optimization: AVX2 + BMI2 + ADX + FMA + unrolling
-          g++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
+          # Maximum hardware optimization: Clang + AVX2 + BMI2 + ADX + SHA-NI + FMA + unrolling
+          clang++ -std=c++17 -O3 -march=x86-64-v3 -mavx2 -mfma -mbmi -mbmi2 -madx -msha -funroll-loops -finline-functions -fno-strict-aliasing -DNDEBUG -fomit-frame-pointer -pipe -pthread \
             -DCURL_STATICLIB -DSECP256K1_STATIC -I${CURL_INC} build_cpu.cpp \
             ${CURL_A} ${SECP_A} ${SSL_A} ${CRYPTO_A} \
             -static-libgcc -static-libstdc++ \
@@ -471,7 +471,7 @@ jobs:
   publish-bin-folder:
     name: Consolidate Binaries into bin/
     needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/testing' || contains(github.ref, 'master_cuda')
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/testing'
     runs-on: ubuntu-latest
     permissions:
       contents: write
