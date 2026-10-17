@@ -1031,6 +1031,7 @@ CUDA_HOSTDEV AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
 }
 
 static AffinePoint G_TABLE[1024];
+static AffinePoint G_1024;
 static bool g_table_initialized = false;
 static std::mutex g_table_mtx;
 
@@ -1043,6 +1044,8 @@ void init_generator_table() {
         acc = jacobian_add_affine(acc, G_POINT);
         G_TABLE[i] = jacobian_to_affine(acc);
     }
+    acc = jacobian_add_affine(acc, G_POINT);
+    G_1024 = jacobian_to_affine(acc);
     g_table_initialized = true;
 }
 
@@ -1628,6 +1631,51 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
 // ============================================================================
 
 
+
+// Cryptographic verification of solution to prevent false submissions to server
+bool verify_solution(const u256& priv_key, const uint8_t expected_h160[20]) {
+    uint64_t limbs[4] = {
+        (uint64_t)priv_key.low,
+        (uint64_t)(priv_key.low >> 64),
+        (uint64_t)priv_key.high,
+        (uint64_t)(priv_key.high >> 64)
+    };
+    AffinePoint pt = scalar_mul_G_windowed(limbs);
+    uint8_t pub[33];
+    pub[0] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+    for (int i = 0; i < 4; ++i) {
+        uint64_t w = pt.x.d[3 - i];
+        for (int b = 7; b >= 0; --b) {
+            pub[1 + i * 8 + (7 - b)] = (uint8_t)(w >> (b * 8));
+        }
+    }
+    uint8_t sha[32];
+    b58_sha256(pub, 33, sha);
+    uint32_t X[8];
+    for (int j = 0; j < 8; ++j) {
+        X[j] = (uint32_t)sha[j * 4] |
+               ((uint32_t)sha[j * 4 + 1] << 8) |
+               ((uint32_t)sha[j * 4 + 2] << 16) |
+               ((uint32_t)sha[j * 4 + 3] << 24);
+    }
+    uint32_t target_w[5];
+    for (int j = 0; j < 5; ++j) {
+        target_w[j] = (uint32_t)expected_h160[j * 4] |
+                      ((uint32_t)expected_h160[j * 4 + 1] << 8) |
+                      ((uint32_t)expected_h160[j * 4 + 2] << 16) |
+                      ((uint32_t)expected_h160[j * 4 + 3] << 24);
+    }
+    return fast_ripemd160_32_check(X, target_w);
+}
+
+struct alignas(64) WorkerBuffers {
+    Fe dx[512];
+    Fe cum[513];
+    Fe inv_dx[512];
+    Fe cur_x[1024];
+    uint8_t cur_prefix[1024];
+};
+
 void scan_worker_montgomery(
     u256 base_start,
     std::atomic<uint64_t>& work_offset,
@@ -1639,158 +1687,156 @@ void scan_worker_montgomery(
     std::atomic<bool>& found_flag,
     u256& found_key,
     std::mutex& found_mtx,
-    std::atomic<uint64_t>& checked_counter
-) {
+    std::atomic<uint64_t>& checked_counter) {
+
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    // Heap-allocated aligned working buffer to prevent thread stack overflow on Musl Linux
+    auto bufs_ptr = std::make_unique<WorkerBuffers>();
+    WorkerBuffers& b = *bufs_ptr;
 
     uint64_t local_counter = 0;
 
     while (g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
         uint64_t offset = work_offset.fetch_add(slice_size, std::memory_order_relaxed);
         if (offset >= total_keys) break;
-
         uint64_t cur_slice = std::min(slice_size, total_keys - offset);
+
         u256 slice_start = base_start + offset;
         u256 cur_k = slice_start;
         uint64_t remaining_in_slice = cur_slice;
 
-        AffinePoint cur_base;
-        bool cur_base_valid = false;
+        AffinePoint cur_center;
+        bool has_center = false;
 
-        if (cur_k > 1024) {
-            u256 base_k = cur_k - 1;
-            uint64_t limbs[4] = {
-                (uint64_t)base_k.low,
-                (uint64_t)(base_k.low >> 64),
-                (uint64_t)base_k.high,
-                (uint64_t)(base_k.high >> 64)
-            };
-            cur_base = scalar_mul_G_windowed(limbs);
-            cur_base_valid = true;
-        }
+        while (remaining_in_slice >= 1024 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+            if (!has_center) {
+                u256 mid_k = cur_k + 512;
+                uint64_t limbs[4] = {
+                    (uint64_t)mid_k.low,
+                    (uint64_t)(mid_k.low >> 64),
+                    (uint64_t)mid_k.high,
+                    (uint64_t)(mid_k.high >> 64)
+                };
+                cur_center = scalar_mul_G_windowed(limbs);
+                has_center = true;
+            }
 
-        while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
-            uint32_t cur_batch = (uint32_t)std::min((uint64_t)BATCH_SIZE, remaining_in_slice);
+            // Montgomery batch inversion for 512 points covering 1024 keys
+            b.cum[0] = Fe{{1, 0, 0, 0}};
+            for (uint32_t i = 0; i < 512; ++i) {
+                b.dx[i] = fe_sub(G_TABLE[i].x, cur_center.x);
+                b.cum[i + 1] = fe_mul(b.cum[i], b.dx[i]);
+            }
+            Fe u = fe_inv(b.cum[512]);
+            for (int i = 511; i >= 1; --i) {
+                b.inv_dx[i] = fe_mul(u, b.cum[i]);
+                u = fe_mul(u, b.dx[i]);
+            }
+            b.inv_dx[0] = u;
 
-            if (cur_k <= 1024) {
-                for (uint32_t i = 0; i < cur_batch; ++i) {
-                    uint64_t idx = (uint64_t)(cur_k.low + i);
-                    if (idx >= 1 && idx <= 1024) {
-                        cur_x[i] = G_TABLE[idx - 1].x;
-                        cur_prefix[i] = (G_TABLE[idx - 1].y.d[0] & 1) ? 0x03 : 0x02;
-                    } else {
-                        uint64_t limbs[4] = { idx, 0, 0, 0 };
-                        AffinePoint pt = scalar_mul_G_windowed(limbs);
-                        cur_x[i] = pt.x;
-                        cur_prefix[i] = (pt.y.d[0] & 1) ? 0x03 : 0x02;
-                    }
+            // Center key: Key mid_k (Index 512)
+            b.cur_x[512] = cur_center.x;
+            b.cur_prefix[512] = (cur_center.y.d[0] & 1) ? 0x03 : 0x02;
+
+            // Point additions for P + G_i and P - G_i (sharing the exact same inv_dx[i])
+            for (uint32_t i = 0; i < 512; ++i) {
+                Fe Gx = G_TABLE[i].x;
+                Fe Gy = G_TABLE[i].y;
+                Fe inv_d = b.inv_dx[i];
+
+                // P + G_i
+                Fe dy_p = fe_sub(Gy, cur_center.y);
+                Fe lam_p = fe_mul(dy_p, inv_d);
+                Fe x_p = fe_sub(fe_sub(fe_sqr(lam_p), cur_center.x), Gx);
+                Fe y_p = fe_sub(fe_mul(lam_p, fe_sub(cur_center.x, x_p)), cur_center.y);
+
+                // P - G_i
+                Fe neg_Gy = fe_sub(Fe{{0,0,0,0}}, Gy);
+                Fe dy_m = fe_sub(neg_Gy, cur_center.y);
+                Fe lam_m = fe_mul(dy_m, inv_d);
+                Fe x_m = fe_sub(fe_sub(fe_sqr(lam_m), cur_center.x), Gx);
+                Fe y_m = fe_sub(fe_mul(lam_m, fe_sub(cur_center.x, x_m)), cur_center.y);
+
+                if (i < 511) {
+                    b.cur_x[512 + 1 + i] = x_p;
+                    b.cur_prefix[512 + 1 + i] = (y_p.d[0] & 1) ? 0x03 : 0x02;
                 }
-                cur_base_valid = false;
-            } else {
-                if (!cur_base_valid) {
-                    u256 base_k = cur_k - 1;
-                    uint64_t limbs[4] = {
-                        (uint64_t)base_k.low,
-                        (uint64_t)(base_k.low >> 64),
-                        (uint64_t)base_k.high,
-                        (uint64_t)(base_k.high >> 64)
-                    };
-                    cur_base = scalar_mul_G_windowed(limbs);
-                    cur_base_valid = true;
-                }
-
-                // Forward pass of Montgomery Batch Inversion (skip redundant 1*dx[0] multiplication)
-                cum[0] = Fe{{1, 0, 0, 0}};
-                dx[0] = fe_sub(G_TABLE[0].x, cur_base.x);
-                cum[1] = dx[0];
-                for (uint32_t i = 1; i < cur_batch; ++i) {
-                    dx[i] = fe_sub(G_TABLE[i].x, cur_base.x);
-                    cum[i + 1] = fe_mul(cum[i], dx[i]);
-                }
-
-                Fe u = fe_inv(cum[cur_batch]);
-
-                // Backward pass: calculate modular inverses
-                alignas(64) Fe inv_dx[512];
-                for (int i = (int)cur_batch - 1; i >= 1; --i) {
-                    inv_dx[i] = fe_mul(u, cum[i]);
-                    u = fe_mul(u, dx[i]);
-                }
-                inv_dx[0] = u;
-
-                // Point Addition pass: calculate xi and yi (reuse last yi without redundant re-multiplication)
-                Fe last_yi;
-                for (uint32_t i = 0; i < cur_batch; ++i) {
-                    Fe dy_i = fe_sub(G_TABLE[i].y, cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_dx[i]);
-                    Fe lambda2 = fe_sqr(lambda);
-                    Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE[i].x);
-                    Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
-                    cur_x[i] = xi;
-                    cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
-                    if (i == cur_batch - 1) last_yi = yi;
-                }
-                cur_base = AffinePoint{cur_x[cur_batch - 1], last_yi};
+                b.cur_x[512 - 1 - i] = x_m;
+                b.cur_prefix[512 - 1 - i] = (y_m.d[0] & 1) ? 0x03 : 0x02;
             }
 
 #if defined(__AVX2__)
-            uint32_t i = 0;
-            for (; i + 8 <= cur_batch; i += 8) {
-                int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
+            for (uint32_t j = 0; j < 1024; j += 8) {
+                int match_idx = fast_sha256_ripemd160_8x_avx2(&b.cur_prefix[j], &b.cur_x[j], target_w);
                 if (__builtin_expect(match_idx >= 0, 0)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)(i + match_idx);
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
-                    return;
-                }
-            }
-            for (; i < cur_batch; ++i) {
-                uint32_t X[8];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
-                if (fast_ripemd160_32_check(X, target_w)) {
-                    std::lock_guard<std::mutex> lock(found_mtx);
-                    found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)i;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)(j + match_idx);
+                    checked_counter.fetch_add(local_counter + (uint64_t)(j + match_idx + 1), std::memory_order_relaxed);
                     return;
                 }
             }
 #else
-            for (uint32_t i = 0; i < cur_batch; ++i) {
+            for (uint32_t j = 0; j < 1024; ++j) {
                 uint32_t X[8];
-                fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
+                fast_sha256_into_ripemd_X(b.cur_prefix[j], b.cur_x[j], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
                     std::lock_guard<std::mutex> lock(found_mtx);
                     found_flag.store(true, std::memory_order_release);
-                    found_key = cur_k + (uint64_t)i;
-                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    found_key = cur_k + (uint64_t)j;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(j + 1), std::memory_order_relaxed);
                     return;
                 }
             }
 #endif
-            cur_k = cur_k + (uint64_t)cur_batch;
-            remaining_in_slice -= cur_batch;
-            local_counter += cur_batch;
+            // Advance cur_center by 1024 * G with single Jacobian addition
+            JacobianPoint jc{cur_center.x, cur_center.y, Fe{{1, 0, 0, 0}}, false};
+            jc = jacobian_add_affine(jc, G_1024);
+            cur_center = jacobian_to_affine(jc);
+
+            cur_k = cur_k + 1024ULL;
+            remaining_in_slice -= 1024;
+            local_counter += 1024;
+            if (local_counter >= 65536) {
+                checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
+                local_counter = 0;
+            }
+        }
+
+        // Remainder keys at slice tail (if slice size is not a multiple of 1024)
+        while (remaining_in_slice > 0 && g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
+            uint64_t lk[4] = {
+                (uint64_t)cur_k.low,
+                (uint64_t)(cur_k.low >> 64),
+                (uint64_t)cur_k.high,
+                (uint64_t)(cur_k.high >> 64)
+            };
+            AffinePoint pt = scalar_mul_G_windowed(lk);
+            uint8_t pfx = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+            uint32_t X[8];
+            fast_sha256_into_ripemd_X(pfx, pt.x, X);
+            if (fast_ripemd160_32_check(X, target_w)) {
+                std::lock_guard<std::mutex> lock(found_mtx);
+                found_flag.store(true, std::memory_order_release);
+                found_key = cur_k;
+                checked_counter.fetch_add(local_counter + 1, std::memory_order_relaxed);
+                return;
+            }
+            cur_k = cur_k + 1ULL;
+            remaining_in_slice--;
+            local_counter++;
             if (local_counter >= 65536) {
                 checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
                 local_counter = 0;
             }
         }
     }
-
     if (local_counter > 0) {
         checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
     }
 }
-
 // ============================================================================
 // HTTP CLIENT HELPERS
 // ============================================================================
@@ -1864,29 +1910,6 @@ static const char* B58_CHARS = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnop
 // ============================================================================
 // VERIFICATION RUNNER
 // ============================================================================
-
-// Strict independent verification of solution before server submission
-bool verify_solution_strictly(const u256& priv_key, const uint8_t target_h160[20]) {
-    uint64_t limbs[4] = {
-        (uint64_t)priv_key.low,
-        (uint64_t)(priv_key.low >> 64),
-        (uint64_t)priv_key.high,
-        (uint64_t)(priv_key.high >> 64)
-    };
-    AffinePoint pt = scalar_mul_G_windowed(limbs);
-    uint8_t prefix = (pt.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[8];
-    fast_sha256_into_ripemd_X(prefix, pt.x, X);
-    uint32_t target_w[5];
-    for (int j = 0; j < 5; ++j) {
-        target_w[j] = (uint32_t)target_h160[j * 4] |
-                      ((uint32_t)target_h160[j * 4 + 1] << 8) |
-                      ((uint32_t)target_h160[j * 4 + 2] << 16) |
-                      ((uint32_t)target_h160[j * 4 + 3] << 24);
-    }
-    return fast_ripemd160_32_check(X, target_w);
-}
-
 int run_cpu_verify(const std::string& api_base, const std::string& current_user = "verify-node", int target_id = 0, int threads = 0) {
     if (threads <= 0) {
         threads = 1;
@@ -2022,8 +2045,6 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
-    std::signal(SIGINT, sigint_handler);
-    std::signal(SIGTERM, sigint_handler);
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
@@ -2072,7 +2093,10 @@ int main(int argc, char* argv[]) {
             threads = std::max(1, std::atoi(arg.substr(10).c_str()));
         }
         // No limit mode: -nl, --no-limit
-        else if (arg == "-nl" || arg == "--no-limit") {
+        else if (arg == "--check-compat") {
+            std::cout << "[OK] Compatible binary\n";
+            return 0;
+        } else if (arg == "-nl" || arg == "--no-limit") {
             no_limit = true;
         }
         // Verify mode: --verify, -v
@@ -2228,46 +2252,40 @@ int main(int argc, char* argv[]) {
 
         ranges_completed += actual_multiple; last_measured_speed = final_spd;
 
-        bool is_fully_completed = (checked_counter.load() >= total_keys_count);
-
-        if (!g_running.load() && !found_flag.load()) {
-            std::cout << "\n[ABORT] Worker interrupted early (" << checked_counter.load()
-                      << "/" << total_keys_count << " keys checked). Refusing to submit incomplete range to server.\n";
+        if (!g_running.load()) {
+            std::cout << "\n[ABORT] Worker stopped or interrupted. Incomplete range was NOT submitted to server.\n";
             break;
         }
 
         if (found_flag.load()) {
-            std::cout << "\n[TARGET MATCH DETECTED] Validating cryptographic solution before submission...\n";
-            if (!verify_solution_strictly(found_key, target_h160)) {
-                std::cerr << "[CRITICAL ERROR] Solution verification FAILED! Private key does not match target address.\n";
-                std::cerr << "[BLOCKED] Refusing to submit invalid result to server to prevent data corruption!\n";
-            } else {
-                std::cout << "[VERIFIED] Solution 100% VALIDATED! Submitting verified key to server...\n";
+            if (verify_solution(found_key, target_h160)) {
+                std::cout << "\n[WINNER] TARGET MATCHED AND 100% CRYPTOGRAPHICALLY VERIFIED! Submitting solution to server...\n";
                 std::stringstream res_json;
                 res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                          << ",\"block\":" << str_block
                          << ",\"range_idx\":" << str_range
-                         << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple
-                         << ",\"status\":\"found\",\"user\":\"" << user
+                         << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
                          << "\",\"private_key\":\"" << u256_to_hex64(found_key)
                          << "\",\"speed\":" << (uint64_t)final_spd << "}";
                 std::string ack;
                 http_post(api_base, res_json.str(), &ack);
                 break;
+            } else {
+                std::cerr << "\n[SECURITY] False positive detected during verification. Solution rejected, not submitting to server.\n";
             }
-        } else if (is_fully_completed && g_running.load()) {
+        } else if (checked_counter.load() >= total_keys_count) {
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
                      << ",\"block\":" << str_block
                      << ",\"range_idx\":" << str_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple
-                     << ",\"status\":\"done\",\"user\":\"" << user
+                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
         } else {
-            std::cout << "[SKIP] Range incomplete (" << checked_counter.load() << "/" << total_keys_count
-                      << " keys). Skipping server submission to protect database integrity.\n";
+            std::cerr << "\n[WARNING] Range incomplete (" << checked_counter.load() << "/" << total_keys_count 
+                      << "). Server submission skipped to prevent corrupting work distribution.\n";
+            break;
         }
     }
 

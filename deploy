@@ -46,6 +46,7 @@ case "$OS" in
         elif [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = "1" ] || sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -qi "Apple"; then
             IS_APPLE_SILICON=1
         fi
+
         if [ "$IS_APPLE_SILICON" = "1" ]; then
             for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64" "bin/build"; do
                 if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
@@ -56,6 +57,7 @@ case "$OS" in
             done
         fi
         ;;
+
     linux*)
         case "$ARCH" in
             riscv64|riscv)
@@ -84,23 +86,30 @@ case "$OS" in
                     fi
 
                     if [ "$HAS_AVX2" = "1" ]; then
-                        CANDIDATES="bin/build-linux-x86_64-fast bin/build-linux-u22-x86_64-fast bin/build-linux-musl-x86_64-fast bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat"
+                        # Prioritize hardware accelerated fast binaries (AVX2 + BMI2 + ADX + x86-64-v3)
+                        # Static Musl binary is prioritized because it has zero GLIBC dependency,
+                        # completely preventing GLIBC version mismatch crashes across diverse Linux VPS distros.
+                        CANDIDATES="bin/build-linux-musl-x86_64-fast bin/build-linux-u22-x86_64-fast bin/build-linux-x86_64-fast bin/build-linux-musl-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-x86_64 bin/build bin/build-linux-musl-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat"
                     else
-                        CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
+                        CANDIDATES="bin/build-linux-musl-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-x86_64-compat bin/build-linux-musl-x86_64 bin/build"
                     fi
 
+                    FIRST_FOUND=""
                     for f in $CANDIDATES; do
                         if [ -f "$f" ]; then
-                            # Safely check if dynamic glibc dependencies are met without executing the binary
-                            if command -v ldd >/dev/null 2>&1; then
-                                if ldd "$f" 2>&1 | grep -q "not found"; then
-                                    continue
-                                fi
+                            chmod +x "$f" 2>/dev/null || true
+                            if [ -z "$FIRST_FOUND" ]; then
+                                FIRST_FOUND="$f"
                             fi
-                            TARGET_BIN="$f"
-                            break
+                            if "$f" --check-compat >/dev/null 2>&1; then
+                                TARGET_BIN="$f"
+                                break
+                            fi
                         fi
                     done
+                    if [ -z "$TARGET_BIN" ]; then
+                        TARGET_BIN="$FIRST_FOUND"
+                    fi
                 fi
                 ;;
         esac
@@ -110,6 +119,7 @@ case "$OS" in
             if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
         done
         ;;
+
     *)
         if [ -f "bin/build" ]; then TARGET_BIN="bin/build"; fi
         ;;

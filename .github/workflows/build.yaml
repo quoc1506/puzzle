@@ -2,13 +2,13 @@ name: Multiplatform Binary Build
 
 on:
   push:
-    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m", "master_cuda_about_600m_cpu_about_3m" ]
     paths:
       - 'build_cpu.cpp'
       - 'build_gpu.cu'
       - '.github/workflows/**'
   pull_request:
-    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m" ]
+    branches: [ "main", "master", "testing", "master_cuda_about_570m_cpu_about_3m", "master_cuda_about_600m_cpu_about_3m" ]
   workflow_dispatch:
 
 jobs:
@@ -471,7 +471,7 @@ jobs:
   publish-bin-folder:
     name: Consolidate Binaries into bin/
     needs: [build-cuda, build-linux, build-linux-u22, build-linux-musl, build-linux-riscv64, build-macos, build-windows]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/testing'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/testing' || github.ref == 'refs/heads/master_cuda_about_600m_cpu_about_3m'
     runs-on: ubuntu-latest
     permissions:
       contents: write
