@@ -2276,7 +2276,7 @@ int main(int argc, char* argv[]) {
         } catch (...) {}
 
         if (safe_block < 0 || safe_range < 0) {
-            std::cerr << "[ERROR] Invalid block (" << str_block << ") or range (" << str_range << ") from server. Discarding submission.\n";
+            std::cerr << "[ERROR] Invalid  block (" << str_block << ") or range (" << str_range << ") from server. Discarding submission.\n";
             continue;
         }
 
