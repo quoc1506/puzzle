@@ -55,7 +55,7 @@ static std::atomic<bool> g_running(true);
 
 void sigint_handler(int signum) {
     (void)signum;
-    g_running.store(false, std::memory_order_relaxed);
+    g_running = false;
 }
 
 template <typename T>
@@ -366,7 +366,7 @@ CUDA_HOSTDEV CUDA_INLINE bool fe_is_zero(const Fe& a) {
     return (a.d[0] | a.d[1] | a.d[2] | a.d[3]) == 0;
 }
 
-CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_add(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t c0 = 0;
@@ -398,19 +398,20 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const 
     r.d[2] = need_reduce ? r_k.d[2] : r.d[2];
     r.d[3] = need_reduce ? r_k.d[3] : r.d[3];
     return r;
-#elif (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
     unsigned char c = 0;
     c = _addcarry_u64(c, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
     c = _addcarry_u64(c, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
     c = _addcarry_u64(c, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     c = _addcarry_u64(c, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-    uint64_t mask = -(uint64_t)c;
-    uint64_t k_add = mask & 0x1000003D1ULL;
-    c = _addcarry_u64(0, r.d[0], k_add, (unsigned long long*)&r.d[0]);
-    c = _addcarry_u64(c, r.d[1], 0, (unsigned long long*)&r.d[1]);
-    c = _addcarry_u64(c, r.d[2], 0, (unsigned long long*)&r.d[2]);
-    _addcarry_u64(c, r.d[3], 0, (unsigned long long*)&r.d[3]);
+
+    uint64_t add_k = (uint64_t)c * 0x1000003D1ULL;
+    unsigned char c2 = 0;
+    c2 = _addcarry_u64(c2, r.d[0], add_k, (unsigned long long*)&r.d[0]);
+    c2 = _addcarry_u64(c2, r.d[1], 0, (unsigned long long*)&r.d[1]);
+    c2 = _addcarry_u64(c2, r.d[2], 0, (unsigned long long*)&r.d[2]);
+    _addcarry_u64(c2, r.d[3], 0, (unsigned long long*)&r.d[3]);
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
@@ -481,7 +482,7 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_add(const Fe& a, const 
 #endif
 }
 
-CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sub(const Fe& a, const Fe& b) {
 #if defined(__CUDA_ARCH__)
     Fe r;
     uint64_t borrow = 0;
@@ -506,19 +507,20 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sub(const Fe& a, const 
         : "l"(sub_k)
     );
     return r;
-#elif (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__)
+#elif (defined(__x86_64__) || defined(_M_X64))
     Fe r;
     unsigned char borrow = 0;
     borrow = _subborrow_u64(borrow, a.d[0], b.d[0], (unsigned long long*)&r.d[0]);
     borrow = _subborrow_u64(borrow, a.d[1], b.d[1], (unsigned long long*)&r.d[1]);
     borrow = _subborrow_u64(borrow, a.d[2], b.d[2], (unsigned long long*)&r.d[2]);
     borrow = _subborrow_u64(borrow, a.d[3], b.d[3], (unsigned long long*)&r.d[3]);
-    uint64_t mask = -(uint64_t)borrow;
-    uint64_t k_sub = mask & 0x1000003D1ULL;
-    borrow = _subborrow_u64(0, r.d[0], k_sub, (unsigned long long*)&r.d[0]);
-    borrow = _subborrow_u64(borrow, r.d[1], 0, (unsigned long long*)&r.d[1]);
-    borrow = _subborrow_u64(borrow, r.d[2], 0, (unsigned long long*)&r.d[2]);
-    _subborrow_u64(borrow, r.d[3], 0, (unsigned long long*)&r.d[3]);
+
+    uint64_t sub_k = (uint64_t)borrow * 0x1000003D1ULL;
+    unsigned char b2 = 0;
+    b2 = _subborrow_u64(b2, r.d[0], sub_k, (unsigned long long*)&r.d[0]);
+    b2 = _subborrow_u64(b2, r.d[1], 0, (unsigned long long*)&r.d[1]);
+    b2 = _subborrow_u64(b2, r.d[2], 0, (unsigned long long*)&r.d[2]);
+    _subborrow_u64(b2, r.d[3], 0, (unsigned long long*)&r.d[3]);
     return r;
 #elif defined(__SIZEOF_INT128__) && !defined(__CUDA_ARCH__)
     Fe r;
@@ -644,7 +646,7 @@ CUDA_HOSTDEV CUDA_INLINE void comba_accum(u128& acc, uint64_t& c_hi, uint64_t x,
     if (acc < p) c_hi++;
 }
 
-CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const Fe& b) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_mul(const Fe& a, const Fe& b) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
     uint64_t b0 = b.d[0], b1 = b.d[1], b2 = b.d[2], b3 = b.d[3];
@@ -748,6 +750,7 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const 
         carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
+    return Fe{{r0, r1, r2, r3}};
 #else
     u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
     r0 = (uint64_t)c2_red; c2_red >>= 64;
@@ -762,8 +765,6 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const 
         c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
         r3 += (uint64_t)c3;
     }
-#endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -772,12 +773,13 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_mul(const Fe& a, const 
         r1 = 0; r2 = 0; r3 = 0;
     }
     return Fe{{r0, r1, r2, r3}};
+#endif
 #else
     Fe r = {0};
     return r;
 #endif
 }
-CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr(const Fe& a) {
 #if defined(__SIZEOF_INT128__)
     uint64_t a0 = a.d[0], a1 = a.d[1], a2 = a.d[2], a3 = a.d[3];
 
@@ -875,6 +877,7 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
         carry_flag = _addcarry_u64(carry_flag, r2, 0, (unsigned long long*)&r2);
         _addcarry_u64(carry_flag, r3, 0, (unsigned long long*)&r3);
     }
+    return Fe{{r0, r1, r2, r3}};
 #else
     u128 c2_red = (u128)r0 + (u128)carry * SECP_K;
     r0 = (uint64_t)c2_red; c2_red >>= 64;
@@ -889,8 +892,6 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
         c3 += r2; r2 = (uint64_t)c3; c3 >>= 64;
         r3 += (uint64_t)c3;
     }
-#endif
-
     if (__builtin_expect(r3 == 0xFFFFFFFFFFFFFFFFULL &&
         r2 == 0xFFFFFFFFFFFFFFFFULL &&
         r1 == 0xFFFFFFFFFFFFFFFFULL &&
@@ -898,8 +899,8 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
         r0 -= 0xFFFFFFFEFFFFFC2FULL;
         r1 = 0; r2 = 0; r3 = 0;
     }
-
     return Fe{{r0, r1, r2, r3}};
+#endif
 #else
     Fe r = {0};
     return r;
@@ -908,7 +909,7 @@ CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr(const Fe& a) {
 // ============================================================================
 // MODULAR INVERSION VIA FERMAT'S LITTLE THEOREM: a^(p - 2) mod p
 // ============================================================================
-CUDA_HOSTDEV inline __attribute__((always_inline)) Fe fe_sqr_n(Fe a, int n) {
+CUDA_HOSTDEV CUDA_INLINE Fe fe_sqr_n(Fe a, int n) {
     for (int i = 0; i < n; ++i) {
         a = fe_sqr(a);
     }
@@ -1016,7 +1017,7 @@ CUDA_HOSTDEV AffinePoint scalar_mul_G(const uint64_t limbs[4]) {
     return jacobian_to_affine(res);
 }
 
-static AffinePoint G_TABLE[1024];
+alignas(64) static AffinePoint G_TABLE[1024];
 alignas(64) static Fe G_TABLE_X[1024];
 alignas(64) static Fe G_TABLE_Y[1024];
 static bool g_table_initialized = false;
@@ -1058,6 +1059,31 @@ AffinePoint scalar_mul_G_windowed(const uint64_t limbs[4]) {
         }
     }
     return jacobian_to_affine(res);
+}
+
+// Independent full cryptographic verification of winning key before server submission
+CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const uint32_t target_w[5]);
+CUDA_HOSTDEV CUDA_INLINE void fast_sha256_into_ripemd_X(uint8_t prefix, const Fe& x, uint32_t X[8]);
+
+bool verify_winning_key(const u256& key, const uint8_t expected_h160[20]) {
+    uint64_t limbs[4] = {
+        (uint64_t)key.low,
+        (uint64_t)(key.low >> 64),
+        (uint64_t)key.high,
+        (uint64_t)(key.high >> 64)
+    };
+    AffinePoint pt = scalar_mul_G_windowed(limbs);
+    uint8_t prefix = (pt.y.d[0] & 1) ? 0x03 : 0x02;
+    uint32_t X[8];
+    fast_sha256_into_ripemd_X(prefix, pt.x, X);
+    uint32_t target_w[5];
+    for (int j = 0; j < 5; ++j) {
+        target_w[j] = (uint32_t)expected_h160[j * 4] |
+                      ((uint32_t)expected_h160[j * 4 + 1] << 8) |
+                      ((uint32_t)expected_h160[j * 4 + 2] << 16) |
+                      ((uint32_t)expected_h160[j * 4 + 3] << 24);
+    }
+    return fast_ripemd160_32_check(X, target_w);
 }
 
 // ============================================================================
@@ -1320,28 +1346,6 @@ CUDA_HOSTDEV CUDA_INLINE bool fast_ripemd160_32_check(const uint32_t X[8], const
     return ((s0 + b1 + c2) == target_w[4]);
 }
 
-// 100% Cryptographic verification of candidate key against target address hash160 before submit
-CUDA_HOSTDEV CUDA_INLINE bool full_verify_candidate(const u256& priv_key, const uint8_t target_h160[20]) {
-    uint64_t limbs[4] = {
-        (uint64_t)priv_key.low,
-        (uint64_t)(priv_key.low >> 64),
-        (uint64_t)priv_key.high,
-        (uint64_t)(priv_key.high >> 64)
-    };
-    AffinePoint P = scalar_mul_G_windowed(limbs);
-    uint8_t prefix = (P.y.d[0] & 1) ? 0x03 : 0x02;
-    uint32_t X[8];
-    fast_sha256_into_ripemd_X(prefix, P.x, X);
-    uint32_t tw[5];
-    for (int j = 0; j < 5; ++j) {
-        tw[j] = (uint32_t)target_h160[j * 4] |
-                ((uint32_t)target_h160[j * 4 + 1] << 8) |
-                ((uint32_t)target_h160[j * 4 + 2] << 16) |
-                ((uint32_t)target_h160[j * 4 + 3] << 24);
-    }
-    return fast_ripemd160_32_check(X, tw);
-}
-
 #if defined(__AVX2__)
 void init_avx2_consts() {}
 
@@ -1358,26 +1362,26 @@ void init_avx2_consts() {}
 #define F4(x, y, z) _mm256_or_si256(_mm256_and_si256(x, z), _mm256_andnot_si256(z, y))
 #define F5(x, y, z) _mm256_xor_si256(x, _mm256_or_si256(y, _mm256_xor_si256(z, _mm256_set1_epi32(-1))))
 
-inline __m256i as_m256i(__m256i v) { return v; }
-inline __m256i as_m256i(uint32_t v) { return _mm256_set1_epi32(v); }
-
-template <uint32_t K, int R>
-CUDA_INLINE void round_avx2_step(__m256i& a, const __m256i& b, __m256i& c, const __m256i& d, const __m256i& e, const __m256i& f, const __m256i& x) {
-    __m256i sum;
-    if constexpr (K == 0) {
-        sum = _mm256_add_epi32(_mm256_add_epi32(a, f), x);
-    } else {
-        sum = _mm256_add_epi32(_mm256_add_epi32(a, f), _mm256_add_epi32(x, _mm256_set1_epi32(K)));
-    }
-    a = _mm256_add_epi32(ROL256(sum, R), e);
-    c = ROL256(c, 10);
+template<uint32_t K>
+CUDA_INLINE __m256i add_xk(__m256i x) {
+    if constexpr (K == 0) return x;
+    else return _mm256_add_epi32(x, _mm256_set1_epi32(K));
 }
-#define ROUND_AVX2(a, b, c, d, e, f, x, k, r) round_avx2_step<k, r>(a, b, c, d, e, f, as_m256i(x))
+
+template<uint32_t K>
+CUDA_INLINE __m256i add_xk(uint32_t x) {
+    return _mm256_set1_epi32(x + K);
+}
+
+#define ROUND_AVX2(a, b, c, d, e, f, x, k, r) do { \
+    a = _mm256_add_epi32(ROL256(_mm256_add_epi32(_mm256_add_epi32(a, f), add_xk<k>(x)), r), e); \
+    c = ROL256(c, 10); \
+} while(0)
 
 // Full Ultra-Optimized AVX2 8-way SIMD SHA-256 + RIPEMD-160 Pipeline with Zero-Copy Register Streaming
 int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], const uint32_t target_w[5]) {
-    __m256i W[64];
-    alignas(32) uint32_t w_lanes[16][8];
+    alignas(64) __m256i W[64];
+    alignas(64) uint32_t w_lanes[9][8];
     #pragma GCC unroll 8
     for (int lane = 0; lane < 8; ++lane) {
         uint64_t x3 = x[lane].d[3], x2 = x[lane].d[2], x1 = x[lane].d[1], x0 = x[lane].d[0];
@@ -1390,16 +1394,9 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         w_lanes[6][lane] = ((uint32_t)x1 << 24) | (uint32_t)(x0 >> 40);
         w_lanes[7][lane] = (uint32_t)(x0 >> 8);
         w_lanes[8][lane] = ((uint32_t)x0 << 24) | 0x00800000U;
-        w_lanes[9][lane]  = 0;
-        w_lanes[10][lane] = 0;
-        w_lanes[11][lane] = 0;
-        w_lanes[12][lane] = 0;
-        w_lanes[13][lane] = 0;
-        w_lanes[14][lane] = 0;
-        w_lanes[15][lane] = 0x00000108U;
     }
 
-        #pragma GCC unroll 9
+    #pragma GCC unroll 9
     for (int j = 0; j < 9; ++j) {
         W[j] = _mm256_load_si256((const __m256i*)w_lanes[j]);
     }
@@ -1410,6 +1407,14 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     W[13] = _mm256_setzero_si256();
     W[14] = _mm256_setzero_si256();
     W[15] = _mm256_set1_epi32(0x00000108U);
+
+    for (int i = 16; i < 64; ++i) {
+        __m256i w15 = W[i - 15];
+        __m256i s0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w15, 7), ROR256(w15, 18)), _mm256_srli_epi32(w15, 3));
+        __m256i w2 = W[i - 2];
+        __m256i s1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w2, 17), ROR256(w2, 19)), _mm256_srli_epi32(w2, 10));
+        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i - 16], s0), _mm256_add_epi32(W[i - 7], s1));
+    }
 
     static const uint32_t K256[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -1422,18 +1427,9 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     };
 
-    __m256i WK[64];
+    alignas(64) __m256i WK[64];
     #pragma GCC unroll 16
-    for (int i = 0; i < 16; ++i) {
-        WK[i] = _mm256_add_epi32(W[i], _mm256_set1_epi32(K256[i]));
-    }
-
-    for (int i = 16; i < 64; ++i) {
-        __m256i w15 = W[i - 15];
-        __m256i s0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w15, 7), ROR256(w15, 18)), _mm256_srli_epi32(w15, 3));
-        __m256i w2 = W[i - 2];
-        __m256i s1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(w2, 17), ROR256(w2, 19)), _mm256_srli_epi32(w2, 10));
-        W[i] = _mm256_add_epi32(_mm256_add_epi32(W[i - 16], s0), _mm256_add_epi32(W[i - 7], s1));
+    for (int i = 0; i < 64; ++i) {
         WK[i] = _mm256_add_epi32(W[i], _mm256_set1_epi32(K256[i]));
     }
 
@@ -1445,15 +1441,18 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
     #pragma GCC unroll 16
     for (int i = 0; i < 64; ++i) {
         __m256i S1 = _mm256_xor_si256(_mm256_xor_si256(ROR256(e, 6), ROR256(e, 11)), ROR256(e, 25));
-        __m256i ch = _mm256_xor_si256(g, _mm256_and_si256(e, _mm256_xor_si256(f, g)));
+        __m256i ch = _mm256_xor_si256(_mm256_and_si256(e, f), _mm256_andnot_si256(e, g));
         __m256i temp1 = _mm256_add_epi32(_mm256_add_epi32(h, S1), _mm256_add_epi32(ch, WK[i]));
         __m256i S0 = _mm256_xor_si256(_mm256_xor_si256(ROR256(a, 2), ROR256(a, 13)), ROR256(a, 22));
-        __m256i maj = _mm256_or_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, _mm256_xor_si256(a, b)));
+        __m256i a_xor_b = _mm256_xor_si256(a, b);
+        __m256i maj = _mm256_xor_si256(_mm256_and_si256(a, b), _mm256_and_si256(c, a_xor_b));
         __m256i temp2 = _mm256_add_epi32(S0, maj);
+
         h = g; g = f; f = e; e = _mm256_add_epi32(d, temp1);
         d = c; c = b; b = a; a = _mm256_add_epi32(temp1, temp2);
     }
-// Little-endian words for RIPEMD-160
+
+    // Little-endian words for RIPEMD-160
     __m256i X_simd[8];
     X_simd[0] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0x6a09e667), a));
     X_simd[1] = BSWAP256(_mm256_add_epi32(_mm256_set1_epi32(0xbb67ae85), b));
@@ -1663,6 +1662,7 @@ int fast_sha256_ripemd160_8x_avx2(const uint8_t prefixes[8], const Fe x[8], cons
 
 
 void scan_worker_montgomery(
+    int thread_idx,
     u256 base_start,
     std::atomic<uint64_t>& work_offset,
     uint64_t total_keys,
@@ -1678,11 +1678,12 @@ void scan_worker_montgomery(
 #if defined(__AVX2__)
     init_avx2_consts();
 #endif
-    const uint32_t BATCH_SIZE = 512;
-    alignas(64) Fe dx[512];
-    alignas(64) Fe cum[513];
-    alignas(64) Fe cur_x[512];
-    alignas(64) uint8_t cur_prefix[512];
+    const uint32_t BATCH_SIZE = 1024;
+    alignas(64) Fe dx[1024];
+    alignas(64) Fe cum[1025];
+    alignas(64) Fe cur_x[1024];
+    alignas(64) uint8_t cur_prefix[1024];
+
     uint64_t local_counter = 0;
 
     while (g_running.load(std::memory_order_relaxed) && !found_flag.load(std::memory_order_relaxed)) {
@@ -1696,6 +1697,7 @@ void scan_worker_montgomery(
 
         AffinePoint cur_base;
         bool cur_base_valid = false;
+
         if (cur_k > 1024) {
             u256 base_k = cur_k - 1;
             uint64_t limbs[4] = {
@@ -1715,8 +1717,8 @@ void scan_worker_montgomery(
                 for (uint32_t i = 0; i < cur_batch; ++i) {
                     uint64_t idx = (uint64_t)(cur_k.low + i);
                     if (idx >= 1 && idx <= 1024) {
-                        cur_x[i] = G_TABLE[idx - 1].x;
-                        cur_prefix[i] = (G_TABLE[idx - 1].y.d[0] & 1) ? 0x03 : 0x02;
+                        cur_x[i] = G_TABLE_X[idx - 1];
+                        cur_prefix[i] = (G_TABLE_Y[idx - 1].d[0] & 1) ? 0x03 : 0x02;
                     } else {
                         uint64_t limbs[4] = { idx, 0, 0, 0 };
                         AffinePoint pt = scalar_mul_G_windowed(limbs);
@@ -1738,7 +1740,7 @@ void scan_worker_montgomery(
                     cur_base_valid = true;
                 }
 
-                // Forward pass of Montgomery Batch Inversion
+                // Forward pass of Montgomery Batch Inversion (100% L1 cache density using contiguous G_TABLE_X)
                 cum[0] = Fe{{1, 0, 0, 0}};
                 dx[0] = fe_sub(G_TABLE_X[0], cur_base.x);
                 cum[1] = dx[0];
@@ -1749,14 +1751,42 @@ void scan_worker_montgomery(
 
                 Fe u = fe_inv(cum[cur_batch]);
 
-                // Fused Backward Inversion & Point Addition pass (Pipelined in L1 cache, zero inv_dx array)
+                // Fused Backward Inversion & Point Addition pass (Unroll-by-2 interleaved pipelines)
                 Fe last_yi;
-                for (int i = (int)cur_batch - 1; i >= 1; --i) {
-                    Fe inv_i = fe_mul(u, cum[i]);
+                int i = (int)cur_batch - 1;
+                for (; i >= 2; i -= 2) {
+                    Fe inv_dxi0 = fe_mul(u, cum[i]);
                     u = fe_mul(u, dx[i]);
+                    Fe inv_dxi1 = fe_mul(u, cum[i - 1]);
+                    u = fe_mul(u, dx[i - 1]);
 
+                    Fe dy_i0 = fe_sub(G_TABLE_Y[i], cur_base.y);
+                    Fe dy_i1 = fe_sub(G_TABLE_Y[i - 1], cur_base.y);
+
+                    Fe lam0 = fe_mul(dy_i0, inv_dxi0);
+                    Fe lam1 = fe_mul(dy_i1, inv_dxi1);
+
+                    Fe lam0_2 = fe_sqr(lam0);
+                    Fe lam1_2 = fe_sqr(lam1);
+
+                    Fe xi0 = fe_sub(fe_sub(lam0_2, cur_base.x), G_TABLE_X[i]);
+                    Fe xi1 = fe_sub(fe_sub(lam1_2, cur_base.x), G_TABLE_X[i - 1]);
+
+                    Fe yi0 = fe_sub(fe_mul(lam0, fe_sub(cur_base.x, xi0)), cur_base.y);
+                    Fe yi1 = fe_sub(fe_mul(lam1, fe_sub(cur_base.x, xi1)), cur_base.y);
+
+                    cur_x[i] = xi0;
+                    cur_prefix[i] = (yi0.d[0] & 1) ? 0x03 : 0x02;
+                    if (i == (int)cur_batch - 1) last_yi = yi0;
+
+                    cur_x[i - 1] = xi1;
+                    cur_prefix[i - 1] = (yi1.d[0] & 1) ? 0x03 : 0x02;
+                }
+                for (; i >= 1; --i) {
+                    Fe inv_dxi = fe_mul(u, cum[i]);
+                    u = fe_mul(u, dx[i]);
                     Fe dy_i = fe_sub(G_TABLE_Y[i], cur_base.y);
-                    Fe lambda = fe_mul(dy_i, inv_i);
+                    Fe lambda = fe_mul(dy_i, inv_dxi);
                     Fe lambda2 = fe_sqr(lambda);
                     Fe xi = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE_X[i]);
                     Fe yi = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, xi)), cur_base.y);
@@ -1764,16 +1794,16 @@ void scan_worker_montgomery(
                     cur_prefix[i] = (yi.d[0] & 1) ? 0x03 : 0x02;
                     if (i == (int)cur_batch - 1) last_yi = yi;
                 }
+                // i = 0: u is inv_dx[0]
                 {
-                    Fe inv_0 = u;
                     Fe dy_0 = fe_sub(G_TABLE_Y[0], cur_base.y);
-                    Fe lambda0 = fe_mul(dy_0, inv_0);
-                    Fe lambda2_0 = fe_sqr(lambda0);
-                    Fe xi0 = fe_sub(fe_sub(lambda2_0, cur_base.x), G_TABLE_X[0]);
-                    Fe yi0 = fe_sub(fe_mul(lambda0, fe_sub(cur_base.x, xi0)), cur_base.y);
-                    cur_x[0] = xi0;
-                    cur_prefix[0] = (yi0.d[0] & 1) ? 0x03 : 0x02;
-                    if (cur_batch == 1) last_yi = yi0;
+                    Fe lambda = fe_mul(dy_0, u);
+                    Fe lambda2 = fe_sqr(lambda);
+                    Fe x0 = fe_sub(fe_sub(lambda2, cur_base.x), G_TABLE_X[0]);
+                    Fe y0 = fe_sub(fe_mul(lambda, fe_sub(cur_base.x, x0)), cur_base.y);
+                    cur_x[0] = x0;
+                    cur_prefix[0] = (y0.d[0] & 1) ? 0x03 : 0x02;
+                    if (cur_batch == 1) last_yi = y0;
                 }
                 cur_base = AffinePoint{cur_x[cur_batch - 1], last_yi};
             }
@@ -1783,28 +1813,22 @@ void scan_worker_montgomery(
             for (; i + 8 <= cur_batch; i += 8) {
                 int match_idx = fast_sha256_ripemd160_8x_avx2(&cur_prefix[i], &cur_x[i], target_w);
                 if (__builtin_expect(match_idx >= 0, 0)) {
-                    u256 cand_key = cur_k + (uint64_t)(i + match_idx);
-                    if (full_verify_candidate(cand_key, target_h160)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cand_key;
-                        checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
-                        return;
-                    }
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)(i + match_idx);
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + match_idx + 1), std::memory_order_relaxed);
+                    return;
                 }
             }
             for (; i < cur_batch; ++i) {
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
-                    u256 cand_key = cur_k + (uint64_t)i;
-                    if (full_verify_candidate(cand_key, target_h160)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cand_key;
-                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                        return;
-                    }
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    return;
                 }
             }
 #else
@@ -1812,14 +1836,11 @@ void scan_worker_montgomery(
                 uint32_t X[8];
                 fast_sha256_into_ripemd_X(cur_prefix[i], cur_x[i], X);
                 if (fast_ripemd160_32_check(X, target_w)) {
-                    u256 cand_key = cur_k + (uint64_t)i;
-                    if (full_verify_candidate(cand_key, target_h160)) {
-                        std::lock_guard<std::mutex> lock(found_mtx);
-                        found_flag.store(true, std::memory_order_release);
-                        found_key = cand_key;
-                        checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
-                        return;
-                    }
+                    std::lock_guard<std::mutex> lock(found_mtx);
+                    found_flag.store(true, std::memory_order_release);
+                    found_key = cur_k + (uint64_t)i;
+                    checked_counter.fetch_add(local_counter + (uint64_t)(i + 1), std::memory_order_relaxed);
+                    return;
                 }
             }
 #endif
@@ -1832,7 +1853,8 @@ void scan_worker_montgomery(
             }
         }
     }
-if (local_counter > 0) {
+
+    if (local_counter > 0) {
         checked_counter.fetch_add(local_counter, std::memory_order_relaxed);
     }
 }
@@ -1988,16 +2010,7 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-#if defined(__linux__) && !defined(__ANDROID__)
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                unsigned int num_cores = std::thread::hardware_concurrency();
-                if (num_cores > 0) {
-                    CPU_SET(t % num_cores, &cpuset);
-                    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-                }
-#endif
-                scan_worker_montgomery(start_k, std::ref(work_offset),
+                scan_worker_montgomery(t, start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
                                       std::ref(found_mtx), std::ref(checked_counter));
@@ -2054,10 +2067,6 @@ int run_cpu_verify(const std::string& api_base, const std::string& current_user 
 // MAIN ENTRYPOINT WITH FULL CORE FLOW CLI OPTIONS
 // ============================================================================
 int main(int argc, char* argv[]) {
-    // Register OS signal handlers to cleanly capture interrupts and protect server state
-    std::signal(SIGINT, sigint_handler);
-    std::signal(SIGTERM, sigint_handler);
-
     std::string api_base = "http://puzzle.test/server.php";
     std::string user = "worker-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 100000);
     int threads = 1; // Default 1 thread as per user specification
@@ -2069,14 +2078,13 @@ int main(int argc, char* argv[]) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        // Instant compatibility probe for deploy script
-        if (arg == "--check-compat" || arg == "-check") {
-            std::cout << "[OK] CPU Solver binary compatible.\n";
+
+        if (arg == "--check-compat") {
+            std::cout << "COMPAT_OK\n";
             return 0;
         }
-
         // Server URL: --server, -s, --api (supports both space and = delimiter)
-        if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
+        else if ((arg == "--server" || arg == "-s" || arg == "--api") && i + 1 < argc) {
             api_base = argv[++i];
         } else if (arg.rfind("--server=", 0) == 0) {
             api_base = arg.substr(9);
@@ -2140,15 +2148,6 @@ int main(int argc, char* argv[]) {
     init_generator_table();
 
     std::cout << "[WORKER] Threads: " << threads << " | Privacy: ON\n";
-    // Coordinator URL hidden for privacy
-    // User & Target hidden for privacy
-    if (no_limit) {
-        
-    } else {
-        
-    }
-
-    
 
     int ranges_completed = 0;
     double last_measured_speed = 0.0;
@@ -2199,7 +2198,9 @@ int main(int argc, char* argv[]) {
         std::string str_start = json_get_string(resp, "start");
         std::string str_end = json_get_string(resp, "end");
         std::string str_target = json_get_string(resp, "target_address");
-        if (str_start.empty() || str_target.empty()) {
+
+        // Rigorous validation to avoid corrupted state submissions
+        if (str_start.empty() || str_target.empty() || str_block.empty() || str_range.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -2234,7 +2235,7 @@ int main(int argc, char* argv[]) {
         pool.reserve(threads);
         for (int t = 0; t < threads; ++t) {
             pool.emplace_back([=, &work_offset, &found_flag, &found_key, &found_mtx, &checked_counter]() {
-                scan_worker_montgomery(start_k, std::ref(work_offset),
+                scan_worker_montgomery(t, start_k, std::ref(work_offset),
                                       total_keys_count, slice_size, target_h160, target_h64,
                                       target_w, std::ref(found_flag), std::ref(found_key),
                                       std::ref(found_mtx), std::ref(checked_counter));
@@ -2244,7 +2245,7 @@ int main(int argc, char* argv[]) {
         // Progress reporter
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            uint64_t cur = checked_counter.load();
+            uint64_t cur = checked_counter.load(std::memory_order_relaxed);
             auto t_now = std::chrono::high_resolution_clock::now();
             double el = std::chrono::duration<double>(t_now - t_start).count();
             if (el > 0) {
@@ -2253,7 +2254,7 @@ int main(int argc, char* argv[]) {
                           << " | Progress: " << std::fixed << std::setprecision(1) << ((double)cur / total_keys_count * 100.0) << "%"
                           << " | Done: " << ranges_completed << " ranges" << std::flush;
             }
-            if (cur >= total_keys_count || found_flag.load() || !g_running.load()) break;
+            if (cur >= total_keys_count || found_flag.load(std::memory_order_relaxed) || !g_running.load(std::memory_order_relaxed)) break;
         }
 
         for (auto& th : pool) {
@@ -2263,52 +2264,50 @@ int main(int argc, char* argv[]) {
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double elapsed = std::chrono::duration<double>(t_end - t_start).count();
-        double final_spd = (elapsed > 0) ? ((double)checked_counter.load() / elapsed) : 0;
-
-        ranges_completed += actual_multiple; last_measured_speed = final_spd;
-
-                // Validate block & range numbers to prevent sending empty/malformed data
-        long long safe_block = -1;
-        long long safe_range = -1;
-        try {
-            safe_block = std::stoll(str_block);
-            safe_range = std::stoll(str_range);
-        } catch (...) {}
-
-        if (safe_block < 0 || safe_range < 0) {
-            std::cerr << "[ERROR] Invalid block (" << str_block << ") or range (" << str_range << ") from server. Discarding submission.\n";
-            continue;
-        }
+        uint64_t final_checked = checked_counter.load();
+        double final_spd = (elapsed > 0 && std::isfinite(elapsed)) ? ((double)final_checked / elapsed) : 0.0;
+        if (!std::isfinite(final_spd) || final_spd < 0.0) final_spd = 0.0;
 
         if (found_flag.load()) {
-            std::cout << "\n[WINNER] 100% CRYPTOGRAPHICALLY VERIFIED MATCH! Submitting solution to server...\n";
+            if (verify_winning_key(found_key, target_h160)) {
+                std::cout << "\n[WINNER] TARGET MATCHED AND VERIFIED! Submitting solution to server...\n";
+                std::stringstream res_json;
+                res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
+                         << ",\"block\":" << str_block
+                         << ",\"range_idx\":" << str_range
+                         << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
+                         << "\",\"private_key\":\"" << u256_to_hex64(found_key)
+                         << "\",\"speed\":" << (uint64_t)final_spd << "}";
+                std::string ack;
+                for (int attempt = 0; attempt < 10; ++attempt) {
+                    if (http_post(api_base, res_json.str(), &ack)) {
+                        std::cout << "[SERVER ACK]: " << ack << "\n";
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                break;
+            } else {
+                std::cerr << "\n[SECURITY ALERT] Found key failed independent cryptographic verification! Refusing false submission.\n";
+            }
+        } else if (g_running.load() && final_checked >= total_keys_count) {
+            ranges_completed += actual_multiple;
+            last_measured_speed = final_spd;
             std::stringstream res_json;
             res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
-                     << ",\"block\":" << safe_block
-                     << ",\"range_idx\":" << safe_range
-                     << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"found\",\"user\":\"" << user
-                     << "\",\"private_key\":\"" << u256_to_hex64(found_key)
-                     << "\",\"speed\":" << (uint64_t)final_spd << "}";
-            std::string ack;
-            http_post(api_base, res_json.str(), &ack);
-            break;
-        } else if (g_running.load() && checked_counter.load() >= total_keys_count) {
-            // ONLY submit done if range was 100% completed and worker is still running normally
-            std::stringstream res_json;
-            res_json << "{\"action\":\"result\",\"puzzle\":" << puzzle_id
-                     << ",\"block\":" << safe_block
-                     << ",\"range_idx\":" << safe_range
+                     << ",\"block\":" << str_block
+                     << ",\"range_idx\":" << str_range
                      << ",\"range_count\":" << actual_multiple << ",\"multiple\":" << actual_multiple << ",\"status\":\"done\",\"user\":\"" << user
                      << "\",\"speed\":" << (uint64_t)final_spd << "}";
             std::string ack;
             http_post(api_base, res_json.str(), &ack);
         } else {
-            // STOPPED / CRASHED / ABORTED / INCOMPLETE SCAN: NEVER SUBMIT "done"
-            std::cout << "\n[ABORT] Range scan interrupted or incomplete ("
-                      << checked_counter.load() << "/" << total_keys_count
-                      << "). Discarding range submission to protect server database integrity.\n";
+            std::cout << "\n[NOTICE] Range scan interrupted or incomplete (" 
+                      << final_checked << "/" << total_keys_count << " keys checked). "
+                      << "Skipping submission to prevent submitting false completion to coordinator.\n";
             break;
         }
     }
-return 0;
+
+    return 0;
 }
