@@ -27,16 +27,33 @@ fi
 
 TARGET_BIN=""
 FORCE_CPU=0
+IS_FAST=0
 
 for arg in "$@"; do
     case "$arg" in
         -cpu|--cpu|-c)
             FORCE_CPU=1
             ;;
+        --fast)
+            IS_FAST=1
+            ;;
         *)
             ;;
     esac
 done
+
+# Test execution sanity check: verifies kernel/glibc can load and run the binary
+# without dying from GLIBC version errors, bad system calls, or missing shared libs
+test_can_run() {
+    cand="$1"
+    [ -f "$cand" ] || return 1
+    chmod +x "$cand" 2>/dev/null || true
+    out=$(LC_ALL=C "$cand" --glibc-test 2>&1 || true)
+    if echo "$out" | grep -qiE "(GLIBC_|not found|cannot open shared object|illegal instruction|floating point|bad system call)"; then
+        return 1
+    fi
+    return 0
+}
 
 case "$OS" in
     darwin*)
@@ -46,7 +63,6 @@ case "$OS" in
         elif [ "$(sysctl -in sysctl.proc_translated 2>/dev/null)" = "1" ] || sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -qi "Apple"; then
             IS_APPLE_SILICON=1
         fi
-
         if [ "$IS_APPLE_SILICON" = "1" ]; then
             for f in "bin/build-macos-arm64" "bin/build-macos-universal" "bin/build-macos-x86_64" "bin/build"; do
                 if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
@@ -57,7 +73,6 @@ case "$OS" in
             done
         fi
         ;;
-
     linux*)
         case "$ARCH" in
             riscv64|riscv)
@@ -71,12 +86,16 @@ case "$OS" in
                 done
                 ;;
             x86_64|amd64|*)
+                # Priority 1: CUDA GPU solver (if available and not forced to CPU)
                 if [ "$FORCE_CPU" != "1" ]; then
                     if command -v nvidia-smi >/dev/null 2>&1 && [ -f "bin/build_cuda" ]; then
-                        TARGET_BIN="bin/build_cuda"
+                        if test_can_run "bin/build_cuda"; then
+                            TARGET_BIN="bin/build_cuda"
+                        fi
                     fi
                 fi
 
+                # Priority 2: High-speed CPU binary selection
                 if [ -z "$TARGET_BIN" ]; then
                     HAS_AVX2=0
                     if [ -f /proc/cpuinfo ] && grep -qi "avx2" /proc/cpuinfo 2>/dev/null; then
@@ -86,15 +105,19 @@ case "$OS" in
                     fi
 
                     if [ "$HAS_AVX2" = "1" ]; then
+                        # Try fastest optimized binaries first, with fallback to standard and universal static musl
                         CANDIDATES="bin/build-linux-x86_64-fast bin/build-linux-u22-x86_64-fast bin/build-linux-musl-x86_64-fast bin/build-linux-x86_64 bin/build-linux-u22-x86_64 bin/build-linux-musl-x86_64 bin/build bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat"
                     else
+                        # Compatibility fallback for older non-AVX2 CPUs
                         CANDIDATES="bin/build-linux-x86_64-compat bin/build-linux-u22-x86_64-compat bin/build-linux-musl-x86_64-compat bin/build"
                     fi
 
                     for f in $CANDIDATES; do
                         if [ -f "$f" ]; then
-                            TARGET_BIN="$f"
-                            break
+                            if test_can_run "$f"; then
+                                TARGET_BIN="$f"
+                                break
+                            fi
                         fi
                     done
                 fi
@@ -106,7 +129,6 @@ case "$OS" in
             if [ -f "$f" ]; then TARGET_BIN="$f"; break; fi
         done
         ;;
-
     *)
         if [ -f "bin/build" ]; then TARGET_BIN="bin/build"; fi
         ;;
